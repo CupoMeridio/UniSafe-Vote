@@ -3,7 +3,7 @@
 import os
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, UTC
 from flask import Flask, request, jsonify
 import sys
 
@@ -56,7 +56,7 @@ def append_to_bulletin_board(block_type, block_data):
 
     new_block = {
         "type": block_type,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "data": block_data,
         "signature": signature.hex()
     }
@@ -124,7 +124,7 @@ def vote():
         # 3. Verifica validità temporale del token
         token_obj = json.loads(token)
         expires_at = datetime.fromisoformat(token_obj['expires_at'])
-        if datetime.utcnow() > expires_at:
+        if datetime.now(UTC) > expires_at:
             print(f"[AE] {datetime.now().isoformat()} - Token scaduto")
             return jsonify({"error": "Token scaduto"}), 401
 

@@ -70,6 +70,29 @@ class Client:
             if nonce % 100000 == 0:
                 print(".", end="", flush=True)
 
+    def register(self):
+        print("\n=== REGISTRAZIONE UTENTE ===")
+        print("Puoi registrarti solo con un'email UNISA (@studenti.unisa.it o @unisa.it)\n")
+        
+        email = input("Inserisci la tua email UNISA: ")
+        username = input("Scegli un username: ")
+        password = input("Scegli una password: ")
+
+        try:
+            response = requests.post(
+                f"{SA_URL}/register",
+                json={"email": email, "username": username, "password": password}
+            )
+
+            if response.status_code == 201:
+                print(f"\n{response.json().get('message')}")
+                print("Ora puoi autenticarti con le tue credenziali!")
+            else:
+                print(f"\nErrore: {response.json().get('error')}")
+
+        except requests.exceptions.ConnectionError:
+            print("\nImpossibile connettersi al SA. Assicurati che sia in esecuzione.")
+
     def authenticate(self):
         username = input("Inserisci username: ")
         password = input("Inserisci password: ")
@@ -85,12 +108,12 @@ class Client:
                 self.username = username
                 self.token = data["token"]
                 self.token_signature = data["signature"]
-                print("\n✅ Autenticazione riuscita! Token ricevuto.")
+                print("\nAutenticazione riuscita! Token ricevuto.")
             else:
-                print(f"\n❌ Errore: {response.json().get('error')}")
+                print(f"\nErrore: {response.json().get('error')}")
 
         except requests.exceptions.ConnectionError:
-            print("\n❌ Impossibile connettersi al SA. Assicurati che sia in esecuzione.")
+            print("\nImpossibile connettersi al SA. Assicurati che sia in esecuzione.")
 
     def vote(self):
         if not self.token:
@@ -231,27 +254,30 @@ class Client:
     def menu(self):
         while True:
             print("\n=== SISTEMA DI VOTO ELETTRONICO ===")
-            print("1. Autenticati presso il SA")
-            print("2. Esprimi il tuo voto")
-            print("3. Visualizza ricevuta")
-            print("4. Verifica inclusione del tuo voto")
+            print("1. Registrati (solo email UNISA)")
+            print("2. Autenticati presso il SA")
+            print("3. Esprimi il tuo voto")
+            print("4. Visualizza ricevuta")
+            print("5. Verifica inclusione del tuo voto")
             print("0. Esci")
 
             choice = input("\nSeleziona un'opzione: ")
 
             if choice == '1':
-                self.authenticate()
+                self.register()
             elif choice == '2':
-                self.vote()
+                self.authenticate()
             elif choice == '3':
-                self.show_receipt()
+                self.vote()
             elif choice == '4':
+                self.show_receipt()
+            elif choice == '5':
                 self.verify_vote()
             elif choice == '0':
                 print("\nArrivederci!")
                 break
             else:
-                print("\n❌ Opzione non valida!")
+                print("\nOpzione non valida!")
 
 
 if __name__ == "__main__":

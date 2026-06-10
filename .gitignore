@@ -1,6 +1,27 @@
-.env
-venv/
+
+# File di progetto/workpackage
+*.txt
+
+# Dati sensibili e generati
+data/keys/*.pem
+data/receipts/*.json
+data/voters.json
+data/bulletin_board.json
+
+# Python
 __pycache__/
+*.pyc
+*.pyo
+
+# Ambiente virtuale
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Altro
+.env
 *.db
-keys/private.pem
 .vscode/

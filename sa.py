@@ -3,7 +3,7 @@
 import os
 import json
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from flask import Flask, request, jsonify
 import sys
 
@@ -40,6 +40,64 @@ def load_initial_data():
     print("[SA] Pronto sulla porta 5001")
 
 
+def is_valid_unisa_email(email: str) -> bool:
+    """Verifica che l'email sia un dominio UNISA valido"""
+    email = email.strip().lower()
+    return email.endswith('@studenti.unisa.it') or email.endswith('@unisa.it')
+
+
+@app.route('/register', methods=['POST'])
+def register():
+    try:
+        req_data = request.get_json()
+        email = req_data.get('email')
+        username = req_data.get('username')
+        password = req_data.get('password')
+
+        # 1. Validazione email
+        if not email or not is_valid_unisa_email(email):
+            print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: email non valida {email}")
+            return jsonify({"error": "Email non valida. Usa un'email @studenti.unisa.it o @unisa.it"}), 400
+
+        # 2. Verifica campi obbligatori
+        if not username or not password:
+            print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: campi mancanti")
+            return jsonify({"error": "Username e password sono obbligatori"}), 400
+
+        # 3. Verifica che username non esista già
+        for v in voters_list:
+            if v['username'] == username:
+                print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: username {username} già esistente")
+                return jsonify({"error": "Username già in uso"}), 409
+
+        # 4. Verifica che email non esista già
+        for v in voters_list:
+            if 'email' in v and v['email'] == email:
+                print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: email {email} già registrata")
+                return jsonify({"error": "Email già registrata"}), 409
+
+        # 5. Crea nuovo elettore
+        new_id = f"v{len(voters_list) + 1:03d}"
+        new_voter = {
+            "id": new_id,
+            "email": email,
+            "username": username,
+            "password": password
+        }
+        voters_list.append(new_voter)
+
+        # 6. Salva lista aggiornata
+        with open("data/voters.json", "w", encoding="utf-8") as f:
+            json.dump(voters_list, f, indent=2, ensure_ascii=False)
+
+        print(f"[SA] {datetime.now().isoformat()} - Nuovo elettore registrato: {username} ({email})")
+        return jsonify({"message": "Registrazione avvenuta con successo!"}), 201
+
+    except Exception as e:
+        print(f"[SA] Errore durante registrazione: {str(e)}")
+        return jsonify({"error": "Errore interno"}), 500
+
+
 @app.route('/authenticate', methods=['POST'])
 def authenticate():
     global issued_tokens
@@ -68,8 +126,8 @@ def authenticate():
         # 3. Genera il token
         voter_id_hash = hashlib.sha256(voter['id'].encode('utf-8')).hexdigest()
         nonce = os.urandom(16).hex()
-        issued_at = datetime.utcnow().isoformat()
-        expires_at = (datetime.utcnow() + timedelta(minutes=30)).isoformat()
+        issued_at = datetime.now(UTC).isoformat()
+        expires_at = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
 
         token = {
             "election_id": election_id,
