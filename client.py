@@ -1,5 +1,21 @@
 
-#!/usr/bin/env python3
+"""
+Client dell'elettore - Interfaccia a riga di comando.
+
+Questo programma permette agli elettori di:
+1. Registrarsi con un'email UNISA valida
+2. Autenticarsi presso il Sistema di Autenticazione (SA)
+3. Esprimere un voto cifrato
+4. Salvare e visualizzare la ricevuta di voto
+5. Verificare che il proprio voto sia stato incluso nello scrutinio
+
+Il voto è cifrato con la chiave pubblica dell'Autorità Elettorale (AE)
+e viene inviato insieme a:
+- Un token di autenticazione firmato dal SA
+- Una Proof of Work per prevenire spam
+- Un seed casuale per verificare l'integrità
+"""
+
 import os
 import json
 import hashlib
@@ -13,44 +29,67 @@ from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import verify
 from crypto.merkle import verify_proof
 
-SA_URL = "http://localhost:5001"
-AE_URL = "http://localhost:5002"
+
+SA_URL = "http://localhost:5001"  # URL del Sistema di Autenticazione
+AE_URL = "http://localhost:5002"  # URL dell'Autorità Elettorale
 BULLETIN_BOARD_PATH = "data/bulletin_board.json"
 
 
 class Client:
+    """Classe che gestisce le operazioni dell'elettore."""
+
     def __init__(self):
-        self.username = None
-        self.token = None
-        self.token_signature = None
-        self.receipt = None
-        self.load_bulletin_board()
+        self.username = None  # Username dell'elettore autenticato
+        self.token = None  # Token di autenticazione (se ottenuto)
+        self.token_signature = None  # Firma del token
+        self.receipt = None  # Ricevuta di voto (se ricevuta)
+        self.load_bulletin_board()  # Carica il Bulletin Board locale
 
     def load_bulletin_board(self):
+        """
+        Carica il Bulletin Board da file locale per ottenere:
+        - La lista dei candidati
+        - La chiave pubblica di cifratura dell'AE
+        - La chiave pubblica di firma dell'AE
+        """
         with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
             self.bb = json.load(f)
-        self.init_data = self.bb[0]["data"]
-        self.candidates = self.init_data["candidates"]
+        self.init_data = self.bb[0]["data"]  # Dati di inizializzazione
+        self.candidates = self.init_data["candidates"]  # Lista candidati
         self.ae_encrypt_public = deserialize_public_key(self.init_data["ae_encrypt_public"])
         self.ae_sign_public = deserialize_public_key(self.init_data["ae_sign_public"])
 
     def solve_pow(self, enc_vote_hex: str, difficulty=4) -> str:
         """
-        Risolve la Proof of Work: trova nonce tale che SHA-256(enc_vote || nonce) ha i primi 'difficulty' bit a zero
+        Risolve la Proof of Work (PoW) per poter inviare un voto.
+
+        La PoW serve a dimostrare che l'elettore ha investito risorse computazionali,
+        prevenendo attacchi di spam automatico.
+
+        L'obiettivo è trovare un nonce tale che SHA-256(enc_vote || nonce)
+        inizi con 'difficulty' bit a zero.
+
+        Args:
+            enc_vote_hex (str): Voto cifrato in esadecimale
+            difficulty (int, optional): Numero di bit a zero richiesti. Default 4.
+
+        Returns:
+            str: Nonce valido in formato esadecimale
         """
         enc_vote_bytes = bytes.fromhex(enc_vote_hex)
         nonce = 0
         print("  Risolvendo Proof of Work...", end="", flush=True)
 
         while True:
+            # Converti il nonce in 8 byte big-endian
             nonce_bytes = nonce.to_bytes(8, byteorder='big')
             combined = enc_vote_bytes + nonce_bytes
             hash_result = hashlib.sha256(combined).digest()
 
-            # Verifica i primi 'difficulty' bit
+            # Verifica se l'hash soddisfa la difficoltà richiesta
+            valid = True
             required_zeros = difficulty // 8
             required_bits = difficulty % 8
-            valid = True
 
             for i in range(required_zeros):
                 if hash_result[i] != 0:
@@ -63,17 +102,25 @@ class Client:
                     valid = False
 
             if valid:
-                print(" ✓")
+                print(" OK")
                 return nonce_bytes.hex()
 
+            # Incrementa il nonce per il prossimo tentativo
             nonce += 1
+            # Mostra un puntino ogni 100,000 tentativi per indicare progresso
             if nonce % 100000 == 0:
                 print(".", end="", flush=True)
 
     def register(self):
+        """
+        Gestisce la registrazione di un nuovo elettore.
+
+        Richiede un'email UNISA valida, un username e una password.
+        Invia i dati al SA che verifica il dominio e salva l'utente.
+        """
         print("\n=== REGISTRAZIONE UTENTE ===")
         print("Puoi registrarti solo con un'email UNISA (@studenti.unisa.it o @unisa.it)\n")
-        
+
         email = input("Inserisci la tua email UNISA: ")
         username = input("Scegli un username: ")
         password = input("Scegli una password: ")
@@ -94,6 +141,12 @@ class Client:
             print("\nImpossibile connettersi al SA. Assicurati che sia in esecuzione.")
 
     def authenticate(self):
+        """
+        Gestisce l'autenticazione presso il SA.
+
+        Richiede username e password e, se validi, ottiene un token firmato
+        che verrà utilizzato per l'autenticazione presso l'AE.
+        """
         username = input("Inserisci username: ")
         password = input("Inserisci password: ")
 
@@ -116,39 +169,55 @@ class Client:
             print("\nImpossibile connettersi al SA. Assicurati che sia in esecuzione.")
 
     def vote(self):
+        """
+        Gestisce l'espressione del voto.
+
+        Passaggi:
+        1. Verifica che l'utente sia autenticato
+        2. Mostra la lista dei candidati
+        3. Ottiene la scelta dell'utente
+        4. Genera un seed casuale
+        5. Cifra voto e seed
+        6. Risolve la Proof of Work
+        7. Invia il voto all'AE
+        8. Salva la ricevuta ricevuta
+        """
         if not self.token:
-            print("\n❌ Devi prima autenticarti!")
+            print("\nDevi prima autenticarti!")
             return
 
-        print("\nLista candidate:")
+        # Mostra la lista dei candidati
+        print("\nLista candidati:")
         for i, candidate in enumerate(self.candidates):
             print(f"{i + 1}. {candidate}")
 
+        # Ottieni la scelta dell'utente
         choice = input("\nSeleziona il numero della lista: ")
         try:
             choice_index = int(choice) - 1
             if choice_index < 0 or choice_index >= len(self.candidates):
-                print("\n❌ Scelta non valida!")
+                print("\nScelta non valida!")
                 return
         except ValueError:
-            print("\n❌ Inserisci un numero valido!")
+            print("\nInserisci un numero valido!")
             return
 
-        # 1. Genera seed casuale e prepara il plaintext
+        # 1. Genera un seed casuale (16 byte) e prepara il plaintext
         seed = os.urandom(16)
+        # Il voto è composto da [indice_candidato][seed]
         vote_byte = choice_index.to_bytes(1, byteorder='big')
         plaintext_vote_seed = vote_byte + seed
 
-        # 2. Cifra enc_vote e enc_seed
+        # 2. Cifra sia il voto + seed che il seed separatamente
         enc_vote_bytes = encrypt(self.ae_encrypt_public, plaintext_vote_seed)
         enc_seed_bytes = encrypt(self.ae_encrypt_public, seed)
         enc_vote_hex = enc_vote_bytes.hex()
         enc_seed_hex = enc_seed_bytes.hex()
 
-        # 3. Risolvi PoW
+        # 3. Risolve la Proof of Work
         pow_nonce_hex = self.solve_pow(enc_vote_hex)
 
-        # 4. Invia voto all'AE
+        # 4. Invia il voto all'Autorità Elettorale
         try:
             response = requests.post(
                 f"{AE_URL}/vote",
@@ -165,19 +234,24 @@ class Client:
                 receipt_data = response.json()
                 self.receipt = receipt_data
 
-                # Salva ricevuta
+                # Salva la ricevuta su file
                 receipt_path = f"data/receipts/{self.username}.json"
+                # Crea la cartella se non esiste
+                os.makedirs(os.path.dirname(receipt_path), exist_ok=True)
                 with open(receipt_path, "w", encoding="utf-8") as f:
                     json.dump(receipt_data, f, indent=2, ensure_ascii=False)
 
-                print(f"\n✅ Voto espresso con successo! Ricevuta salvata in {receipt_path}")
+                print(f"\nVoto espresso con successo! Ricevuta salvata in {receipt_path}")
             else:
-                print(f"\n❌ Errore: {response.json().get('error')}")
+                print(f"\nErrore: {response.json().get('error')}")
 
         except requests.exceptions.ConnectionError:
-            print("\n❌ Impossibile connettersi all'AE. Assicurati che sia in esecuzione.")
+            print("\nImpossibile connettersi all'AE. Assicurati che sia in esecuzione.")
 
     def show_receipt(self):
+        """
+        Mostra la ricevuta di voto salvata per l'utente corrente.
+        """
         if self.username:
             receipt_path = f"data/receipts/{self.username}.json"
             if os.path.exists(receipt_path):
@@ -186,24 +260,32 @@ class Client:
                 print("\n=== RICEVUTA VOTO ===")
                 print(json.dumps(receipt, indent=2, ensure_ascii=False))
             else:
-                print("\n❌ Nessuna ricevuta trovata per questo utente.")
+                print("\nNessuna ricevuta trovata per questo utente.")
         else:
-            print("\n❌ Devi prima autenticarti!")
+            print("\nDevi prima autenticarti!")
 
     def verify_vote(self):
+        """
+        Verifica che il voto dell'utente sia stato incluso nello scrutinio.
+
+        Effettua due controlli:
+        1. Verifica che la firma della ricevuta sia valida
+        2. Verifica che il voto sia presente nel Merkle Tree tramite la Proof
+        """
         if self.username:
             receipt_path = f"data/receipts/{self.username}.json"
             if not os.path.exists(receipt_path):
-                print("\n❌ Nessuna ricevuta trovata per questo utente.")
+                print("\nNessuna ricevuta trovata per questo utente.")
                 return
 
+            # Carica la ricevuta
             with open(receipt_path, "r", encoding="utf-8") as f:
                 receipt = json.load(f)
 
-            # Ricarica Bulletin Board per ottenere la root finale
+            # Ricarica il Bulletin Board per ottenere la Merkle Root finale
             self.load_bulletin_board()
 
-            # 1. Ottieni Merkle root finale
+            # 1. Ottieni la Merkle Root finale dal Bulletin Board
             merkle_root = None
             for block in self.bb:
                 if block['type'] == 'merkle_root':
@@ -211,10 +293,10 @@ class Client:
                     break
 
             if not merkle_root:
-                print("\n❌ Urne non ancora chiuse e scrutinio non eseguito.")
+                print("\nUrne non ancora chiuse e scrutinio non eseguito.")
                 return
 
-            # 2. Verifica firma della ricevuta
+            # 2. Verifica la firma della ricevuta con la chiave pubblica dell'AE
             receipt_data_to_verify = {
                 "leaf_index": receipt['leaf_index'],
                 "enc_vote": receipt['enc_vote'],
@@ -224,10 +306,10 @@ class Client:
             receipt_signature = bytes.fromhex(receipt['ae_signature'])
 
             if not verify(self.ae_sign_public, receipt_json, receipt_signature):
-                print("\n❌ Verifica firma ricevuta fallita!")
+                print("\nVerifica firma ricevuta fallita!")
                 return
 
-            # 3. Ottieni il record della scheda dal Bulletin Board per calcolare la foglia
+            # 3. Ottieni il record del voto dal Bulletin Board per calcolare la foglia
             vote_record = None
             for block in self.bb:
                 if block['type'] == 'vote' and block['data']['enc_vote'] == receipt['enc_vote']:
@@ -235,23 +317,26 @@ class Client:
                     break
 
             if not vote_record:
-                print("\n❌ Scheda non trovata nel Bulletin Board!")
+                print("\nScheda non trovata nel Bulletin Board!")
                 return
 
-            # 4. Calcola hash della foglia e verifica Merkle Proof
+            # 4. Calcola l'hash della foglia e verifica la Merkle Proof
             record_bytes = json.dumps(vote_record, sort_keys=True).encode('utf-8')
             leaf_hash = hashlib.sha256(record_bytes).digest()
             proof = receipt['merkle_proof']
 
             if verify_proof(leaf_hash, proof, merkle_root):
-                print("\n✅ Verifica riuscita! Il tuo voto è stato incluso correttamente.")
+                print("\nVerifica riuscita! Il tuo voto è stato incluso correttamente.")
             else:
-                print("\n❌ Verifica Merkle Proof fallita!")
+                print("\nVerifica Merkle Proof fallita!")
 
         else:
-            print("\n❌ Devi prima autenticarti!")
+            print("\nDevi prima autenticarti!")
 
     def menu(self):
+        """
+        Mostra il menu principale dell'applicazione e gestisce l'interazione con l'utente.
+        """
         while True:
             print("\n=== SISTEMA DI VOTO ELETTRONICO ===")
             print("1. Registrati (solo email UNISA)")
@@ -284,3 +369,4 @@ if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     client = Client()
     client.menu()
+

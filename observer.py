@@ -1,5 +1,22 @@
 
-#!/usr/bin/env python3
+"""
+Verifica Universale - Strumento per controllare l'integrità dell'elezione.
+
+Questo programma permette a chiunque di verificare che l'elezione
+si sia svolta correttamente, analizzando il Bulletin Board.
+
+Le verifiche effettuate sono:
+1. Verifica della firma del blocco di inizializzazione
+2. Verifica della firma del blocco con la Merkle Root
+3. Verifica della firma del blocco con i risultati dello scrutinio
+4. Ricostruzione del Merkle Tree e verifica che corrisponda alla Root pubblicata
+5. Verifica della correttezza dei voti decifrati e del conteggio aggregato
+6. Verifica delle Merkle Proof per ogni singolo voto
+
+Tutto questo è possibile grazie al fatto che il Bulletin Board è un
+registro append-only, pubblico e firmato digitalmente.
+"""
+
 import os
 import json
 import hashlib
@@ -19,14 +36,14 @@ def main():
 
     bulletin_board_path = "data/bulletin_board.json"
     if not os.path.exists(bulletin_board_path):
-        print("❌ Bulletin Board non trovato!")
+        print("Bulletin Board non trovato!")
         return
 
     with open(bulletin_board_path, "r", encoding="utf-8") as f:
         bb = json.load(f)
 
     if len(bb) < 3:  # init + votes (at least one) + merkle_root + scrutinio
-        print("❌ Scrutinio non ancora eseguito!")
+        print("Scrutinio non ancora eseguito!")
         return
 
     # Ottieni i dati iniziali
@@ -42,9 +59,9 @@ def main():
     init_data_json = json.dumps(init_data, sort_keys=True).encode('utf-8')
     init_signature = bytes.fromhex(init_block["signature"])
     if verify(ae_sign_public, init_data_json, init_signature):
-        print("✅ OK")
+        print("OK")
     else:
-        print("❌ FAIL")
+        print("FAIL")
         all_passed = False
 
     # 2. Ottieni blocco merkle_root e verifica firma
@@ -55,16 +72,16 @@ def main():
             break
 
     if not merkle_root_block:
-        print("\n2. Verifica firma blocco merkle_root... ❌ FAIL (blocco non trovato)")
+        print("\n2. Verifica firma blocco merkle_root... FAIL (blocco non trovato)")
         all_passed = False
     else:
         print("\n2. Verifica firma blocco merkle_root... ", end="")
         root_data_json = json.dumps(merkle_root_block["data"], sort_keys=True).encode('utf-8')
         root_signature = bytes.fromhex(merkle_root_block["signature"])
         if verify(ae_sign_public, root_data_json, root_signature):
-            print("✅ OK")
+            print("OK")
         else:
-            print("❌ FAIL")
+            print("FAIL")
             all_passed = False
 
     merkle_root = merkle_root_block["data"]["merkle_root"] if merkle_root_block else None
@@ -77,16 +94,16 @@ def main():
             break
 
     if not scrutinio_block:
-        print("\n3. Verifica firma blocco scrutinio... ❌ FAIL (blocco non trovato)")
+        print("\n3. Verifica firma blocco scrutinio... FAIL (blocco non trovato)")
         all_passed = False
     else:
         print("\n3. Verifica firma blocco scrutinio... ", end="")
         scrutinio_data_json = json.dumps(scrutinio_block["data"], sort_keys=True).encode('utf-8')
         scrutinio_signature = bytes.fromhex(scrutinio_block["signature"])
         if verify(ae_sign_public, scrutinio_data_json, scrutinio_signature):
-            print("✅ OK")
+            print("OK")
         else:
-            print("❌ FAIL")
+            print("FAIL")
             all_passed = False
 
     scrutinio_data = scrutinio_block["data"] if scrutinio_block else None
@@ -102,9 +119,9 @@ def main():
             reconstructed_tree.add_leaf(record_bytes)
 
         if reconstructed_tree.get_root() == merkle_root:
-            print("✅ OK")
+            print("OK")
         else:
-            print("❌ FAIL")
+            print("FAIL")
             all_passed = False
 
         # 5. Verifica ogni voto nel blocco scrutinio
@@ -129,7 +146,7 @@ def main():
             vote_byte = vote_index.to_bytes(1, byteorder='big')
             plaintext_reconstructed = vote_byte + seed_bytes
 
-            # Verifica che cifrando di nuovo (con OAEP probabilistico, non funziona! Quindi invece decifriamo)
+            # Verifica che decifrando il voto corrisponda al plaintext ricostruito
             enc_vote_bytes = bytes.fromhex(enc_vote_hex)
             decrypted = decrypt(ae_encrypt_private, enc_vote_bytes)
 
@@ -140,10 +157,10 @@ def main():
 
         # Verifica che il conteggio aggregato corrisponda
         if votes_ok and verified_counts == scrutinio_data["risultato_aggregato"]:
-            print("✅ OK")
+            print("OK")
             print(f"   Conteggio verificato: {verified_counts}")
         else:
-            print("❌ FAIL")
+            print("FAIL")
             all_passed = False
 
     # 6. Verifica Merkle Proof per ogni voto (usando l'albero ricostruito)
@@ -161,20 +178,21 @@ def main():
                 break
 
         if proofs_ok:
-            print("✅ OK")
+            print("OK")
         else:
-            print("❌ FAIL")
+            print("FAIL")
             all_passed = False
     else:
-        print("⏭️ Saltato (nessun voto)")
+        print("Saltato (nessun voto)")
 
     print("\n=== RISULTATO FINALE ===")
     if all_passed:
-        print("✅ TUTTE LE VERIFICHE SONO RIUSCITE! L'elezione è valida.")
+        print("TUTTE LE VERIFICHE SONO RIUSCITE! L'elezione è valida.")
     else:
-        print("❌ ALCUNE VERIFICHE HANNO FALLITO! L'elezione potrebbe essere stata manipolata.")
+        print("ALCUNE VERIFICHE HANNO FALLITO! L'elezione potrebbe essere stata manipolata.")
 
 
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     main()
+
