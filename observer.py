@@ -193,6 +193,11 @@ def main() -> None:
     else:
         print("ALCUNE VERIFICHE HANNO FALLITO! L'elezione potrebbe essere stata manipolata.")
 
+    try:
+        input("\nPremi Invio per chiudere...")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
 
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))

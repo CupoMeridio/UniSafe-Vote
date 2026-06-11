@@ -37,6 +37,8 @@ from crypto.merkle import MerkleTree
 
 app = Flask(__name__)
 
+# Rimossa la gestione complessa di SHUTDOWN_TOKEN per semplicità locale
+
 # Stato interno del server (in memoria)
 merkle_tree = MerkleTree()  # Albero di Merkle per i voti
 used_tokens: Set[str] = set()  # Set di identificatori di token già usati
@@ -362,6 +364,14 @@ def status():
         "votes_received": len(used_tokens),
         "urn_open": urn_open
     }), 200
+
+
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    """Termina il server AE in modo controllato (adatto all'uso locale)."""
+    import threading
+    threading.Timer(0.5, lambda: os._exit(0)).start()
+    return jsonify({"status": "shutting down"}), 200
 
 
 if __name__ == "__main__":

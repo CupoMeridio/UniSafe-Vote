@@ -106,3 +106,26 @@ Oppure usa un tool come Postman o scrivi un piccolo script Python.
 ```bash
 python observer.py
 ```
+
+### Shutdown dei server (SA / AE)
+
+I server espongono un endpoint sicuro `/shutdown` che permette di fermarli in modo controllato.
+
+- Per motivi di sicurezza è possibile impostare la variabile d'ambiente `SHUTDOWN_TOKEN` su entrambe le macchine (SA e AE). Se impostata, il server richiede che la richiesta includa l'header `X-SHUTDOWN-TOKEN` con lo stesso valore.
+- Se `SHUTDOWN_TOKEN` non è impostato, il server accetta la richiesta di shutdown solo se proviene da `localhost`.
+
+Esempi (da eseguire sulla macchina locale):
+
+```bash
+# Shutdown senza token (solo localhost)
+curl -X POST http://localhost:5001/shutdown
+curl -X POST http://localhost:5002/shutdown
+
+# Shutdown con token
+export SHUTDOWN_TOKEN=s3cr3t  # Linux/macOS
+# Windows (PowerShell): $env:SHUTDOWN_TOKEN = 's3cr3t'
+curl -X POST -H "X-SHUTDOWN-TOKEN: s3cr3t" http://localhost:5001/shutdown
+curl -X POST -H "X-SHUTDOWN-TOKEN: s3cr3t" http://localhost:5002/shutdown
+```
+
+Nota: il `main.py` può essere configurato per inviare queste richieste automaticamente all'uscita per chiudere le finestre dei server se sono state avviate esternamente.

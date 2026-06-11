@@ -24,12 +24,51 @@ import sys
 import time
 from typing import Optional
 import requests
+import platform
 
 SA_PROCESS: Optional[subprocess.Popen] = None  # Riferimento al processo del server SA (Sistema di Autenticazione)
 AE_PROCESS: Optional[subprocess.Popen] = None  # Riferimento al processo del server AE (Autorità Elettorale)
 SA_URL = "http://localhost:5001"  # URL di base per connettersi al server SA
 AE_URL = "http://localhost:5002"  # URL di base per connettersi al server AE
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))  # Percorso assoluto della cartella del progetto
+
+def launch_in_new_terminal(script_name: str) -> Optional[subprocess.Popen]:
+    """
+    Avvia uno script Python in una nuova finestra di terminale.
+    Supporta Windows, macOS e Linux.
+    """
+    python_exe = sys.executable
+    script_path = os.path.join(PROJECT_DIR, script_name)
+    current_os = platform.system()
+
+    if current_os == "Windows":
+        # Su Windows, usiamo CREATE_NEW_CONSOLE per aprire un vero prompt separato
+        # e conservare il riferimento al processo Popen.
+        return subprocess.Popen(
+            [python_exe, script_path],
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            cwd=PROJECT_DIR
+        )
+    elif current_os == "Darwin":  # macOS
+        # Su macOS usiamo AppleScript per dire a Terminal di eseguire lo script.
+        # osascript terminerà subito, ma la finestra del Terminale rimarrà aperta.
+        cmd = f'tell application "Terminal" to do script "{python_exe} \\"{script_path}\\""'
+        subprocess.Popen(["osascript", "-e", cmd])
+        return None
+    else:  # Linux / Unix
+        # Cerchiamo un emulatore di terminale comune installato
+        terminals = ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"]
+        for term in terminals:
+            try:
+                if term == "gnome-terminal":
+                    subprocess.Popen([term, "--", python_exe, script_path], cwd=PROJECT_DIR)
+                else:
+                    subprocess.Popen([term, "-e", f"{python_exe} {script_path}"], cwd=PROJECT_DIR)
+                return None
+            except FileNotFoundError:
+                continue
+        print(f"Errore: Nessun emulatore di terminale trovato. Esegui 'python {script_name}' manualmente.")
+        return None
 
 # Utilità utilizzata per stampare un titolo con un banner
 def print_header(title: str) -> None:
@@ -41,6 +80,17 @@ def print_header(title: str) -> None:
 def print_explanation(text: str) -> None:
     print(f"\n{text}")
     print("-" * 70)
+
+
+def clear_screen() -> None:
+    """
+    Pulisce lo schermo del terminale in modo cross-platform.
+    Evita l'accumulo di output quando il menu viene ridisegnato.
+    """
+    if os.name == 'nt':
+        os.system('cls')
+    else:
+        os.system('clear')
 
 
 def check_server_running(url: str) -> bool:
@@ -96,16 +146,9 @@ def start_sa() -> None:
     """
     Avvia il Sistema di Autenticazione (SA) su un nuovo terminale.
     
-    Questa funzione è un wrapper che esegue `sa.py` per avviare il server Flask di SA sulla porta 5001 in un nuovo terminale PowerShell. Prima dell'avvio viene visualizzato un messaggio esplicativo sulle funzionalità del SA.
-    
-    Il SA (in sa.py) gestisce:
-    - Registrazione di nuovi elettori con validazione email UNISA
-    - Autenticazione degli elettori e emissione di token firmati
-    - Verifica dell'unicità dei token
-    
-    Returns:
-        None
+    Questa funzione esegue sa.py per avviare il server Flask di SA sulla porta 5001.
     """
+    global SA_PROCESS
     if not is_election_initialized():
         print("Elezione non inizializzata. Avviare prima l'opzione 1 per inizializzare l'elezione.")
         return
@@ -121,14 +164,11 @@ Il Sistema di Autenticazione (SA) ha il compito di:
 2. Generare e firmare token di autenticazione
 3. Impedire voti multipli dallo stesso elettore
 
-Il server verrà avviato su porta 5001 in un nuovo terminale.
+Il server verrà avviato in un nuovo terminale.
     """)
     
-    subprocess.Popen(
-        ["start", "powershell", "-NoExit", "-Command", f"cd '{PROJECT_DIR}'; python sa.py"],
-        shell=True,
-        cwd=PROJECT_DIR
-    )
+    # Avvia il server SA in una nuova finestra
+    SA_PROCESS = launch_in_new_terminal("sa.py")
     
     if wait_for_server(SA_URL, "SA"):
         print("SA avviato con successo!")
@@ -138,18 +178,9 @@ def start_ae() -> None:
     """
     Avvia l'Autorità Elettorale (AE) su un nuovo terminale.
     
-    Questa funzione è un wrapper che esegue `ae.py` per avviare il server Flask di AE sulla porta 5002 in un nuovo terminale PowerShell.
-    Prima dell'avvio viene visualizzato un messaggio esplicativo sulle funzionalità dell'AE.
-    
-    L'AE (in ae.py) gestisce:
-    - Ricezione e verifica dei voti cifrati
-    - Costruzione e aggiornamento del Merkle Tree
-    - Scrutinio dei voti al termine delle urne
-    - Pubblicazione dei risultati sui registri pubblici
-    
-    Returns:
-        None
+    Questa funzione esegue ae.py per avviare il server Flask di AE sulla porta 5002.
     """
+    global AE_PROCESS
     if not is_election_initialized():
         print("Elezione non inizializzata. Avviare prima l'opzione 1 per inizializzare l'elezione.")
         return
@@ -167,14 +198,11 @@ L'Autorità Elettorale (AE) ha il compito di:
 4. Calcolare il Merkle Tree
 5. Eseguire lo scrutinio quando le urne sono chiuse
 
-Il server verrà avviato su porta 5002 in un nuovo terminale.
+Il server verrà avviato in un nuovo terminale.
     """)
     
-    subprocess.Popen(
-        ["start", "powershell", "-NoExit", "-Command", f"cd '{PROJECT_DIR}'; python ae.py"],
-        shell=True,
-        cwd=PROJECT_DIR
-    )
+    # Avvia il server AE in una nuova finestra
+    AE_PROCESS = launch_in_new_terminal("ae.py")
     
     if wait_for_server(AE_URL, "AE"):
         print("AE avviato con successo!")
@@ -250,18 +278,6 @@ Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente
 def open_client() -> None:
     """
     Apri il client votante in un nuovo terminale.
-    
-    Questa funzione è un wrapper che esegue `client.py` per avviare il client votante in un nuovo terminale PowerShell.
-    
-    Il client votante (in client.py) permette a un elettore di:
-    - Registrarsi con un'email UNISA valida
-    - Autenticarsi presso il SA
-    - Esprimere il proprio voto cifrato
-    - Salvare una ricevuta digitale
-    - Verificare l'inclusione del voto
-    
-    Returns:
-        None
     """
     print_header("CLIENT VOTANTE")
     print_explanation("""
@@ -276,11 +292,7 @@ Il client votante permette di:
 Verrà aperto un nuovo terminale per il client.
     """)
     input("Premi Invio per aprire il client...")
-    subprocess.Popen(
-        ["start", "powershell", "-NoExit", "-Command", f"cd '{PROJECT_DIR}'; python client.py"],
-        shell=True,
-        cwd=PROJECT_DIR
-    )
+    launch_in_new_terminal("client.py")
 
 
 def close_election() -> None:
@@ -319,14 +331,14 @@ Quando le urne vengono chiuse:
     try:
         # Invia una richiesta POST all'endpoint /close dell'AE per chiudere le urne
         response = requests.post(AE_URL + '/close', timeout=10)
-
+ 
         # Se il server risponde con codice 200, la chiusura e lo scrutinio sono andati a buon fine
         if response.status_code == 200:
             # Estrae il contenuto JSON della risposta
             result = response.json()
             print("\nScrutinio completato!")
             print("\nRISULTATO ELEZIONE:")
-
+ 
             # Stampa il risultato per ogni candidato presente nel JSON di risposta
             for candidate, votes in result['result'].items():
                 print(f"   {candidate}: {votes} voti")
@@ -336,22 +348,11 @@ Quando le urne vengono chiuse:
     except Exception as e:
         # Se la richiesta non riesce per qualsiasi motivo (server non raggiungibile, timeout, ecc.)
         print(f"Impossibile chiudere le urne: {str(e)}")
-
-
+ 
+ 
 def run_observer() -> None:
     """
     Esegue la verifica universale dell'elezione.
-    
-    Questa funzione è un wrapper che esegue `observer.py` per avviare l'observer in un nuovo terminale PowerShell.
-    
-    L'Observer (in observer.py) permette a chiunque di verificare l'integrità dell'elezione analizzando il Bulletin Board e controlla:
-    - La firma digitale di tutti i blocchi
-    - L'integrità del Merkle Tree
-    - La correttezza dello scrutinio
-    - La corrispondenza tra voti cifrati e chiari
-    
-    Returns:
-        None
     """
     print_header("VERIFICA UNIVERSALE (OBSERVER)")
     print_explanation("""
@@ -359,15 +360,11 @@ L'Observer permette di verificare:
 1. L'integrità del Bulletin Board
 2. La correttezza dello scrutinio
 3. Che tutti i voti siano stati conteggiati
-
+ 
 Verrà aperto un nuovo terminale per eseguire la verifica.
     """)
     input("Premi Invio per eseguire la verifica...")
-    subprocess.Popen(
-        ["start", "powershell", "-NoExit", "-Command", f"cd '{PROJECT_DIR}'; python observer.py"],
-        shell=True,
-        cwd=PROJECT_DIR
-    )
+    launch_in_new_terminal("observer.py")
 
 
 def main_menu() -> None:
@@ -387,6 +384,7 @@ def main_menu() -> None:
     Il ciclo continua finché l'utente non sceglie l'opzione '0' (esci).
     """
     while True:
+        clear_screen()
         print("\n" + "="*70)
         print("                   UNISAFE-VOTE - PANNELLO DI CONTROLLO")
         print("="*70)
@@ -434,9 +432,42 @@ def main_menu() -> None:
         input("\nPremi Invio per tornare al menu...")
 
 
+def stop_processes() -> None:
+    """
+    Termina i processi SA e AE avviati da questo programma.
+    """
+    global SA_PROCESS, AE_PROCESS
+    
+    # Invia richiesta di shutdown via HTTP agli endpoint /shutdown (per macOS/Linux/Windows)
+    for url in (SA_URL, AE_URL):
+        try:
+            requests.post(url + '/shutdown', timeout=2)
+        except Exception:
+            # Ignora errori di connessione (es. server già spento o non in esecuzione)
+            pass
+
+    # Su Windows, termina i processi associati alla console aperta
+    for name, proc in (('SA', SA_PROCESS), ('AE', AE_PROCESS)):
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+            except Exception:
+                pass
+
+    SA_PROCESS = None
+    AE_PROCESS = None
+
+
 if __name__ == "__main__":
     os.chdir(PROJECT_DIR)
     try:
         main_menu()
     except KeyboardInterrupt:
         print("\n\nArrivederci!")
+    finally:
+        stop_processes()

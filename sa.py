@@ -33,6 +33,8 @@ from crypto.rsa_pss import sign
 
 app = Flask(__name__)
 
+# Rimossa la gestione complessa di SHUTDOWN_TOKEN per semplicità locale
+
 # Stato interno del server (in memoria)
 issued_tokens: Set[str] = set()  # Set di ID elettori a cui è già stato emesso un token
 sa_sign_private: Optional[RSAPrivateKey] = None  # Chiave privata del SA per firmare i token
@@ -215,8 +217,9 @@ def authenticate():
         }
 
         # 4. Firma il token con la chiave privata del SA
-        token_json = json.dumps(token, sort_keys=True).encode('utf-8')
-        signature = sign(sa_sign_private, token_json)
+        token_json_str = json.dumps(token, sort_keys=True)
+        token_json_bytes = token_json_str.encode('utf-8')
+        signature = sign(sa_sign_private, token_json_bytes)
 
         # 5. Registra l'elettore come servito (non potrà votare di nuovo)
         issued_tokens.add(voter["id"])
@@ -224,7 +227,7 @@ def authenticate():
         print(f"[SA] {datetime.now().isoformat()} - Token emesso per voter_id: {voter['id']} (username: {username})")
 
         return jsonify({
-            "token": json.dumps(token),
+            "token": token_json_str,
             "signature": signature.hex()
         }), 200
 
@@ -245,6 +248,14 @@ def status():
         "tokens_issued": len(issued_tokens),
         "voters_served": list(issued_tokens)
     }), 200
+
+
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    """Termina il server SA in modo controllato (adatto all'uso locale)."""
+    import threading
+    threading.Timer(0.5, lambda: os._exit(0)).start()
+    return jsonify({"status": "shutting down"}), 200
 
 
 if __name__ == "__main__":
