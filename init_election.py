@@ -1,9 +1,25 @@
 
 #!/usr/bin/env python3
+"""
+Script di inizializzazione di un'elezione.
+
+Questo programma prepara tutti i dati necessari per avviare un'elezione:
+1. Genera le coppie di chiavi RSA per il Sistema di Autenticazione (SA) e l'Autorità Elettorale (AE)
+2. Crea il Bulletin Board (registro pubblico) con i parametri iniziali dell'elezione
+3. Configura la lista degli elettori autorizzati
+
+Il Bulletin Board è un registro append-only che contiene:
+- I parametri dell'elezione (ID, candidati, tempi)
+- Le chiavi pubbliche di SA e AE
+- Tutti i voti ricevuti (in forma cifrata)
+- La Merkle Root per l'integrità
+- I risultati finali dello scrutinio
+"""
 import os
 import json
 import hashlib
 from datetime import datetime, timedelta, UTC
+from typing import List, Dict
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -12,7 +28,7 @@ from crypto.keys import generate_rsa_keypair, save_keypair, serialize_public_key
 from crypto.rsa_pss import sign
 
 
-def get_preconfigured_voters():
+def get_preconfigured_voters() -> List[Dict[str, str]]:
     """Restituisce la lista preconfigurata di elettori"""
     return [
         {"id": "v001", "email": "mario.rossi@studenti.unisa.it", "username": "mario.rossi", "password": "password123"},
@@ -23,7 +39,7 @@ def get_preconfigured_voters():
     ]
 
 
-def create_custom_voters():
+def create_custom_voters() -> List[Dict[str, str]]:
     """Permette all'amministratore di creare una lista personalizzata di elettori"""
     print("\nCREAZIONE LISTA ELETTORI PERSONALIZZATA")
     print("-" * 40)
@@ -52,7 +68,7 @@ def create_custom_voters():
     return voters
 
 
-def main():
+def main() -> None:
     print("FASE 1: INIZIALIZZAZIONE ELEZIONE")
 
     # 1. Genera tre coppie di chiavi RSA-2048

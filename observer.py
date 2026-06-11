@@ -21,6 +21,8 @@ import os
 import json
 import hashlib
 import sys
+from typing import Optional, List, Dict
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey, RSAPrivateKey
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -31,7 +33,7 @@ from crypto.merkle import MerkleTree, verify_proof
 from cryptography.hazmat.primitives import serialization
 
 
-def main():
+def main() -> None:
     print("=== VERIFICA UNIVERSALE ===")
 
     bulletin_board_path = "data/bulletin_board.json"

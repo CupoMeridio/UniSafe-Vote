@@ -14,11 +14,12 @@ Questo modulo viene utilizzato:
 """
 
 from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
 
 
-def sign(private_key, message_bytes):
+def sign(private_key: RSAPrivateKey, message_bytes: bytes) -> bytes:
     """
     Firma un messaggio con RSA-PSS.
 
@@ -43,7 +44,7 @@ def sign(private_key, message_bytes):
     )
 
 
-def verify(public_key, message_bytes, signature_bytes):
+def verify(public_key: RSAPublicKey, message_bytes: bytes, signature_bytes: bytes) -> bool:
     """
     Verifica la validità di una firma RSA-PSS.
 

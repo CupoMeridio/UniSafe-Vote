@@ -21,6 +21,8 @@ import json
 import hashlib
 import requests
 import sys
+from typing import Optional, List, Dict, Any
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -30,22 +32,27 @@ from crypto.rsa_pss import verify
 from crypto.merkle import verify_proof
 
 
-SA_URL = "http://localhost:5001"  # URL del Sistema di Autenticazione
-AE_URL = "http://localhost:5002"  # URL dell'Autorità Elettorale
-BULLETIN_BOARD_PATH = "data/bulletin_board.json"
+SA_URL: str = "http://localhost:5001"  # URL del Sistema di Autenticazione
+AE_URL: str = "http://localhost:5002"  # URL dell'Autorità Elettorale
+BULLETIN_BOARD_PATH: str = "data/bulletin_board.json"
 
 
 class Client:
     """Classe che gestisce le operazioni dell'elettore."""
 
     def __init__(self):
-        self.username = None  # Username dell'elettore autenticato
-        self.token = None  # Token di autenticazione (se ottenuto)
-        self.token_signature = None  # Firma del token
-        self.receipt = None  # Ricevuta di voto (se ricevuta)
+        self.username: Optional[str] = None  # Username dell'elettore autenticato
+        self.token: Optional[str] = None  # Token di autenticazione (se ottenuto)
+        self.token_signature: Optional[str] = None  # Firma del token
+        self.receipt: Optional[Dict] = None  # Ricevuta di voto (se ricevuta)
+        self.bb: List[Dict] = []  # Bulletin Board caricato da file
+        self.init_data: Dict = {}  # Dati di inizializzazione
+        self.candidates: List[str] = []  # Lista candidati
+        self.ae_encrypt_public: Optional[RSAPublicKey] = None  # Chiave pubblica di cifratura AE
+        self.ae_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica di firma AE
         self.load_bulletin_board()  # Carica il Bulletin Board locale
 
-    def load_bulletin_board(self):
+    def load_bulletin_board(self) -> None:
         """
         Carica il Bulletin Board da file locale per ottenere:
         - La lista dei candidati
@@ -59,7 +66,7 @@ class Client:
         self.ae_encrypt_public = deserialize_public_key(self.init_data["ae_encrypt_public"])
         self.ae_sign_public = deserialize_public_key(self.init_data["ae_sign_public"])
 
-    def solve_pow(self, enc_vote_hex: str, difficulty=4) -> str:
+    def solve_pow(self, enc_vote_hex: str, difficulty: int = 4) -> str:
         """
         Risolve la Proof of Work (PoW) per poter inviare un voto.
 
@@ -111,7 +118,7 @@ class Client:
             if nonce % 100000 == 0:
                 print(".", end="", flush=True)
 
-    def register(self):
+    def register(self) -> None:
         """
         Gestisce la registrazione di un nuovo elettore.
 
@@ -140,7 +147,7 @@ class Client:
         except requests.exceptions.ConnectionError:
             print("\nImpossibile connettersi al SA. Assicurati che sia in esecuzione.")
 
-    def authenticate(self):
+    def authenticate(self) -> None:
         """
         Gestisce l'autenticazione presso il SA.
 
@@ -168,7 +175,7 @@ class Client:
         except requests.exceptions.ConnectionError:
             print("\nImpossibile connettersi al SA. Assicurati che sia in esecuzione.")
 
-    def vote(self):
+    def vote(self) -> None:
         """
         Gestisce l'espressione del voto.
 
@@ -248,7 +255,7 @@ class Client:
         except requests.exceptions.ConnectionError:
             print("\nImpossibile connettersi all'AE. Assicurati che sia in esecuzione.")
 
-    def show_receipt(self):
+    def show_receipt(self) -> None:
         """
         Mostra la ricevuta di voto salvata per l'utente corrente.
         """
@@ -264,7 +271,7 @@ class Client:
         else:
             print("\nDevi prima autenticarti!")
 
-    def verify_vote(self):
+    def verify_vote(self) -> None:
         """
         Verifica che il voto dell'utente sia stato incluso nello scrutinio.
 
@@ -333,7 +340,7 @@ class Client:
         else:
             print("\nDevi prima autenticarti!")
 
-    def menu(self):
+    def menu(self) -> None:
         """
         Mostra il menu principale dell'applicazione e gestisce l'interazione con l'utente.
         """

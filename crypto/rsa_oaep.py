@@ -11,11 +11,12 @@ e dall'Autorità Elettorale (AE) per decifrarli solo dopo la chiusura delle urne
 """
 
 from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
 
 
-def encrypt(public_key, plaintext_bytes):
+def encrypt(public_key: RSAPublicKey, plaintext_bytes: bytes) -> bytes:
     """
     Cifra un messaggio in bytes con RSA-OAEP.
 
@@ -41,7 +42,7 @@ def encrypt(public_key, plaintext_bytes):
     )
 
 
-def decrypt(private_key, ciphertext_bytes):
+def decrypt(private_key: RSAPrivateKey, ciphertext_bytes: bytes) -> bytes:
     """
     Decifra un messaggio cifrato con RSA-OAEP.
 

@@ -2,60 +2,48 @@
 """
 UNISAFE-VOTE - Sistema di Voto Elettronico Sicuro
 
-Questo pacchetto completa il sviluppo di un sistema di votazione elettronica basato su blockchain (Merkle Tree) con i seguenti componenti principali:
-- SA (Sistema di Autenticazione)
-- AE (Autorità Elettorale)
-- Client Votante
-- Observer (Verifica Universale)
+Questo file è il punto di ingresso principale del sistema e fornisce un menu interattivo per gestire l'intero ciclo di vita di un'elezione.
 
-L'applicazione è organizzata come un menu principale che coordina l'avvio delle componenti e permette all'amministratore di gestire l'intero ciclo di vita di un'elezione:
-1. Inizializzazione (generazione chiavi, Bulletin Board)
-2. Avvio server SA/AE
-3. Registrazione e voto degli elettori
-4. Chiusura urne e scrutinio
-5. Verifica finale dell'elezione
+Componenti principali del sistema:
+- Sistema di Autenticazione (SA): Gestisce la registrazione e l'autenticazione degli elettori
+- Autorità Elettorale (AE): Riceve i voti, gestisce il Bulletin Board e calcola i risultati
+- Client Votante: Interfaccia per gli elettori per esprimere il proprio voto
+- Observer: Strumento per la verifica universale dell'integrità dell'elezione
 
-Funzionalità chiave del menu:
-- Visualizzazione dello stato dei server (SA/AE)
-- Avvio automatico di nuovi terminali per ogni componente (via powershell)
-- Gestione dello scrutinio e pubblicazione dei risultati
-- Integrazione con i sistemi di registrazione e verifica degli elettori
-
-Questo file (`main.py`) è il punto di ingresso dell'applicazione. Mostra un menu interattivo che permette di:
+Il menu principale coordina l'avvio di questi componenti e permette all'amministratore di:
 - Inizializzare un'elezione
-- Avviare il Sistema di Autenticazione (SA) su porta 5001
-- Avviare l'Autorità Elettorale (AE) su porta 5002
+- Avviare e monitorare i server SA e AE
 - Aprire il client votante
 - Chiudere le urne e avviare lo scrutinio
 - Eseguire la verifica universale
-- Gestire lo stato dei server
 """
 
 import os
 import subprocess
 import sys
 import time
+from typing import Optional
 import requests
 
-SA_PROCESS = None
-AE_PROCESS = None
-SA_URL = "http://localhost:5001"
-AE_URL = "http://localhost:5002"
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+SA_PROCESS: Optional[subprocess.Popen] = None  # Riferimento al processo del server SA (Sistema di Autenticazione)
+AE_PROCESS: Optional[subprocess.Popen] = None  # Riferimento al processo del server AE (Autorità Elettorale)
+SA_URL = "http://localhost:5001"  # URL di base per connettersi al server SA
+AE_URL = "http://localhost:5002"  # URL di base per connettersi al server AE
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))  # Percorso assoluto della cartella del progetto
 
-
-def print_header(title):
+# Utilità utilizzata per stampare un titolo con un banner
+def print_header(title: str) -> None:
     print("\n" + "="*70)
     print(f"  {title}".center(70))
     print("="*70)
 
-
-def print_explanation(text):
+# Utilità utilizzata per stampare un testo esplicativo
+def print_explanation(text: str) -> None:
     print(f"\n{text}")
     print("-" * 70)
 
 
-def check_server_running(url):
+def check_server_running(url: str) -> bool:
     """
     Verifica se un server è in esecuzione controllando l'endpoint `/status`.
     
@@ -72,7 +60,7 @@ def check_server_running(url):
         return False
 
 
-def wait_for_server(url, server_name, timeout=15):
+def wait_for_server(url: str, server_name: str, timeout: int = 15) -> bool:
     """
     Attende che un server si avvii, mostrando un indicatore di caricamento.
     
@@ -95,15 +83,22 @@ def wait_for_server(url, server_name, timeout=15):
     return False
 
 
-def start_sa():
+def is_election_initialized() -> bool:
+    """
+    Verifica se l'elezione è stata inizializzata controllando i file di configurazione.
+    """
+    bulletin_board_path = os.path.join(PROJECT_DIR, "data", "bulletin_board.json")
+    voters_path = os.path.join(PROJECT_DIR, "data", "voters.json")
+    return os.path.exists(bulletin_board_path) and os.path.exists(voters_path)
+
+
+def start_sa() -> None:
     """
     Avvia il Sistema di Autenticazione (SA) su un nuovo terminale.
     
-    Questo avvia il server Flask di SA sulla porta 5001 in un nuovo terminale
-    PowerShell che rimane aperto dopo l'avvio (`-NoExit`). Prima dell'avvio
-    viene visualizzato un messaggio esplicativo sulle funzionalità del SA.
+    Questa funzione è un wrapper che esegue `sa.py` per avviare il server Flask di SA sulla porta 5001 in un nuovo terminale PowerShell. Prima dell'avvio viene visualizzato un messaggio esplicativo sulle funzionalità del SA.
     
-    Il SA gestisce:
+    Il SA (in sa.py) gestisce:
     - Registrazione di nuovi elettori con validazione email UNISA
     - Autenticazione degli elettori e emissione di token firmati
     - Verifica dell'unicità dei token
@@ -111,6 +106,10 @@ def start_sa():
     Returns:
         None
     """
+    if not is_election_initialized():
+        print("Elezione non inizializzata. Avviare prima l'opzione 1 per inizializzare l'elezione.")
+        return
+
     if check_server_running(SA_URL):
         print("SA già in esecuzione!")
         return
@@ -135,15 +134,14 @@ Il server verrà avviato su porta 5001 in un nuovo terminale.
         print("SA avviato con successo!")
 
 
-def start_ae():
+def start_ae() -> None:
     """
     Avvia l'Autorità Elettorale (AE) su un nuovo terminale.
     
-    Questo avvia il server Flask di AE sulla porta 5002 in un nuovo terminale
-    PowerShell che rimane aperto dopo l'avvio (`-NoExit`). Prima dell'avvio
-    viene visualizzato un messaggio esplicativo sulle funzionalità dell'AE.
+    Questa funzione è un wrapper che esegue `ae.py` per avviare il server Flask di AE sulla porta 5002 in un nuovo terminale PowerShell.
+    Prima dell'avvio viene visualizzato un messaggio esplicativo sulle funzionalità dell'AE.
     
-    L'AE gestisce:
+    L'AE (in ae.py) gestisce:
     - Ricezione e verifica dei voti cifrati
     - Costruzione e aggiornamento del Merkle Tree
     - Scrutinio dei voti al termine delle urne
@@ -152,6 +150,10 @@ def start_ae():
     Returns:
         None
     """
+    if not is_election_initialized():
+        print("Elezione non inizializzata. Avviare prima l'opzione 1 per inizializzare l'elezione.")
+        return
+
     if check_server_running(AE_URL):
         print("AE già in esecuzione!")
         return
@@ -178,17 +180,17 @@ Il server verrà avviato su porta 5002 in un nuovo terminale.
         print("AE avviato con successo!")
 
 
-def init_election():
+def init_election() -> None:
     """
     Inizializza una nuova elezione.
     
-    Questo crea tutte le coppie di chiavi RSA necessarie, genera il
-    Bulletin Board con i parametri dell'elezione e carica i dati iniziali.
-    Chiede all'amministratore se preferisce una lista preconfigurata
-    di elettori o di crearne uno personalizzato.
+    Questa funzione è un wrapper che esegue `init_election.py`, che:
+    - Crea tutte le coppie di chiavi RSA necessarie
+    - Genera il Bulletin Board con i parametri dell'elezione
+    - Carica i dati iniziali
+    - Chiede all'amministratore se preferisce una lista preconfigurata di elettori o di crearne uno personalizzato
     
-    Esegue lo script `init_election.py` che completa l'inizializzazione
-    archiviando i dati in `data/`.
+    Esegue lo script `init_election.py` che completa l'inizializzazione archiviando i dati in `data/`.
     """
     print_header("INIZIALIZZAZIONE ELEZIONE")
     print_explanation("""
@@ -207,20 +209,56 @@ Questa operazione:
     subprocess.run([sys.executable, "init_election.py"], cwd=PROJECT_DIR)
 
 
-def open_client():
+def reset_election() -> None:
+    """
+    Rimuove la configurazione attuale dell'elezione.
+
+    Questa funzione elimina i file di configurazione dell'elezione e le chiavi
+    per permettere di inizializzare una nuova elezione con chiavi diverse.
+    """
+    bulletin_board_path = os.path.join(PROJECT_DIR, "data", "bulletin_board.json")
+    voters_path = os.path.join(PROJECT_DIR, "data", "voters.json")
+    keys_dir = os.path.join(PROJECT_DIR, "data", "keys")
+
+    if not (os.path.exists(bulletin_board_path) or os.path.exists(voters_path) or os.path.isdir(keys_dir)):
+        print("Nessuna configurazione di elezione trovata da rimuovere.")
+        return
+
+    print_header("RESET CONFIGURAZIONE ELEZIONE")
+    print_explanation("""
+Questa operazione elimina i file di configurazione dell'elezione e le chiavi RSA.
+Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente nuove.
+    """)
+    confirm = input("Confermi la rimozione della configurazione dell'elezione? (s/n): ").strip().lower()
+    if confirm != 's':
+        print("Reset annullato.")
+        return
+
+    if os.path.exists(bulletin_board_path):
+        os.remove(bulletin_board_path)
+    if os.path.exists(voters_path):
+        os.remove(voters_path)
+    if os.path.isdir(keys_dir):
+        for filename in os.listdir(keys_dir):
+            file_path = os.path.join(keys_dir, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+
+    print("Configurazione elezione rimossa. È ora possibile inizializzare una nuova elezione.")
+
+
+def open_client() -> None:
     """
     Apri il client votante in un nuovo terminale.
     
-    Il client permette a un elettore di:
+    Questa funzione è un wrapper che esegue `client.py` per avviare il client votante in un nuovo terminale PowerShell.
+    
+    Il client votante (in client.py) permette a un elettore di:
     - Registrarsi con un'email UNISA valida
     - Autenticarsi presso il SA
     - Esprimere il proprio voto cifrato
     - Salvare una ricevuta digitale
     - Verificare l'inclusione del voto
-    
-    Questo avvia il client Python su un nuovo terminale PowerShell
-    tramite `subprocess.Popen` con l'opzione `-NoExit` per mantenere il
-    terminale aperto dopo l'avvio.
     
     Returns:
         None
@@ -245,18 +283,19 @@ Verrà aperto un nuovo terminale per il client.
     )
 
 
-def close_election():
+def close_election() -> None:
     """
     Chiude le urne e avvia lo scrutinio.
     
-    Questo è possibile solo se l'Autorità Elettorale (AE) è in esecuzione.
-    Il processo:
+    Questa funzione invia una richiesta POST all'AE (in esecuzione in ae.py) per chiudere le urne e avviare lo scrutinio.
+    
+    L'AE (in ae.py) esegue il seguente processo:
     1. Pubblica il Merkle Root finale sul Bulletin Board
     2. Carica la chiave privata di decifratura
     3. Decifra tutti i voti
     4. Verifica i seed per garantire l'integrità
     5. Calcola il risultato aggregato
-    5. Pubblica i risultati sul Bulletin Board
+    6. Pubblica i risultati sul Bulletin Board
     
     Returns:
         None
@@ -271,39 +310,45 @@ Quando le urne vengono chiuse:
 1. L'AE pubblica il Merkle Root finale
 2. Carica la chiave privata di decifratura
 3. Decifra tutti i voti
+4. Verifica i seed per garantire l'integrità
 5. Calcola il risultato aggregato
 6. Pubblica tutto sul Bulletin Board
     """)
     input("Premi Invio per chiudere le urne...")
     
     try:
+        # Invia una richiesta POST all'endpoint /close dell'AE per chiudere le urne
         response = requests.post(AE_URL + '/close', timeout=10)
+
+        # Se il server risponde con codice 200, la chiusura e lo scrutinio sono andati a buon fine
         if response.status_code == 200:
+            # Estrae il contenuto JSON della risposta
             result = response.json()
             print("\nScrutinio completato!")
             print("\nRISULTATO ELEZIONE:")
+
+            # Stampa il risultato per ogni candidato presente nel JSON di risposta
             for candidate, votes in result['result'].items():
                 print(f"   {candidate}: {votes} voti")
         else:
+            # In caso di errore, stampa il messaggio di errore restituito dal server
             print(f"Errore: {response.json().get('error')}")
     except Exception as e:
+        # Se la richiesta non riesce per qualsiasi motivo (server non raggiungibile, timeout, ecc.)
         print(f"Impossibile chiudere le urne: {str(e)}")
 
 
-def run_observer():
+def run_observer() -> None:
     """
     Esegue la verifica universale dell'elezione.
     
-    L'Observer permette a chiunque di verificare l'integrità dell'elezione
-    analizzando il Bulletin Board. Questoscript controlla:
+    Questa funzione è un wrapper che esegue `observer.py` per avviare l'observer in un nuovo terminale PowerShell.
+    
+    L'Observer (in observer.py) permette a chiunque di verificare l'integrità dell'elezione analizzando il Bulletin Board e controlla:
     - La firma digitale di tutti i blocchi
     - L'integrità del Merkle Tree
     - La correttezza dello scrutinio
     - La corrispondenza tra voti cifrati e chiari
-    
-    Questo avvia l'observor Python su un nuovo terminale PowerShell
-    tramite `subprocess.Popen` con l'opzione `-NoExit` per mantenere il
-    terminale aperto dopo l'avvio.
     
     Returns:
         None
@@ -325,7 +370,7 @@ Verrà aperto un nuovo terminale per eseguire la verifica.
     )
 
 
-def main_menu():
+def main_menu() -> None:
     """
     Mostra il menu principale e gestisce l'interazione con l'utente.
     
@@ -359,6 +404,7 @@ def main_menu():
         print("\nSEZIONE RISULTATI")
         print("  5. Chiudi Urne e Avvia Scrutinio")
         print("  6. Esegui Verifica Universale (Observer)")
+        print("  7. Reset configurazione elezione")
         print("\nUSCITA")
         print("  0. Esci")
         print("="*70)
@@ -377,6 +423,8 @@ def main_menu():
             close_election()
         elif choice == '6':
             run_observer()
+        elif choice == '7':
+            reset_election()
         elif choice == '0':
             print("\nArrivederci!")
             break

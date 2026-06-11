@@ -20,6 +20,8 @@ import os
 import json
 import hashlib
 from datetime import datetime, timedelta, UTC
+from typing import Optional, List, Dict, Set
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from flask import Flask, request, jsonify
 import sys
 
@@ -32,13 +34,13 @@ from crypto.rsa_pss import sign
 app = Flask(__name__)
 
 # Stato interno del server (in memoria)
-issued_tokens: set = set()  # Set di ID elettori a cui è già stato emesso un token
-sa_sign_private = None  # Chiave privata del SA per firmare i token
-voters_list = []  # Lista degli elettori (caricata da voters.json)
-election_id = ""  # ID dell'elezione (caricato dal Bulletin Board)
+issued_tokens: Set[str] = set()  # Set di ID elettori a cui è già stato emesso un token
+sa_sign_private: Optional[RSAPrivateKey] = None  # Chiave privata del SA per firmare i token
+voters_list: List[Dict[str, str]] = []  # Lista degli elettori (caricata da voters.json)
+election_id: str = ""  # ID dell'elezione (caricato dal Bulletin Board)
 
 
-def load_initial_data():
+def load_initial_data() -> None:
     """
     Carica i dati iniziali del server:
     - Chiave privata per la firma dei token

@@ -22,6 +22,8 @@ import os
 import json
 import hashlib
 from datetime import datetime, UTC
+from typing import Optional, Dict, List, Set, Literal
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from flask import Flask, request, jsonify
 import sys
 
@@ -37,16 +39,16 @@ app = Flask(__name__)
 
 # Stato interno del server (in memoria)
 merkle_tree = MerkleTree()  # Albero di Merkle per i voti
-used_tokens: set = set()  # Set di identificatori di token già usati
-urn_open = True  # Stato delle urne (True = aperte, False = chiuse)
-ae_encrypt_private = None  # Chiave privata per decifrare i voti (caricata solo a urne chiuse)
-ae_sign_private = None  # Chiave privata per firmare blocchi e ricevute
-ae_sign_public = None  # Chiave pubblica per verificare le firme
-sa_sign_public = None  # Chiave pubblica del SA per verificare i token
-bulletin_board_path = "data/bulletin_board.json"  # Percorso del Bulletin Board
+used_tokens: Set[str] = set()  # Set di identificatori di token già usati
+urn_open: bool = True  # Stato delle urne (True = aperte, False = chiuse)
+ae_encrypt_private: Optional[RSAPrivateKey] = None  # Chiave privata per decifrare i voti (caricata solo a urne chiuse)
+ae_sign_private: Optional[RSAPrivateKey] = None  # Chiave privata per firmare blocchi e ricevute
+ae_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica per verificare le firme
+sa_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica del SA per verificare i token
+bulletin_board_path: str = "data/bulletin_board.json"  # Percorso del Bulletin Board
 
 
-def load_initial_data():
+def load_initial_data() -> None:
     """
     Carica i dati iniziali del server:
     - Chiavi di firma dell'AE
@@ -68,7 +70,7 @@ def load_initial_data():
     print("[AE] Pronto sulla porta 5002")
 
 
-def append_to_bulletin_board(block_type, block_data):
+def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", "scrutinio"], block_data: Dict) -> Dict:
     """
     Appende un nuovo blocco firmato al Bulletin Board.
 
@@ -109,7 +111,7 @@ def append_to_bulletin_board(block_type, block_data):
     return new_block
 
 
-def verify_pow(enc_vote_hex: str, pow_nonce_hex: str, difficulty=4) -> bool:
+def verify_pow(enc_vote_hex: str, pow_nonce_hex: str, difficulty: int = 4) -> bool:
     """
     Verifica la Proof of Work (PoW) inviata dal client.
 

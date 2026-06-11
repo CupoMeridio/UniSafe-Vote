@@ -1,7 +1,18 @@
 
 # Sistema di Voto Elettronico Sicuro
 
-Proof of Concept di un sistema di voto elettronico sicuro basato sul protocollo definito nel WP2.
+Proof of Concept di un sistema di voto elettronico sicuro.
+
+## Componenti del Sistema
+
+Il sistema è composto dai seguenti moduli:
+
+- **Sistema di Autenticazione (SA)**: Gestisce la registrazione e l'autenticazione degli elettori, emettendo token firmati.
+- **Autorità Elettorale (AE)**: Riceve e verifica i voti cifrati, gestisce il Bulletin Board e calcola i risultati finali.
+- **Client Votante**: Interfaccia per gli elettori per autenticarsi, esprimere il voto e salvare la ricevuta digitale.
+- **Observer**: Strumento per la verifica universale dell'integrità dell'elezione analizzando il Bulletin Board.
+- **Moduli Crittografici**: Forniscono le primitive crittografiche necessarie (RSA-OAEP per cifratura, RSA-PSS per firme digitali, Merkle Tree per l'integrità dei dati).
+- **Main Menu**: Punto di ingresso principale che coordina l'avvio di tutti i componenti.
 
 ## Struttura del Progetto
 
@@ -9,7 +20,7 @@ Proof of Concept di un sistema di voto elettronico sicuro basato sul protocollo 
 voting-system/
 ├── crypto/
 │   ├── __init__.py
-│   ├── keys.py          # Generazione e gestione chiavi RSA
+│   ├── keys.py          # Gestione delle chiavi RSA
 │   ├── rsa_oaep.py      # Cifratura/decifratura RSA-OAEP
 │   ├── rsa_pss.py       # Firma/verifica RSA-PSS
 │   └── merkle.py        # Merkle Tree e prove di inclusione
@@ -23,6 +34,7 @@ voting-system/
 ├── client.py            # Client CLI per il voto
 ├── observer.py          # Verifica universale
 ├── init_election.py     # Script di inizializzazione
+├── main.py              # Menu principale
 └── requirements.txt     # Dipendenze
 ```
 
@@ -34,7 +46,8 @@ cd UniSafe-Vote
 python -m venv venv
 
 # Windows
-venv\Scripts\activate
+venv\Scripts\activate  #cmd
+.\venv\Scripts\Activate.ps1  #powershell
 
 # Linux/Mac
 source venv/bin/activate

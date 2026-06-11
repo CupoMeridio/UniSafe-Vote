@@ -16,7 +16,7 @@ che ciò venga rilevato.
 """
 
 import hashlib
-from typing import List, Dict
+from typing import List, Dict, Literal
 
 
 class MerkleTree:
@@ -67,7 +67,7 @@ class MerkleTree:
         # Restituisci l'indice della nuova foglia
         return len(self.leaves) - 1
 
-    def _rebuild_tree(self):
+    def _rebuild_tree(self) -> None:
         """
         Ricostruisce l'intero albero partendo dalle foglie.
 
@@ -111,7 +111,7 @@ class MerkleTree:
         # La radice è l'unico elemento dell'ultimo livello
         return self.levels[-1][0].hex()
 
-    def get_proof(self, leaf_index: int) -> List[Dict]:
+    def get_proof(self, leaf_index: int) -> List[Dict[Literal["hash", "position"], str]]:
         """
         Genera una Merkle Proof per una foglia specifica.
 
@@ -152,7 +152,7 @@ class MerkleTree:
         return proof
 
 
-def verify_proof(leaf_hash: bytes, proof: List[Dict], root_hex: str) -> bool:
+def verify_proof(leaf_hash: bytes, proof: List[Dict[Literal["hash", "position"], str]], root_hex: str) -> bool:
     """
     Verifica una Merkle Proof senza bisogno dell'intero albero.
 

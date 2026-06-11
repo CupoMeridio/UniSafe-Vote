@@ -10,12 +10,14 @@ Questo modulo si occupa di:
 """
 
 import os
+from typing import Tuple
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
 
-def generate_rsa_keypair(key_size=2048):
+def generate_rsa_keypair(key_size: int = 2048) -> Tuple[RSAPrivateKey, RSAPublicKey]:
     """
     Genera una coppia di chiavi RSA (pubblica e privata).
 
@@ -39,7 +41,7 @@ def generate_rsa_keypair(key_size=2048):
     return private_key, public_key
 
 
-def save_keypair(private_key, public_key, name, base_path="data/keys"):
+def save_keypair(private_key: RSAPrivateKey, public_key: RSAPublicKey, name: str, base_path: str = "data/keys") -> None:
     """
     Salva una coppia di chiavi in file separati in formato PEM.
 
@@ -74,7 +76,7 @@ def save_keypair(private_key, public_key, name, base_path="data/keys"):
         f.write(public_pem)
 
 
-def load_private_key(name, base_path="data/keys"):
+def load_private_key(name: str, base_path: str = "data/keys") -> RSAPrivateKey:
     """
     Carica una chiave privata da un file PEM.
 
@@ -95,7 +97,7 @@ def load_private_key(name, base_path="data/keys"):
     return private_key
 
 
-def load_public_key(name, base_path="data/keys"):
+def load_public_key(name: str, base_path: str = "data/keys") -> RSAPublicKey:
     """
     Carica una chiave pubblica da un file PEM.
 
@@ -115,7 +117,7 @@ def load_public_key(name, base_path="data/keys"):
     return public_key
 
 
-def serialize_public_key(public_key):
+def serialize_public_key(public_key: RSAPublicKey) -> str:
     """
     Serializza una chiave pubblica in una stringa PEM.
 
@@ -134,7 +136,7 @@ def serialize_public_key(public_key):
     ).decode('utf-8')
 
 
-def deserialize_public_key(pem_str):
+def deserialize_public_key(pem_str: str) -> RSAPublicKey:
     """
     Deserializza una chiave pubblica da una stringa PEM.
 
