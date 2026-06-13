@@ -387,13 +387,14 @@ class Client:
 
     def verify_vote(self) -> None:
         """
-        Verifica che il voto dell'utente sia stato incluso nello scrutinio.
+        Verifica che il voto dell'utente sia stato incluso e non modificato nello scrutinio.
 
-        Effettua tre controlli (WP2 Fase 5 - Verifica individuale):
+        Effettua cinque controlli completi (WP2/3 Fase 5 - Verifica individuale):
         1. Verifica che la firma della ricevuta sia valida
         2. Verifica che il voto sia incluso nel Merkle Tree tramite la Proof
-        3. Verifica che la scheda sia stata utilizzata nello scrutinio,
-           individuando la propria enc_vote tra i voti verificati pubblicati
+        3. Individua il voto nel blocco 'scrutinio'
+        4. CRITTOGRAFICO: Riesegue RSA-OAEP (con seed pubblicato) per confrontare con enc_vote originale
+        5. Mostra il risultato finale
         """
         if self.username:
             receipt_path = f"data/receipts/{self.username}.json"
@@ -453,9 +454,7 @@ class Client:
                 print("\nVerifica Merkle Proof fallita!")
                 return
 
-            # 5. Verifica che la scheda sia stata utilizzata nello scrutinio:
-            #    la propria enc_vote deve comparire tra i voti verificati
-            #    pubblicati nel blocco scrutinio (WP2 Fase 5).
+            # 5. Ottieni blocco 'scrutinio'
             scrutinio_data = None
             for block in self.bb:
                 if block['type'] == 'scrutinio':
@@ -472,11 +471,49 @@ class Client:
                 None
             )
 
-            if matching:
-                print("\nVerifica riuscita! Il tuo voto è stato incluso e conteggiato nello scrutinio.")
-                print(f"   Voto in chiaro pubblicato per la tua scheda: {matching.get('voto_chiaro')}")
-            else:
+            if not matching:
                 print("\nLa tua scheda è nel Merkle Tree ma non risulta tra i voti scrutinati!")
+                return
+
+            # 6. CRITTOGRAFICO: Riesegui RSA-OAEP usando seed pubblicato e voto in chiaro
+            print("\n--- VERIFICA CRITTOGRAFICA (WP2 Fase 5) ---")
+            print(f"Voto in chiaro pubblicato: {matching.get('voto_chiaro')}")
+            print(f"Seed pubblicato: {matching.get('seed')[:30]}...")
+
+            # Converti voto chiaro e seed in bytes
+            voto_chiaro_str = matching.get('voto_chiaro')
+            if voto_chiaro_str == "Scheda nulla":
+                print("\nNota: Questa è una scheda nulla, non verifichiamo la corrispondenza crittografica (non abbiamo un indice di candidato valido).")
+                # Ma gli altri controlli sono già passati (Firma ricevuta, Merkle Proof, incluso nel scrutinio)
+            else:
+                voto_chiaro_index = int(candidates.index(voto_chiaro_str))  # indice (es: 0,1,2)
+                voto_chiaro_bytes = voto_chiaro_index.to_bytes(1, byteorder='big')
+                seed_pubblicato_bytes = bytes.fromhex(matching.get('seed'))
+
+            # Only perform cryptographic verification for valid votes, not null ballots
+            if voto_chiaro_str != "Scheda nulla":
+                # Riesegui encrypt() esattamente come è stato fatto originariamente,
+                # usando AES public key e seed_pubblicato come randomness
+                enc_vote_verify_bytes = encrypt(self.ae_encrypt_public, voto_chiaro_bytes, seed=seed_pubblicato_bytes)
+                enc_vote_verify_hex = enc_vote_verify_bytes.hex()
+
+                print(f"\nEnc_vote ricevuta (client): {receipt['enc_vote'][:50]}...")
+                print(f"Enc_vote ricostruito:    {enc_vote_verify_hex[:50]}...")
+
+                if enc_vote_verify_hex != receipt['enc_vote']:
+                    print("\nERRORE CRITTOGRAFICO: I ciphertext NON corrispondono!")
+                    print("L'AE potrebbe aver modificato il tuo voto durante lo scrutinio!")
+                    return
+
+            # Tutti i controlli passati!
+            print("\n✅ Tutte le verifiche sono riuscite!")
+            print("   1. Firma ricevuta valida")
+            print("   2. Merkle Proof valida (voto incluso nel tree)")
+            print("   3. Voto presente nel blocco 'scrutinio'")
+            if voto_chiaro_str != "Scheda nulla":
+                print("   4. CRITTOGRAFICO: Ciphertext ricostruito corrisponde a quello originale")
+            print("\nVoto correttamente conteggiato e non manipolato!")
+            print(f"   Voto in chiaro pubblicato: {matching.get('voto_chiaro')}")
 
         else:
             print("\nDevi prima autenticarti!")

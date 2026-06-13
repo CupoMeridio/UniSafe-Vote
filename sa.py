@@ -21,6 +21,7 @@ import os
 import json
 from datetime import datetime, timedelta, UTC
 from typing import Optional, List, Dict, Set
+from collections import deque
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from flask import Flask, request, jsonify
 import sys
@@ -42,6 +43,12 @@ sa_sign_private: Optional[RSAPrivateKey] = None  # Chiave privata del SA per fir
 voters_list: List[Dict[str, str]] = []  # Lista degli elettori (caricata da voters.json)
 election_id: str = ""  # ID dell'elezione (caricato dal Bulletin Board)
 TOKEN_VALIDITY_MINUTES: int = 30  # Finestra di validità breve del token
+
+# Rate Limiting configuration
+RATE_LIMIT_WINDOW_SECONDS = 60  # 1 minute window
+RATE_LIMIT_MAX_REQUESTS = 10     # Max 10 requests per window per IP
+# Stores request timestamps per IP: { "127.0.0.1": deque([timestamps]) }
+rate_limit_store: Dict[str, deque] = {}
 
 
 def load_initial_data() -> None:
@@ -120,6 +127,27 @@ def is_valid_unisa_email(email: str) -> bool:
     """
     email = email.strip().lower()
     return email.endswith('@studenti.unisa.it') or email.endswith('@unisa.it')
+
+
+def check_rate_limit(ip_address: str) -> bool:
+    """
+    Check if IP address is within rate limits.
+    Returns True if request is allowed, False otherwise.
+    """
+    now = datetime.now(UTC)
+    # Clean up old timestamps first
+    if ip_address not in rate_limit_store:
+        rate_limit_store[ip_address] = deque()
+    timestamps = rate_limit_store[ip_address]
+    # Remove timestamps older than window
+    while timestamps and (now - timestamps[0]).total_seconds() > RATE_LIMIT_WINDOW_SECONDS:
+        timestamps.popleft()
+    # Check if we're still over limit
+    if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
+        return False
+    # Add current timestamp and allow
+    timestamps.append(now)
+    return True
 def append_to_bulletin_board(block_type: str, block_data: dict) -> dict:
     """Appende un nuovo blocco firmato al Bulletin Board."""
     with open("data/bulletin_board.json", "r", encoding="utf-8") as f:
@@ -160,12 +188,18 @@ def register():
         "message": "Registrazione avvenuta con successo!"
     }
 
-    Risposte di errore (400, 409):
+    Risposte di errore (400, 409, 429):
     {
         "error": "Messaggio di errore"
     }
     """
     global voters_list
+    # Check rate limit FIRST
+    client_ip = request.remote_addr
+    if not check_rate_limit(client_ip):
+        print(f"[SA] {datetime.now().isoformat()} - Rate limit exceeded for IP {client_ip} (register)")
+        return jsonify({"error": "Troppe richieste. Riprova più tardi."}), 429
+
     try:
         req_data = request.get_json()
         email = req_data.get("email")
@@ -238,12 +272,18 @@ def authenticate():
         "signature": "abc123..." // Firma RSA-PSS del token (esadecimale)
     }
 
-    Risposte di errore (401, 409):
+    Risposte di errore (401, 409, 429):
     {
         "error": "Messaggio di errore"
     }
     """
     global issued_tokens
+    # Check rate limit FIRST
+    client_ip = request.remote_addr
+    if not check_rate_limit(client_ip):
+        print(f"[SA] {datetime.now().isoformat()} - Rate limit exceeded for IP {client_ip} (authenticate)")
+        return jsonify({"error": "Troppe richieste. Riprova più tardi."}), 429
+
     try:
         req_data = request.get_json()
         username = req_data.get("username")
