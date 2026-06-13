@@ -26,15 +26,33 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from cryptography.hazmat.primitives import serialization
 from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import verify
 from crypto.merkle import verify_proof
 
 
+import hashlib
 SA_URL: str = "http://localhost:5001"  # URL del Sistema di Autenticazione
 AE_URL: str = "http://localhost:5002"  # URL dell'Autorità Elettorale
 BULLETIN_BOARD_PATH: str = "data/bulletin_board.json"
+
+
+class SecurityError(Exception):
+    """Raised when key substitution or other security violation occurs"""
+    pass
+
+
+def compute_public_key_fingerprint(pem_str: str) -> str:
+    """Compute SHA-256 fingerprint of RSA public key in PEM format"""
+    from crypto.keys import deserialize_public_key
+    pubkey = deserialize_public_key(pem_str)
+    pubkey_bytes = pubkey.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return hashlib.sha256(pubkey_bytes).hexdigest()
 
 
 class Client:
@@ -50,7 +68,18 @@ class Client:
         self.candidates: List[str] = []  # Lista candidati
         self.ae_encrypt_public: Optional[RSAPublicKey] = None  # Chiave pubblica di cifratura AE
         self.ae_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica di firma AE
-        self.load_bulletin_board()  # Carica il Bulletin Board locale
+        self.pin_ae_encrypt_fingerprint: Optional[str] = None
+        self.pin_ae_sign_fingerprint: Optional[str] = None
+
+    def _load_pins_from_bulletin_board(self):
+        """Load trusted fingerprints of AE keys from the initial bulletin board.
+        In a real system these would be hardcoded or distributed via a secure channel.
+        """
+        # In a real system these pins would be hardcoded or distributed via a secure channel
+        # For this simulation we load them after initializing an election, but in real life they are pre-shared
+        self.load_bulletin_board()
+        self.pin_ae_encrypt_fingerprint = compute_public_key_fingerprint(self.init_data["ae_encrypt_public"])
+        self.pin_ae_sign_fingerprint = compute_public_key_fingerprint(self.init_data["ae_sign_public"])
 
     def load_bulletin_board(self) -> None:
         """
@@ -58,13 +87,38 @@ class Client:
         - La lista dei candidati
         - La chiave pubblica di cifratura dell'AE
         - La chiave pubblica di firma dell'AE
+        Also verifies key fingerprints via certificate pinning
         """
         with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
             self.bb = json.load(f)
         self.init_data = self.bb[0]["data"]  # Dati di inizializzazione
         self.candidates = self.init_data["candidates"]  # Lista candidati
-        self.ae_encrypt_public = deserialize_public_key(self.init_data["ae_encrypt_public"])
-        self.ae_sign_public = deserialize_public_key(self.init_data["ae_sign_public"])
+
+        # Certificate Pinning: Verify fingerprints of AE public keys
+        ae_encrypt_pem = self.init_data["ae_encrypt_public"]
+        ae_sign_pem = self.init_data["ae_sign_public"]
+
+        # Compute fingerprints of received keys
+        received_encrypt_fingerprint = compute_public_key_fingerprint(ae_encrypt_pem)
+        received_sign_fingerprint = compute_public_key_fingerprint(ae_sign_pem)
+
+        # If pins are not yet set, set them (only once, during first initialization)
+        if self.pin_ae_encrypt_fingerprint is None or self.pin_ae_sign_fingerprint is None:
+            self.pin_ae_encrypt_fingerprint = received_encrypt_fingerprint
+            self.pin_ae_sign_fingerprint = received_sign_fingerprint
+        else:
+            if received_encrypt_fingerprint != self.pin_ae_encrypt_fingerprint:
+                raise SecurityError(
+                    "Impronta della chiave pubblica di cifratura AE non corrispondente! Possibile attacco MitM!"
+                )
+            if received_sign_fingerprint != self.pin_ae_sign_fingerprint:
+                raise SecurityError(
+                    "Impronta della chiave pubblica di firma AE non corrispondente! Possibile attacco MitM!"
+                )
+
+        # Now load the keys normally
+        self.ae_encrypt_public = deserialize_public_key(ae_encrypt_pem)
+        self.ae_sign_public = deserialize_public_key(ae_sign_pem)
 
     def get_pow_difficulty(self) -> int:
         """

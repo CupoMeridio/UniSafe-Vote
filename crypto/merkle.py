@@ -139,7 +139,7 @@ class MerkleTree:
 
             if sibling_index < len(current_level):
                 # Determina se il fratello è a sinistra o a destra
-                is_left = sibling_index > current_index
+                is_left = sibling_index < current_index
                 proof.append({
                     "hash": current_level[sibling_index].hex(),
                     "position": "left" if is_left else "right"
