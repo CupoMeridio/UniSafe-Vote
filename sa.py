@@ -13,12 +13,12 @@ Funzionamento:
 - Durante l'inizializzazione, carica la propria chiave privata per firmare i token
 - Carica la lista degli elettori da data/voters.json
 - Verifica le credenziali e, se valide, emette un token firmato RSA-PSS
-- Tiene traccia dei token emessi per evitare che lo stesso elettore voti più volte
+- Esegue il controllo di unicità: rilascia al più un token per elettore per
+  elezione, registrando internamente l'avvenuto rilascio (WP2 Fase 2)
 """
 
 import os
 import json
-import hashlib
 from datetime import datetime, timedelta, UTC
 from typing import Optional, List, Dict, Set
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
@@ -36,10 +36,11 @@ app = Flask(__name__)
 # Rimossa la gestione complessa di SHUTDOWN_TOKEN per semplicità locale
 
 # Stato interno del server (in memoria)
-issued_tokens: Set[str] = set()  # Set di ID elettori a cui è già stato emesso un token
+issued_tokens: Set[str] = set()  # ID elettori a cui è già stato rilasciato un token
 sa_sign_private: Optional[RSAPrivateKey] = None  # Chiave privata del SA per firmare i token
 voters_list: List[Dict[str, str]] = []  # Lista degli elettori (caricata da voters.json)
 election_id: str = ""  # ID dell'elezione (caricato dal Bulletin Board)
+TOKEN_VALIDITY_MINUTES: int = 30  # Finestra di validità breve del token
 
 
 def load_initial_data() -> None:
@@ -64,7 +65,42 @@ def load_initial_data() -> None:
         bb = json.load(f)
         election_id = bb[0]["data"]["election_id"]
 
+    # Ricostruisce l'elenco degli elettori a cui è già stato rilasciato un token
+    # (persistito in voters.json) per far rispettare il controllo di unicità anche
+    # dopo un riavvio del SA. I token NON vengono pre-generati: sono creati solo
+    # al momento dell'autenticazione (WP2 Fase 2).
+    for voter in voters_list:
+        if isinstance(voter.get("token"), dict):
+            issued_tokens.add(voter["id"])
+
     print("[SA] Pronto sulla porta 5001")
+
+
+def save_voters_list() -> None:
+    """Salva la lista elettori aggiornata su data/voters.json."""
+    with open("data/voters.json", "w", encoding="utf-8") as f:
+        json.dump(voters_list, f, indent=2, ensure_ascii=False)
+
+
+def create_token_for_voter() -> Dict[str, str]:
+    """
+    Crea il token crittografico da rilasciare all'elettore.
+
+    Il token è un identificatore opaco: contiene solo l'ID elezione, un nonce
+    casuale non predicibile e la finestra di validità. NON contiene alcun
+    riferimento all'identità dell'elettore (nemmeno in forma di hash), così che
+    l'AE non possa correlare la scheda all'identità (WP1 §2.2, WP2 Fase 2).
+    """
+    nonce = os.urandom(16).hex()
+    issued_at = datetime.now(UTC).isoformat()
+    expires_at = (datetime.now(UTC) + timedelta(minutes=TOKEN_VALIDITY_MINUTES)).isoformat()
+
+    return {
+        "election_id": election_id,
+        "nonce": nonce,
+        "issued_at": issued_at,
+        "expires_at": expires_at
+    }
 
 
 def is_valid_unisa_email(email: str) -> bool:
@@ -136,7 +172,10 @@ def register():
                 print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: email {email} già registrata")
                 return jsonify({"error": "Email già registrata"}), 409
 
-        # 5. Crea il nuovo elettore con un ID progressivo
+        # 5. Crea il nuovo elettore con un ID progressivo. Il token NON viene
+        #    generato qui: sarà rilasciato solo al momento dell'autenticazione
+        #    (WP2 Fase 2), così che la sua finestra di validità decorra dal
+        #    rilascio effettivo.
         new_id = f"v{len(voters_list) + 1:03d}"
         new_voter = {
             "id": new_id,
@@ -147,8 +186,7 @@ def register():
         voters_list.append(new_voter)
 
         # 6. Salva la lista aggiornata sul file
-        with open("data/voters.json", "w", encoding="utf-8") as f:
-            json.dump(voters_list, f, indent=2, ensure_ascii=False)
+        save_voters_list()
 
         print(f"[SA] {datetime.now().isoformat()} - Nuovo elettore registrato: {username} ({email})")
         return jsonify({"message": "Registrazione avvenuta con successo!"}), 201
@@ -197,34 +235,27 @@ def authenticate():
             print(f"[SA] {datetime.now().isoformat()} - Autenticazione fallita per username: {username}")
             return jsonify({"error": "Credenziali non valide"}), 401
 
-        # 2. Verifica che l'elettore non abbia già ricevuto un token
-        if voter["id"] in issued_tokens:
-            print(f"[SA] {datetime.now().isoformat()} - Doppia autenticazione per voter_id: {voter['id']}")
-            return jsonify({"error": "Token già emesso per questo elettore"}), 409
+        # 2. Controllo di unicità e rilascio del token (WP2 Fase 2).
+        # Se all'elettore non è ancora stato rilasciato alcun token, ne viene
+        # creato uno nuovo e registrato l'avvenuto rilascio. Se un token esiste
+        # già, viene restituito quello: il SA non rilascia mai una seconda
+        # credenziale distinta (un elettore = un token), ma consente all'elettore
+        # di recuperare la propria credenziale per la verifica della ricevuta.
+        # Un token scaduto NON viene rinnovato: sarà rifiutato dall'AE, come
+        # previsto dalla mitigazione sulla validità temporale del WP2.
+        token = voter.get("token")
+        if not isinstance(token, dict):
+            token = create_token_for_voter()
+            voter["token"] = token
+            issued_tokens.add(voter["id"])
+            save_voters_list()
 
-        # 3. Genera il token
-        voter_id_hash = hashlib.sha256(voter["id"].encode('utf-8')).hexdigest()
-        nonce = os.urandom(16).hex()
-        issued_at = datetime.now(UTC).isoformat()
-        expires_at = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
-
-        token = {
-            "election_id": election_id,
-            "voter_id_hash": voter_id_hash,
-            "nonce": nonce,
-            "issued_at": issued_at,
-            "expires_at": expires_at
-        }
-
-        # 4. Firma il token con la chiave privata del SA
+        # 3. Firma il token con la chiave privata del SA
         token_json_str = json.dumps(token, sort_keys=True)
         token_json_bytes = token_json_str.encode('utf-8')
         signature = sign(sa_sign_private, token_json_bytes)
 
-        # 5. Registra l'elettore come servito (non potrà votare di nuovo)
-        issued_tokens.add(voter["id"])
-
-        print(f"[SA] {datetime.now().isoformat()} - Token emesso per voter_id: {voter['id']} (username: {username})")
+        print(f"[SA] {datetime.now().isoformat()} - Token restituito per voter_id: {voter['id']} (username: {username})")
 
         return jsonify({
             "token": token_json_str,

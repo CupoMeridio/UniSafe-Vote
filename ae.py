@@ -21,8 +21,10 @@ a chiunque di verificare l'integrità delle operazioni.
 import os
 import json
 import hashlib
+import time
+from collections import deque
 from datetime import datetime, UTC
-from typing import Optional, Dict, List, Set, Literal
+from typing import Optional, Dict, List, Set, Literal, Deque
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from flask import Flask, request, jsonify
 import sys
@@ -40,14 +42,79 @@ app = Flask(__name__)
 # Rimossa la gestione complessa di SHUTDOWN_TOKEN per semplicità locale
 
 # Stato interno del server (in memoria)
+used_tokens: Set[str] = set()  # Set di nonce di token già usati (privato AE)
 merkle_tree = MerkleTree()  # Albero di Merkle per i voti
-used_tokens: Set[str] = set()  # Set di identificatori di token già usati
 urn_open: bool = True  # Stato delle urne (True = aperte, False = chiuse)
 ae_encrypt_private: Optional[RSAPrivateKey] = None  # Chiave privata per decifrare i voti (caricata solo a urne chiuse)
 ae_sign_private: Optional[RSAPrivateKey] = None  # Chiave privata per firmare blocchi e ricevute
 ae_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica per verificare le firme
 sa_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica del SA per verificare i token
 bulletin_board_path: str = "data/bulletin_board.json"  # Percorso del Bulletin Board
+ae_state_path: str = "data/ae_state.json"  # Percorso dello stato privato AE
+opening_time: Optional[datetime] = None  # Istante di apertura delle urne (da init)
+closing_time: Optional[datetime] = None  # Istante di chiusura delle urne (da init)
+
+# --- Proof of Work adattiva globale (mitigazione DoS) ---
+POW_MIN_DIFFICULTY: int = 4   # Difficoltà minima (operatività standard, ~0.1s)
+POW_MAX_DIFFICULTY: int = 24  # Tetto massimo per evitare di bloccare elettori onesti
+POW_WINDOW_SECONDS: float = 10.0  # Finestra di osservazione del traffico
+POW_RATE_THRESHOLD: int = 5  # Richieste/finestra oltre cui si considera traffico anomalo
+request_timestamps: Deque[float] = deque()  # Timestamp delle richieste recenti
+
+
+def current_pow_difficulty() -> int:
+    """
+    Calcola la difficoltà di Proof of Work corrente in base al carico globale.
+
+    La strategia è adattiva: in condizioni normali la difficoltà è minima
+    (POW_MIN_DIFFICULTY); quando il numero di richieste nella finestra di
+    osservazione supera la soglia, la difficoltà cresce di 1 bit per ogni
+    blocco di richieste oltre soglia (crescita esponenziale del costo per
+    l'attaccante), fino a POW_MAX_DIFFICULTY.
+
+    Returns:
+        int: Numero di bit a zero richiesti dalla PoW.
+    """
+    now = time.monotonic()
+    # Rimuovi i timestamp più vecchi della finestra
+    while request_timestamps and now - request_timestamps[0] > POW_WINDOW_SECONDS:
+        request_timestamps.popleft()
+
+    recent = len(request_timestamps)
+    if recent <= POW_RATE_THRESHOLD:
+        return POW_MIN_DIFFICULTY
+
+    extra = (recent - POW_RATE_THRESHOLD) // POW_RATE_THRESHOLD
+    return min(POW_MIN_DIFFICULTY + extra, POW_MAX_DIFFICULTY)
+
+
+def load_ae_state() -> None:
+    """
+    Carica lo stato privato AE necessario a impedire voti multipli.
+
+    Lo stato contiene esclusivamente i nonce dei token già usati: sono
+    identificatori opachi, privi di qualsiasi riferimento all'identità
+    dell'elettore. Non viene pubblicato sul Bulletin Board, dove compaiono
+    solo i dati necessari alla verifica universale (scheda cifrata, seed
+    cifrato, timestamp).
+    """
+    global used_tokens
+    if not os.path.exists(ae_state_path):
+        return
+
+    with open(ae_state_path, "r", encoding="utf-8") as f:
+        state = json.load(f)
+
+    used_tokens = set(state.get("used_tokens", []))
+
+
+def save_ae_state() -> None:
+    """Salva lo stato privato AE necessario a impedire voti multipli."""
+    state = {
+        "used_tokens": sorted(used_tokens)
+    }
+    with open(ae_state_path, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
 
 
 def load_initial_data() -> None:
@@ -57,17 +124,25 @@ def load_initial_data() -> None:
     - Chiave pubblica del SA (per verificare i token)
     """
     global ae_encrypt_private, ae_sign_private, ae_sign_public, sa_sign_public
+    global opening_time, closing_time
     print("[AE] Caricamento dati iniziali...")
 
     # Carica la coppia di chiavi per la firma dell'AE
     ae_sign_private = load_private_key("ae_sign")
     ae_sign_public = load_public_key("ae_sign")
 
-    # Carica la chiave pubblica del SA dal Bulletin Board
+    # Carica la chiave pubblica del SA e la finestra temporale dal Bulletin Board
     with open(bulletin_board_path, "r", encoding="utf-8") as f:
         bb = json.load(f)
         sa_sign_public_pem = bb[0]["data"]["sa_sign_public"]
         sa_sign_public = deserialize_public_key(sa_sign_public_pem)
+        opening_time = datetime.fromisoformat(bb[0]["data"]["opening_time"])
+        closing_time = datetime.fromisoformat(bb[0]["data"]["closing_time"])
+
+    # Carica lo stato privato AE per impedire il riutilizzo dei token dopo
+    # un eventuale riavvio del server, senza pubblicare identificatori nel
+    # Bulletin Board.
+    load_ae_state()
 
     print("[AE] Pronto sulla porta 5002")
 
@@ -113,7 +188,7 @@ def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", 
     return new_block
 
 
-def verify_pow(enc_vote_hex: str, pow_nonce_hex: str, difficulty: int = 4) -> bool:
+def verify_pow(enc_vote_hex: str, pow_nonce_hex: str, difficulty: int = POW_MIN_DIFFICULTY) -> bool:
     """
     Verifica la Proof of Work (PoW) inviata dal client.
 
@@ -193,8 +268,11 @@ def vote():
         token_signature = req_data.get('token_signature')
         pow_nonce = req_data.get('pow_nonce')
 
-        # 1. Verifica la Proof of Work
-        if not verify_pow(enc_vote, pow_nonce):
+        # Registra la richiesta per il calcolo della difficoltà PoW adattiva
+        request_timestamps.append(time.monotonic())
+
+        # 1. Verifica la Proof of Work alla difficoltà adattiva corrente
+        if not verify_pow(enc_vote, pow_nonce, current_pow_difficulty()):
             print(f"[AE] {datetime.now().isoformat()} - PoW invalida")
             return jsonify({"error": "Proof of Work invalida"}), 400
 
@@ -212,18 +290,33 @@ def vote():
             print(f"[AE] {datetime.now().isoformat()} - Token scaduto")
             return jsonify({"error": "Token scaduto"}), 401
 
-        # 4. Verifica che il token non sia già stato usato
-        token_identifier = token_obj['voter_id_hash'] + token_obj['nonce']
+        # 3b. Verifica che il voto cada nella finestra temporale dell'elezione
+        now = datetime.now(UTC)
+        if opening_time is not None and now < opening_time:
+            print(f"[AE] {datetime.now().isoformat()} - Voto prima dell'apertura delle urne")
+            return jsonify({"error": "Urne non ancora aperte"}), 403
+        if closing_time is not None and now > closing_time:
+            print(f"[AE] {datetime.now().isoformat()} - Voto dopo la chiusura delle urne")
+            return jsonify({"error": "Urne chiuse"}), 403
+
+        # 4. Verifica che il token non sia già stato usato. L'unicità si basa
+        # esclusivamente sul nonce opaco del token: poiché il SA rilascia al più
+        # un token per elettore (controllo di unicità lato SA), un nonce non
+        # ancora usato corrisponde a un elettore che non ha ancora votato. L'AE
+        # non conosce alcun identificatore dell'elettore, preservando l'anonimato.
+        token_identifier = token_obj['nonce']
         if token_identifier in used_tokens:
             print(f"[AE] {datetime.now().isoformat()} - Token già usato")
             return jsonify({"error": "Token già usato"}), 409
 
         # 5. Tutte le verifiche sono andate a buon fine:
-        # aggiungi il voto al Merkle Tree e al Bulletin Board
+        # aggiungi il voto al Merkle Tree e al Bulletin Board.
+        # Il Bulletin Board resta pseudoanonimo: non pubblica il nonce del token,
+        # che rimane solo nello stato privato AE.
         vote_record = {
             "enc_vote": enc_vote,
             "enc_seed": enc_seed,
-            "token_identifier": token_identifier
+            "timestamp": datetime.now(UTC).isoformat()
         }
 
         record_bytes = json.dumps(vote_record, sort_keys=True).encode('utf-8')
@@ -232,8 +325,10 @@ def vote():
         # Salva il voto sul Bulletin Board
         append_to_bulletin_board("vote", vote_record)
 
-        # Marca il token come usato per evitare riutilizzi
+        # Marca il token come usato per evitare riutilizzi. Il nonce è un
+        # identificatore opaco e non viene pubblicato sul Bulletin Board.
         used_tokens.add(token_identifier)
+        save_ae_state()
 
         # Genera la ricevuta per l'elettore, con la Merkle Proof
         merkle_proof = merkle_tree.get_proof(leaf_index)
@@ -278,9 +373,6 @@ def close():
         JSON con lo stato e i risultati aggregati
     """
     global urn_open, ae_encrypt_private
-    # Importiamo serialization qui per evitare problemi di circular import
-    from cryptography.hazmat.primitives import serialization
-
     # Verifica che le urne non siano già chiuse
     if not urn_open:
         return jsonify({"error": "Urne già chiuse"}), 400
@@ -300,9 +392,13 @@ def close():
     with open(bulletin_board_path, "r", encoding="utf-8") as f:
         bb = json.load(f)
 
-    # Ottieni la lista dei candidati dal blocco di inizializzazione
+    # Ottieni la lista dei candidati dal blocco di inizializzazione.
+    # "Scheda nulla" è una categoria di conteggio per i voti non conformi
+    # al dominio dei voti validi (WP2 Fase 4).
     candidates = bb[0]["data"]["candidates"]
+    NULL_LABEL = "Scheda nulla"
     vote_counts = {candidate: 0 for candidate in candidates}
+    vote_counts[NULL_LABEL] = 0
     verified_votes = []
 
     # Elabora tutti i blocchi di voto dal Bulletin Board
@@ -311,40 +407,34 @@ def close():
             enc_vote_hex = block['data']['enc_vote']
             enc_seed_hex = block['data']['enc_seed']
 
-            # Decifra il seed
+            # Decifra il seed (randomness OAEP usata per cifrare il voto)
             enc_seed_bytes = bytes.fromhex(enc_seed_hex)
             seed_bytes = decrypt(ae_encrypt_private, enc_seed_bytes)
 
-            # Decifra il voto (che contiene [indice_voto][seed])
+            # Decifra il voto (contiene il solo indice della lista, 1 byte)
             enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-            vote_seed_bytes = decrypt(ae_encrypt_private, enc_vote_bytes)
+            vote_plain = decrypt(ae_encrypt_private, enc_vote_bytes)
 
-            # Verifica che il seed nel voto corrisponda al seed cifrato separatamente
-            if vote_seed_bytes[1:] != seed_bytes:
-                print(f"[AE] Attenzione: seed non corrisponde per enc_vote: {enc_vote_hex}")
-                continue
+            # Determina il candidato; schede fuori dominio -> nulle (non scartate)
+            if len(vote_plain) == 1 and 0 <= vote_plain[0] < len(candidates):
+                candidate = candidates[vote_plain[0]]
+            else:
+                candidate = NULL_LABEL
+                print(f"[AE] Scheda nulla rilevata per enc_vote: {enc_vote_hex}")
 
-            # Ottieni l'indice del candidato (primo byte del voto decifrato)
-            vote_index = vote_seed_bytes[0]
-            if 0 <= vote_index < len(candidates):
-                candidate = candidates[vote_index]
-                vote_counts[candidate] += 1
-                verified_votes.append({
-                    "enc_vote": enc_vote_hex,
-                    "voto_chiaro": candidate,
-                    "seed": seed_bytes.hex()
-                })
+            vote_counts[candidate] += 1
+            # Pubblica la tripla (scheda cifrata, voto in chiaro, seed) per ogni
+            # scheda scrutinata: il seed abilita la verifica universale (ricifratura).
+            verified_votes.append({
+                "enc_vote": enc_vote_hex,
+                "voto_chiaro": candidate,
+                "seed": seed_bytes.hex()
+            })
 
     # 4. Pubblica i risultati dello scrutinio sul Bulletin Board
     scrutinio_data = {
         "risultato_aggregato": vote_counts,
-        "voti_verificati": verified_votes,
-        # Pubblichiamo anche la chiave privata per permettere la verifica
-        "ae_encrypt_private": ae_encrypt_private.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
-        ).decode('utf-8')
+        "voti_verificati": verified_votes
     }
     append_to_bulletin_board("scrutinio", scrutinio_data)
 
@@ -362,7 +452,8 @@ def status():
     """
     return jsonify({
         "votes_received": len(used_tokens),
-        "urn_open": urn_open
+        "urn_open": urn_open,
+        "pow_difficulty": current_pow_difficulty()
     }), 200
 
 

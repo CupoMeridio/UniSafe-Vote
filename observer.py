@@ -21,16 +21,15 @@ import os
 import json
 import hashlib
 import sys
-from typing import Optional, List, Dict
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey, RSAPrivateKey
+from typing import List, Dict
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from crypto.keys import deserialize_public_key
-from crypto.rsa_oaep import encrypt, decrypt
 from crypto.rsa_pss import verify
+from crypto.rsa_oaep import encrypt
 from crypto.merkle import MerkleTree, verify_proof
-from cryptography.hazmat.primitives import serialization
 
 
 def main() -> None:
@@ -44,6 +43,18 @@ def main() -> None:
     with open(bulletin_board_path, "r", encoding="utf-8") as f:
         bb = json.load(f)
 
+    scrutinio_presente = any(block.get("type") == "scrutinio" for block in bb)
+    merkle_root_presente = any(block.get("type") == "merkle_root" for block in bb)
+
+    if not scrutinio_presente or not merkle_root_presente:
+        print("Verifica universale finale non disponibile: mancano ancora Merkle Root e/o scrutinio.")
+        print("Prima chiudi le urne e avvia lo scrutinio (opzione 5 nel pannello).")
+        try:
+            input("\nPremi Invio per chiudere...")
+        except (EOFError, KeyboardInterrupt):
+            pass
+        return
+
     if len(bb) < 3:  # init + votes (at least one) + merkle_root + scrutinio
         print("Scrutinio non ancora eseguito!")
         return
@@ -52,7 +63,9 @@ def main() -> None:
     init_block = bb[0]
     init_data = init_block["data"]
     ae_sign_public = deserialize_public_key(init_data["ae_sign_public"])
+    ae_encrypt_public = deserialize_public_key(init_data["ae_encrypt_public"])
     candidates = init_data["candidates"]
+    NULL_LABEL = "Scheda nulla"
 
     all_passed = True
 
@@ -126,44 +139,81 @@ def main() -> None:
             print("FAIL")
             all_passed = False
 
-        # 5. Verifica ogni voto nel blocco scrutinio
-        print("\n5. Verifica voti e conteggio aggregato... ", end="")
-        ae_encrypt_private_pem = scrutinio_data["ae_encrypt_private"]
-        ae_encrypt_private = serialization.load_pem_private_key(
-            ae_encrypt_private_pem.encode('utf-8'),
-            password=None
+        # 5. Verifica dati pubblici del blocco scrutinio tramite RICIFRATURA.
+        #    Grazie all'OAEP con seed iniettabile, l'observer ricifra
+        #    Enc_OAEP(voto, seed) e confronta con la scheda registrata: se il
+        #    risultato coincide, l'AE non ha alterato né inventato la decifratura.
+        print("\n5. Verifica voti scrutinati (ricifratura) e conteggio aggregato... ", end="")
+        scrutinated_votes = scrutinio_data.get("voti_verificati", [])
+        scrutinated_enc_votes = [vote.get("enc_vote") for vote in scrutinated_votes]
+        vote_block_enc_votes = [block["data"]["enc_vote"] for block in vote_blocks]
+
+        scrutinated_set = set(scrutinated_enc_votes)
+        vote_block_set = set(vote_block_enc_votes)
+        public_votes_ok = (
+            scrutinated_set == vote_block_set
+            and len(scrutinated_enc_votes) == len(scrutinated_set)
+            and len(vote_block_enc_votes) == len(vote_block_set)
         )
 
+        # Mappa enc_vote -> enc_seed dai blocchi voto, per recuperare il seed pubblicato
+        valid_labels = set(candidates) | {NULL_LABEL}
         verified_counts = {c: 0 for c in candidates}
-        votes_ok = True
+        verified_counts[NULL_LABEL] = 0
 
-        for verified_vote in scrutinio_data["voti_verificati"]:
-            enc_vote_hex = verified_vote["enc_vote"]
-            seed_hex = verified_vote["seed"]
-            candidate = verified_vote["voto_chiaro"]
+        for verified_vote in scrutinated_votes:
+            enc_vote_hex = verified_vote.get("enc_vote")
+            seed_hex = verified_vote.get("seed")
+            candidate = verified_vote.get("voto_chiaro")
 
-            # Ricostruisci il plaintext (voto + seed)
-            seed_bytes = bytes.fromhex(seed_hex)
-            vote_index = candidates.index(candidate)
-            vote_byte = vote_index.to_bytes(1, byteorder='big')
-            plaintext_reconstructed = vote_byte + seed_bytes
+            if not enc_vote_hex or not seed_hex or not candidate:
+                public_votes_ok = False
+                continue
 
-            # Verifica che decifrando il voto corrisponda al plaintext ricostruito
-            enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-            decrypted = decrypt(ae_encrypt_private, enc_vote_bytes)
+            if enc_vote_hex not in vote_block_set:
+                public_votes_ok = False
+                continue
 
-            if decrypted == plaintext_reconstructed and candidate in candidates:
-                verified_counts[candidate] += 1
-            else:
-                votes_ok = False
+            if candidate not in valid_labels:
+                public_votes_ok = False
+                continue
+
+            try:
+                seed_bytes = bytes.fromhex(seed_hex)
+            except ValueError:
+                public_votes_ok = False
+                continue
+
+            if len(seed_bytes) != 32:
+                public_votes_ok = False
+                continue
+
+            # Ricifratura deterministica per le schede valide: il voto in chiaro
+            # corrisponde a un indice di candidato noto, quindi possiamo ricostruire
+            # Enc_OAEP(indice, seed) e confrontarlo con enc_vote pubblicato.
+            if candidate != NULL_LABEL:
+                vote_index = candidates.index(candidate)
+                vote_byte = vote_index.to_bytes(1, byteorder='big')
+                recomputed = encrypt(ae_encrypt_public, vote_byte, seed=seed_bytes).hex()
+                if recomputed != enc_vote_hex:
+                    print(f"\n   Ricifratura non corrispondente per enc_vote: {enc_vote_hex}")
+                    public_votes_ok = False
+                    continue
+
+            verified_counts[candidate] += 1
 
         # Verifica che il conteggio aggregato corrisponda
-        if votes_ok and verified_counts == scrutinio_data["risultato_aggregato"]:
+        if public_votes_ok and verified_counts == scrutinio_data["risultato_aggregato"]:
             print("OK")
             print(f"   Conteggio verificato: {verified_counts}")
         else:
             print("FAIL")
             all_passed = False
+            if not public_votes_ok:
+                print("   Uno o più voti scrutinati non corrispondono ai blocchi voto o alla ricifratura.")
+            if verified_counts != scrutinio_data["risultato_aggregato"]:
+                print(f"   Conteggio atteso: {scrutinio_data['risultato_aggregato']}")
+                print(f"   Conteggio ricostruito: {verified_counts}")
 
     # 6. Verifica Merkle Proof per ogni voto (usando l'albero ricostruito)
     print("\n6. Verifica Merkle Proof per ogni voto... ", end="")
@@ -189,9 +239,9 @@ def main() -> None:
 
     print("\n=== RISULTATO FINALE ===")
     if all_passed:
-        print("TUTTE LE VERIFICHE SONO RIUSCITE! L'elezione è valida.")
+        print("TUTTE LE VERIFICHE PUBBLICHE SONO RIUSCITE! L'elezione è coerente con il Bulletin Board.")
     else:
-        print("ALCUNE VERIFICHE HANNO FALLITO! L'elezione potrebbe essere stata manipolata.")
+        print("ALCUNE VERIFICHE PUBBLICHE HANNO FALLITO! L'elezione potrebbe essere stata manipolata.")
 
     try:
         input("\nPremi Invio per chiudere...")

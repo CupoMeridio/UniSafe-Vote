@@ -104,7 +104,7 @@ def check_server_running(url: str) -> bool:
         bool: True se il server risponde con status 200, False altrimenti
     """
     try:
-        response = requests.get(url + '/status', timeout=2)
+        response = requests.get(url + '/status', timeout=0.5)
         return response.status_code == 200
     except:
         return False
@@ -167,7 +167,7 @@ Il Sistema di Autenticazione (SA) ha il compito di:
 Il server verrà avviato in un nuovo terminale.
     """)
     
-    # Avvia il server SA in una nuova finestra
+    # Avvio del server SA in una nuova finestra
     SA_PROCESS = launch_in_new_terminal("sa.py")
     
     if wait_for_server(SA_URL, "SA"):
@@ -201,7 +201,7 @@ L'Autorità Elettorale (AE) ha il compito di:
 Il server verrà avviato in un nuovo terminale.
     """)
     
-    # Avvia il server AE in una nuova finestra
+    # Avvio del server AE in una nuova finestra
     AE_PROCESS = launch_in_new_terminal("ae.py")
     
     if wait_for_server(AE_URL, "AE"):
@@ -230,8 +230,8 @@ Questa operazione:
 2. Crea il Bulletin Board (registro pubblico append-only)
 3. Definisce i candidati e i parametri dell'elezione
 4. Permette di SCEGLIERE tra:
-   - Lista preconfigurata (5 elettori di test)
-   - Lista personalizzata creata dall'amministratore
+   - Sistema preconfigurato (liste stock + utenti già registrati)
+   - Solo liste di voto (registrazione utenti abilitata)
     """)
     input("Premi Invio per continuare...")
     subprocess.run([sys.executable, "init_election.py"], cwd=PROJECT_DIR)
@@ -247,14 +247,24 @@ def reset_election() -> None:
     bulletin_board_path = os.path.join(PROJECT_DIR, "data", "bulletin_board.json")
     voters_path = os.path.join(PROJECT_DIR, "data", "voters.json")
     keys_dir = os.path.join(PROJECT_DIR, "data", "keys")
+    receipts_dir = os.path.join(PROJECT_DIR, "data", "receipts")
+    ae_state_path = os.path.join(PROJECT_DIR, "data", "ae_state.json")
 
-    if not (os.path.exists(bulletin_board_path) or os.path.exists(voters_path) or os.path.isdir(keys_dir)):
+    if not (
+        os.path.exists(bulletin_board_path)
+        or os.path.exists(voters_path)
+        or os.path.isdir(keys_dir)
+        or os.path.isdir(receipts_dir)
+        or os.path.exists(ae_state_path)
+    ):
         print("Nessuna configurazione di elezione trovata da rimuovere.")
         return
 
     print_header("RESET CONFIGURAZIONE ELEZIONE")
     print_explanation("""
-Questa operazione elimina i file di configurazione dell'elezione e le chiavi RSA.
+Questa operazione elimina i file di configurazione dell'elezione, le chiavi RSA,
+lo stato privato dell'Autorità Elettorale e le ricevute JSON dei voti
+delle elezioni passate.
 Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente nuove.
     """)
     confirm = input("Confermi la rimozione della configurazione dell'elezione? (s/n): ").strip().lower()
@@ -266,10 +276,18 @@ Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente
         os.remove(bulletin_board_path)
     if os.path.exists(voters_path):
         os.remove(voters_path)
+    if os.path.exists(ae_state_path):
+        os.remove(ae_state_path)
     if os.path.isdir(keys_dir):
         for filename in os.listdir(keys_dir):
             file_path = os.path.join(keys_dir, filename)
             if os.path.isfile(file_path):
+                os.remove(file_path)
+
+    if os.path.isdir(receipts_dir):
+        for filename in os.listdir(receipts_dir):
+            file_path = os.path.join(receipts_dir, filename)
+            if os.path.isfile(file_path) and filename.lower().endswith(".json"):
                 os.remove(file_path)
 
     print("Configurazione elezione rimossa. È ora possibile inizializzare una nuova elezione.")
@@ -307,11 +325,23 @@ def close_election() -> None:
     3. Decifra tutti i voti
     4. Verifica i seed per garantire l'integrità
     5. Calcola il risultato aggregato
-    6. Pubblica i risultati sul Bulletin Board
+    6. Pubblica tutto sul Bulletin Board
     
     Returns:
         None
     """
+    if not is_election_initialized():
+        print_header("CHIUSURA URNE E SCRUTINIO")
+        print_explanation("""
+Nessuna elezione è stata inizializzata.
+
+La chiusura delle urne e lo scrutinio richiedono un Bulletin Board pubblico
+con parametri di elezione, chiavi pubblicate e un'Autorità Elettorale avviata.
+
+Per procedere, inizializza prima una elezione dalla sezione PREPARAZIONE.
+        """)
+        return
+
     if not check_server_running(AE_URL):
         print("AE non in esecuzione!")
         return
@@ -329,24 +359,24 @@ Quando le urne vengono chiuse:
     input("Premi Invio per chiudere le urne...")
     
     try:
-        # Invia una richiesta POST all'endpoint /close dell'AE per chiudere le urne
+        # Invio di una richiesta POST all'endpoint /close dell'AE per chiudere le urne
         response = requests.post(AE_URL + '/close', timeout=10)
  
         # Se il server risponde con codice 200, la chiusura e lo scrutinio sono andati a buon fine
         if response.status_code == 200:
-            # Estrae il contenuto JSON della risposta
+            # Estrazione del contenuto JSON della risposta
             result = response.json()
             print("\nScrutinio completato!")
             print("\nRISULTATO ELEZIONE:")
  
-            # Stampa il risultato per ogni candidato presente nel JSON di risposta
+            # Stampa del risultato per ogni candidato presente nel JSON di risposta
             for candidate, votes in result['result'].items():
                 print(f"   {candidate}: {votes} voti")
         else:
-            # In caso di errore, stampa il messaggio di errore restituito dal server
+            # In caso di errore, stampa del messaggio di errore restituito dal server
             print(f"Errore: {response.json().get('error')}")
     except Exception as e:
-        # Se la richiesta non riesce per qualsiasi motivo (server non raggiungibile, timeout, ecc.)
+        # Gestione degli errori della richiesta
         print(f"Impossibile chiudere le urne: {str(e)}")
  
  
@@ -354,6 +384,39 @@ def run_observer() -> None:
     """
     Esegue la verifica universale dell'elezione.
     """
+    if not is_election_initialized():
+        print_header("VERIFICA UNIVERSALE (OBSERVER)")
+        print_explanation("""
+Nessuna elezione è stata inizializzata.
+
+La verifica universale richiede un Bulletin Board pubblico con:
+1. parametri di elezione e chiavi pubblicate;
+2. eventuali schede cifrate;
+3. Merkle Root finale;
+4. blocco scrutinio.
+
+Per eseguire l'Observer, inizializza prima una elezione dalla sezione PREPARAZIONE.
+        """)
+        return
+
+    bulletin_board_path = os.path.join(PROJECT_DIR, "data", "bulletin_board.json")
+    scrutinio_presente = False
+    if os.path.exists(bulletin_board_path):
+        with open(bulletin_board_path, "r", encoding="utf-8") as f:
+            bb = json.load(f)
+        scrutinio_presente = any(block.get("type") == "scrutinio" for block in bb)
+
+    if not scrutinio_presente:
+        print_header("VERIFICA UNIVERSALE (OBSERVER)")
+        print_explanation("""
+La verifica universale finale non è ancora disponibile.
+
+Sono presenti schede cifrate, ma manca ancora il blocco scrutinio.
+Per eseguire la verifica completa bisogna prima chiudere le urne e avviare lo
+scrutinio dalla sezione RISULTATI (opzione 5).
+        """)
+        return
+
     print_header("VERIFICA UNIVERSALE (OBSERVER)")
     print_explanation("""
 L'Observer permette di verificare:
@@ -401,7 +464,7 @@ def main_menu() -> None:
         print("  4. Apri Client Votante")
         print("\nSEZIONE RISULTATI")
         print("  5. Chiudi Urne e Avvia Scrutinio")
-        print("  6. Esegui Verifica Universale (Observer)")
+        print("  6. Esegui Verifica Universale Finale (dopo scrutinio)")
         print("  7. Reset configurazione elezione")
         print("\nUSCITA")
         print("  0. Esci")
@@ -441,7 +504,7 @@ def stop_processes() -> None:
     # Invia richiesta di shutdown via HTTP agli endpoint /shutdown (per macOS/Linux/Windows)
     for url in (SA_URL, AE_URL):
         try:
-            requests.post(url + '/shutdown', timeout=2)
+            requests.post(url + '/shutdown', timeout=0.5)
         except Exception:
             # Ignora errori di connessione (es. server già spento o non in esecuzione)
             pass

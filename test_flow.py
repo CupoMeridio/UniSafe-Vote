@@ -81,10 +81,10 @@ def main():
         ae_encrypt_public_pem = bb[0]["data"]["ae_encrypt_public"]
         ae_encrypt_public = deserialize_public_key(ae_encrypt_public_pem)
         
-        seed = os.urandom(16)
+        seed = os.urandom(32)
         vote_byte = (0).to_bytes(1, byteorder='big')
-        plaintext = vote_byte + seed
-        enc_vote = encrypt(ae_encrypt_public, plaintext).hex()
+        # Voto cifrato con seed iniettato (deterministico/verificabile), seed cifrato a parte
+        enc_vote = encrypt(ae_encrypt_public, vote_byte, seed=seed).hex()
         enc_seed = encrypt(ae_encrypt_public, seed).hex()
         
         print("Risoluzione Proof of Work...")
@@ -119,7 +119,7 @@ def main():
         print("--- Stderr Observer ---")
         print(stderr)
         
-        if "TUTTE LE VERIFICHE SONO RIUSCITE!" in stdout:
+        if "TUTTE LE VERIFICHE PUBBLICHE SONO RIUSCITE!" in stdout:
             print("TEST OK: La verifica dell'observer ha avuto successo!")
         else:
             print("TEST FALLITO: L'observer ha riscontrato problemi!")

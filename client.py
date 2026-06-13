@@ -66,6 +66,25 @@ class Client:
         self.ae_encrypt_public = deserialize_public_key(self.init_data["ae_encrypt_public"])
         self.ae_sign_public = deserialize_public_key(self.init_data["ae_sign_public"])
 
+    def get_pow_difficulty(self) -> int:
+        """
+        Interroga l'AE per ottenere la difficoltà di Proof of Work corrente.
+
+        La difficoltà è adattiva e globale: l'AE la aumenta automaticamente
+        sotto carico anomalo (mitigazione DoS). Se l'AE non è raggiungibile o
+        non espone il dato, si usa la difficoltà minima di default.
+
+        Returns:
+            int: Numero di bit a zero richiesti dalla PoW.
+        """
+        try:
+            response = requests.get(f"{AE_URL}/status", timeout=5)
+            if response.status_code == 200:
+                return int(response.json().get("pow_difficulty", 4))
+        except requests.exceptions.RequestException:
+            pass
+        return 4
+
     def solve_pow(self, enc_vote_hex: str, difficulty: int = 4) -> str:
         """
         Risolve la Proof of Work (PoW) per poter inviare un voto.
@@ -126,7 +145,10 @@ class Client:
         Invia i dati al SA che verifica il dominio e salva l'utente.
         """
         print("\n=== REGISTRAZIONE UTENTE ===")
-        print("Puoi registrarti solo con un'email UNISA (@studenti.unisa.it o @unisa.it)\n")
+        print("DISCLAIMER: questa procedura è simulativa. In un sistema reale,")
+        print("la registrazione richiederebbe una verifica dell'identità, ad esempio")
+        print("tramite codice inviato via email o altra procedura istituzionale.")
+        print("\nPuoi registrarti solo con un'email UNISA (@studenti.unisa.it o @unisa.it)\n")
 
         email = input("Inserisci la tua email UNISA: ")
         username = input("Scegli un username: ")
@@ -209,20 +231,27 @@ class Client:
             print("\nInserisci un numero valido!")
             return
 
-        # 1. Genera un seed casuale (16 byte) e prepara il plaintext
-        seed = os.urandom(16)
-        # Il voto è composto da [indice_candidato][seed]
+        # 1. Genera un seed casuale (32 byte = lunghezza del seed OAEP con SHA-256)
+        #    Il seed è la randomness di padding usata internamente da RSA-OAEP.
+        seed = os.urandom(32)
+        # Il voto è il solo indice della lista selezionata (1 byte).
         vote_byte = choice_index.to_bytes(1, byteorder='big')
-        plaintext_vote_seed = vote_byte + seed
 
-        # 2. Cifra sia il voto + seed che il seed separatamente
-        enc_vote_bytes = encrypt(self.ae_encrypt_public, plaintext_vote_seed)
+        # 2. Cifra il voto con RSA-OAEP usando ESPLICITAMENTE il seed come
+        #    randomness di padding: la cifratura è così deterministica e
+        #    riproducibile da chiunque conosca (voto, seed, pk_AE), abilitando
+        #    la verifica universale a scrutinio concluso.
+        enc_vote_bytes = encrypt(self.ae_encrypt_public, vote_byte, seed=seed)
+        # Il seed viene cifrato separatamente con pk_AE (seed OAEP casuale
+        # interno) così che solo l'AE possa recuperarlo a urne chiuse e
+        # pubblicarlo per la verifica universale.
         enc_seed_bytes = encrypt(self.ae_encrypt_public, seed)
         enc_vote_hex = enc_vote_bytes.hex()
         enc_seed_hex = enc_seed_bytes.hex()
 
-        # 3. Risolve la Proof of Work
-        pow_nonce_hex = self.solve_pow(enc_vote_hex)
+        # 3. Risolve la Proof of Work alla difficoltà adattiva corrente dell'AE
+        difficulty = self.get_pow_difficulty()
+        pow_nonce_hex = self.solve_pow(enc_vote_hex, difficulty)
 
         # 4. Invia il voto all'Autorità Elettorale
         try:
@@ -275,9 +304,11 @@ class Client:
         """
         Verifica che il voto dell'utente sia stato incluso nello scrutinio.
 
-        Effettua due controlli:
+        Effettua tre controlli (WP2 Fase 5 - Verifica individuale):
         1. Verifica che la firma della ricevuta sia valida
-        2. Verifica che il voto sia presente nel Merkle Tree tramite la Proof
+        2. Verifica che il voto sia incluso nel Merkle Tree tramite la Proof
+        3. Verifica che la scheda sia stata utilizzata nello scrutinio,
+           individuando la propria enc_vote tra i voti verificati pubblicati
         """
         if self.username:
             receipt_path = f"data/receipts/{self.username}.json"
@@ -332,10 +363,34 @@ class Client:
             leaf_hash = hashlib.sha256(record_bytes).digest()
             proof = receipt['merkle_proof']
 
-            if verify_proof(leaf_hash, proof, merkle_root):
-                print("\nVerifica riuscita! Il tuo voto è stato incluso correttamente.")
-            else:
+            if not verify_proof(leaf_hash, proof, merkle_root):
                 print("\nVerifica Merkle Proof fallita!")
+                return
+
+            # 5. Verifica che la scheda sia stata utilizzata nello scrutinio:
+            #    la propria enc_vote deve comparire tra i voti verificati
+            #    pubblicati nel blocco scrutinio (WP2 Fase 5).
+            scrutinio_data = None
+            for block in self.bb:
+                if block['type'] == 'scrutinio':
+                    scrutinio_data = block['data']
+                    break
+
+            if not scrutinio_data:
+                print("\nVoto incluso nel Merkle Tree, ma scrutinio non ancora pubblicato.")
+                return
+
+            scrutinated = scrutinio_data.get("voti_verificati", [])
+            matching = next(
+                (v for v in scrutinated if v.get("enc_vote") == receipt['enc_vote']),
+                None
+            )
+
+            if matching:
+                print("\nVerifica riuscita! Il tuo voto è stato incluso e conteggiato nello scrutinio.")
+                print(f"   Voto in chiaro pubblicato per la tua scheda: {matching.get('voto_chiaro')}")
+            else:
+                print("\nLa tua scheda è nel Merkle Tree ma non risulta tra i voti scrutinati!")
 
         else:
             print("\nDevi prima autenticarti!")
@@ -346,6 +401,10 @@ class Client:
         """
         while True:
             print("\n=== SISTEMA DI VOTO ELETTRONICO ===")
+            if self.username:
+                print(f"Utente autenticato: {self.username}")
+            else:
+                print("Utente autenticato: nessuno")
             print("1. Registrati (solo email UNISA)")
             print("2. Autenticati presso il SA")
             print("3. Esprimi il tuo voto")

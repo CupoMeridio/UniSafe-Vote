@@ -6,7 +6,7 @@ Script di inizializzazione di un'elezione.
 Questo programma prepara tutti i dati necessari per avviare un'elezione:
 1. Genera le coppie di chiavi RSA per il Sistema di Autenticazione (SA) e l'Autorità Elettorale (AE)
 2. Crea il Bulletin Board (registro pubblico) con i parametri iniziali dell'elezione
-3. Configura la lista degli elettori autorizzati
+3. Configura le liste/candidati e, se scelta, la lista degli elettori pre-registrati
 
 Il Bulletin Board è un registro append-only che contiene:
 - I parametri dell'elezione (ID, candidati, tempi)
@@ -17,7 +17,6 @@ Il Bulletin Board è un registro append-only che contiene:
 """
 import os
 import json
-import hashlib
 from datetime import datetime, timedelta, UTC
 from typing import List, Dict
 import sys
@@ -39,33 +38,47 @@ def get_preconfigured_voters() -> List[Dict[str, str]]:
     ]
 
 
-def create_custom_voters() -> List[Dict[str, str]]:
-    """Permette all'amministratore di creare una lista personalizzata di elettori"""
-    print("\nCREAZIONE LISTA ELETTORI PERSONALIZZATA")
+def get_preconfigured_candidates() -> List[str]:
+    """Restituisce le liste preconfigurate per la demo."""
+    return ["Lista A", "Lista B", "Lista C"]
+
+
+def create_custom_candidates() -> List[str]:
+    """Permette all'amministratore di configurare solo le liste tra cui votare."""
+    print("\nCONFIGURAZIONE LISTE DI VOTO")
     print("-" * 40)
-    voters = []
-    voter_count = 0
-    
+    print("In questa modalità non vengono pre-registrati elettori.")
+    print("La registrazione avverrà successivamente tramite il SA, durante il flusso utente.")
+
+    candidates: List[str] = []
+    while len(candidates) < 2:
+        print(f"\nLista {len(candidates) + 1}:")
+        candidate = input("  Nome lista/candidato: ").strip()
+        if not candidate:
+            print("Inserisci un nome non vuoto.")
+            continue
+        if candidate in candidates:
+            print("Questa lista è già presente.")
+            continue
+        candidates.append(candidate)
+
     while True:
-        voter_count += 1
-        print(f"\nElettore {voter_count}:")
-        voter_id = input(f"  ID elettore (es. v{voter_count:03d}): ") or f"v{voter_count:03d}"
-        email = input("  Email UNISA (@studenti.unisa.it o @unisa.it: ")
-        username = input("  Username: ")
-        password = input("  Password: ")
-        
-        voters.append({
-            "id": voter_id,
-            "email": email,
-            "username": username,
-            "password": password
-        })
-        
-        another = input("\nAggiungere un altro elettore? (s/n): ").lower().strip()
-        if another != 's':
+        candidate = input("\nAggiungere un'altra lista? (s/n): ").strip().lower()
+        if candidate == 's':
+            name = input("  Nome lista/candidato: ").strip()
+            if not name:
+                print("Inserisci un nome non vuoto.")
+                continue
+            if name in candidates:
+                print("Questa lista è già presente.")
+                continue
+            candidates.append(name)
+        elif candidate == 'n':
             break
-    
-    return voters
+        else:
+            print("Opzione non valida, riprova.")
+
+    return candidates
 
 
 def main() -> None:
@@ -87,9 +100,35 @@ def main() -> None:
     save_keypair(ae_sign_private, ae_sign_public, "ae_sign")
     print("  Chiavi salvate in data/keys/")
 
-    # 2. Prepara il blocco init per il Bulletin Board
-    election_id = "elezione_universitaria_2026"
-    candidates = ["Lista A", "Lista B", "Lista C"]
+    # 2. Scelta configurazione elezione
+    print("\nSCELTA CONFIGURAZIONE ELEZIONE")
+    print("-" * 40)
+    print("1. Sistema preconfigurato (liste stock + utenti già registrati)")
+    print("2. Solo liste di voto (registrazione utenti abilitata)")
+
+    voters: List[Dict[str, str]] = []
+    while True:
+        choice = input("\nSeleziona un'opzione (1/2): ").strip()
+        if choice == '1':
+            election_id = "elezione_universitaria_2026_preconfigurata"
+            candidates = get_preconfigured_candidates()
+            voters = get_preconfigured_voters()
+            print("\nConfigurazione preconfigurata caricata:")
+            print(f"   Liste: {', '.join(candidates)}")
+            print("   Utenti registrati:")
+            for v in voters:
+                print(f"   - {v['username']} ({v['email']}) - password: {v['password']}")
+            break
+        elif choice == '2':
+            election_id = "elezione_universitaria_2026_solo_liste"
+            candidates = create_custom_candidates()
+            print("\nConfigurazione salvata:")
+            print(f"   Liste: {', '.join(candidates)}")
+            print("   Utenti registrati: nessuno")
+            break
+        else:
+            print("Opzione non valida, riprova.")
+
     opening_time = datetime.now(UTC).isoformat()
     closing_time = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
 
@@ -120,33 +159,19 @@ def main() -> None:
         json.dump(bulletin_board, f, indent=2, ensure_ascii=False)
     print("  Bulletin Board inizializzato in data/bulletin_board.json")
 
-    # 3. Scelta lista elettori
-    print("\nSCELTA LISTA ELETTORI")
-    print("-" * 40)
-    print("1. Usa lista preconfigurata (5 elettori di test)")
-    print("2. Crea lista personalizzata")
-    
-    while True:
-        choice = input("\nSeleziona un'opzione (1/2): ").strip()
-        if choice == '1':
-            voters = get_preconfigured_voters()
-            print("\nLista preconfigurata caricata:")
-            for v in voters:
-                print(f"   - {v['username']} ({v['email']}) - password: {v['password']}")
-            break
-        elif choice == '2':
-            voters = create_custom_voters()
-            print(f"\nLista personalizzata creata:")
-            for v in voters:
-                print(f"   - ID: {v['id']}, {v['username']} ({v['email']})")
-            break
-        else:
-            print("Opzione non valida, riprova.")
-    
-    # Salva la lista elettori
+    # I token NON vengono pre-generati in inizializzazione: ciascun token è
+    # rilasciato dal SA solo al momento dell'autenticazione dell'elettore
+    # (WP2 Fase 2), così che la finestra di validità decorra dal rilascio.
+
+    # Salva la lista elettori. Nella modalità "solo liste" rimane vuota:
+    # gli utenti potranno registrarsi successivamente tramite il SA, e il token
+    # verrà rilasciato solo durante la loro autenticazione (WP2 Fase 2).
     with open("data/voters.json", "w", encoding="utf-8") as f:
         json.dump(voters, f, indent=2, ensure_ascii=False)
-    print("\nLista elettori salvata in data/voters.json")
+    if voters:
+        print("\nLista elettori salvata in data/voters.json")
+    else:
+        print("\nNessun elettore salvato: file voters.json inizializzato vuoto.")
 
     print("\nInizializzazione completata con successo!")
 
