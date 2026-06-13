@@ -1,0 +1,4 @@
+Method,Name,Error,Occurrences,First Seen,Last Seen
+POST,/vote,HTTPError('401 Client Error: UNAUTHORIZED for url: /vote'),23,2026-06-13T20:21:50Z,2026-06-13T20:23:41Z
+POST,/vote,HTTPError('400 Client Error: BAD REQUEST for url: /vote'),286,2026-06-13T20:22:00Z,2026-06-13T20:23:44Z
+POST,/authenticate,HTTPError('401 Client Error: UNAUTHORIZED for url: /authenticate'),4,2026-06-13T20:21:53Z,2026-06-13T20:22:02Z

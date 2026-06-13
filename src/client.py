@@ -21,7 +21,8 @@ import json
 import hashlib
 import requests
 import sys
-from typing import Optional, List, Dict, Any
+from datetime import datetime, UTC
+from typing import Optional, List, Dict
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -214,6 +215,57 @@ class Client:
             if nonce % 100000 == 0:
                 print(".", end="", flush=True)
 
+    def has_voted(self) -> bool:
+        """Check if user has already voted (has a saved receipt)."""
+        if not self.username:
+            return False
+        receipt_path = f"data/receipts/{self.username}.json"
+        return os.path.exists(receipt_path)
+
+    def is_urn_open(self) -> bool:
+        """Check if urns are open by contacting AE or reading BB."""
+        # First try AE status endpoint for real-time info
+        try:
+            r = requests.get(f"{AE_URL}/status", timeout=2)
+            if r.status_code == 200:
+                return r.json().get("urn_open", True)
+        except requests.exceptions.RequestException:
+            pass
+        # Fallback to BB (check if there's a 'merkle_root' block, which means urn closed)
+        for block in self.bb:
+            if block['type'] == 'merkle_root':
+                return False
+        return True
+
+    def is_token_expired(self) -> bool:
+        """Check if stored token (if any) is expired."""
+        if not self.token:
+            return False
+        try:
+            token_obj = json.loads(self.token)
+            expires_at = datetime.fromisoformat(token_obj['expires_at'])
+            now = datetime.now(UTC)
+            return now > expires_at
+        except (json.JSONDecodeError, KeyError, ValueError):
+            return True
+
+    def can_vote(self) -> bool:
+        """Check if user can perform voting (WRITE operation):
+        - Authenticated
+        - Urn is open
+        - Has NOT already voted
+        - Token NOT expired
+        """
+        if not self.username:
+            return False
+        if not self.is_urn_open():
+            return False
+        if self.has_voted():
+            return False
+        if self.is_token_expired():
+            return False
+        return True
+
     def register(self) -> None:
         """
         Gestisce la registrazione di un nuovo elettore.
@@ -288,8 +340,16 @@ class Client:
         7. Invia il voto all'AE
         8. Salva la ricevuta ricevuta
         """
-        if not self.token:
-            print("\nDevi prima autenticarti!")
+        if not self.can_vote():
+            # Show specific reason why can't vote
+            if not self.username:
+                print("\nDevi prima autenticarti!")
+            elif self.has_voted():
+                print("\nHai già espresso il tuo voto! Non puoi votare di nuovo.")
+            elif not self.is_urn_open():
+                print("\nUrne chiuse! Non puoi più votare.")
+            elif self.is_token_expired():
+                print("\nIl tuo token è scaduto! Non puoi più votare.")
             return
 
         # Ricarica i parametri pubblici dal Bulletin Board prima del voto, così
@@ -526,11 +586,25 @@ class Client:
             print("\n=== SISTEMA DI VOTO ELETTRONICO ===")
             if self.username:
                 print(f"Utente autenticato: {self.username}")
+                # Show status information
+                if self.can_vote():
+                    print("Stato: Modalità completa - Puoi esprimere il voto!")
+                else:
+                    print("Stato: Modalità sola lettura - Non puoi votare, ma puoi verificare il tuo voto.")
+                if self.has_voted():
+                    print("   - Hai già espresso il voto.")
+                if self.is_token_expired():
+                    print("   - Token scaduto.")
+                if not self.is_urn_open():
+                    print("   - Urne chiuse.")
             else:
                 print("Utente autenticato: nessuno")
+
+            print("\nMenu:")
             print("1. Registrati (solo email UNISA)")
             print("2. Autenticati presso il SA")
-            print("3. Esprimi il tuo voto")
+            if self.can_vote():
+                print("3. Esprimi il tuo voto")
             print("4. Visualizza ricevuta")
             print("5. Verifica inclusione del tuo voto")
             print("0. Esci")
@@ -542,7 +616,10 @@ class Client:
             elif choice == '2':
                 self.authenticate()
             elif choice == '3':
-                self.vote()
+                if self.can_vote():
+                    self.vote()
+                else:
+                    print("\nOperazione non permessa in modalità sola lettura!")
             elif choice == '4':
                 self.show_receipt()
             elif choice == '5':

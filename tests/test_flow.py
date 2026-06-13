@@ -1,3 +1,4 @@
+
 import os
 import subprocess
 import sys
@@ -7,8 +8,10 @@ import json
 import hashlib
 
 # Risolve dinamicamente la cartella del progetto corrente
-WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, WORKSPACE_DIR)
+TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(TESTS_DIR, ".."))
+SRC_DIR = os.path.join(PROJECT_ROOT, "src")
+sys.path.insert(0, SRC_DIR)
 
 from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
@@ -17,7 +20,7 @@ from client import compute_public_key_fingerprint
 
 def validate_pins(bulletin_board):
     """Verifica che le chiavi AE del Bulletin Board corrispondano ai pin trusted."""
-    with open(os.path.join(WORKSPACE_DIR, "data", "pins.json"), "r", encoding="utf-8") as f:
+    with open(os.path.join(SRC_DIR, "data", "pins.json"), "r", encoding="utf-8") as f:
         pins = json.load(f)
 
     init_data = bulletin_board[0]["data"]
@@ -64,8 +67,8 @@ def main():
     python_exe = sys.executable
     
     # Avvia i server SA e AE in background
-    sa_proc = subprocess.Popen([python_exe, "sa.py"], cwd=WORKSPACE_DIR)
-    ae_proc = subprocess.Popen([python_exe, "ae.py"], cwd=WORKSPACE_DIR)
+    sa_proc = subprocess.Popen([python_exe, "sa.py"], cwd=SRC_DIR)
+    ae_proc = subprocess.Popen([python_exe, "ae.py"], cwd=SRC_DIR)
     
     try:
         # Attesa del boot
@@ -92,7 +95,7 @@ def main():
         
         # 2. Preparazione voto
         print("Preparazione del voto per Lista A (indice 0)...")
-        with open(os.path.join(WORKSPACE_DIR, "data", "bulletin_board.json"), "r", encoding="utf-8") as f:
+        with open(os.path.join(SRC_DIR, "data", "bulletin_board.json"), "r", encoding="utf-8") as f:
             bb = json.load(f)
         validate_pins(bb)
         ae_encrypt_public_pem = bb[0]["data"]["ae_encrypt_public"]
@@ -130,7 +133,7 @@ def main():
         
         # 5. Verifica con l'Observer
         print("Avvio dell'observer per la verifica universale...")
-        obs_proc = subprocess.Popen([python_exe, "observer.py"], cwd=WORKSPACE_DIR, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        obs_proc = subprocess.Popen([python_exe, "observer.py"], cwd=SRC_DIR, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = obs_proc.communicate()
         print("--- Output Observer ---")
         print(stdout)
