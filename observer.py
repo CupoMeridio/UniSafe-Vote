@@ -64,6 +64,7 @@ def main() -> None:
     init_data = init_block["data"]
     ae_sign_public = deserialize_public_key(init_data["ae_sign_public"])
     ae_encrypt_public = deserialize_public_key(init_data["ae_encrypt_public"])
+    sa_sign_public = deserialize_public_key(init_data["sa_sign_public"])
     candidates = init_data["candidates"]
     NULL_LABEL = "Scheda nulla"
 
@@ -236,6 +237,34 @@ def main() -> None:
             all_passed = False
     else:
         print("Saltato (nessun voto)")
+
+    # 7. Verifica riconciliazione
+    print("\n7. Verifica riconciliazione token e schede... ", end="")
+    rec_sa_block = next((b for b in bb if b["type"] == "reconciliation_sa"), None)
+    rec_ae_block = next((b for b in bb if b["type"] == "reconciliation_ae"), None)
+    
+    if rec_sa_block and rec_ae_block:
+        # Verifica firme
+        sa_data_json = json.dumps(rec_sa_block["data"], sort_keys=True).encode('utf-8')
+        sa_sig = bytes.fromhex(rec_sa_block["signature"])
+        ae_data_json = json.dumps(rec_ae_block["data"], sort_keys=True).encode('utf-8')
+        ae_sig = bytes.fromhex(rec_ae_block["signature"])
+        
+        if not verify(sa_sign_public, sa_data_json, sa_sig) or not verify(ae_sign_public, ae_data_json, ae_sig):
+            print("FAIL (Firme non valide)")
+            all_passed = False
+        else:
+            total_tokens = rec_sa_block["data"]["total_tokens"]
+            total_votes = rec_ae_block["data"]["total_votes"]
+            
+            if total_votes <= total_tokens:
+                print(f"OK ({total_votes} voti su {total_tokens} token emessi)")
+            else:
+                print(f"FAIL (Voti ricevuti {total_votes} > Token emessi {total_tokens})")
+                all_passed = False
+    else:
+        print("Saltato (Blocchi di riconciliazione mancanti)")
+
 
     print("\n=== RISULTATO FINALE ===")
     if all_passed:

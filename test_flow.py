@@ -12,6 +12,22 @@ sys.path.insert(0, WORKSPACE_DIR)
 
 from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
+from client import compute_public_key_fingerprint
+
+
+def validate_pins(bulletin_board):
+    """Verifica che le chiavi AE del Bulletin Board corrispondano ai pin trusted."""
+    with open(os.path.join(WORKSPACE_DIR, "data", "pins.json"), "r", encoding="utf-8") as f:
+        pins = json.load(f)
+
+    init_data = bulletin_board[0]["data"]
+
+    def normalize_pin(pin_value):
+        return pin_value[7:] if pin_value.startswith("sha256:") else pin_value
+
+    assert normalize_pin(pins["ae_encrypt_public"]) == compute_public_key_fingerprint(init_data["ae_encrypt_public"])
+    assert normalize_pin(pins["ae_sign_public"]) == compute_public_key_fingerprint(init_data["ae_sign_public"])
+    print("Pin trusted AE verificati con successo!")
 
 def check_server(url):
     try:
@@ -78,6 +94,7 @@ def main():
         print("Preparazione del voto per Lista A (indice 0)...")
         with open(os.path.join(WORKSPACE_DIR, "data", "bulletin_board.json"), "r", encoding="utf-8") as f:
             bb = json.load(f)
+        validate_pins(bb)
         ae_encrypt_public_pem = bb[0]["data"]["ae_encrypt_public"]
         ae_encrypt_public = deserialize_public_key(ae_encrypt_public_pem)
         
@@ -104,7 +121,8 @@ def main():
         print(f"Voto accettato! Leaf index: {receipt['leaf_index']}")
         
         # 4. Chiusura elezione e scrutinio
-        print("Chiusura dell'elezione...")
+        print("Chiusura dell'elezione e riconciliazione...")
+        requests.post("http://localhost:5001/reconcile").raise_for_status()
         r = requests.post("http://localhost:5002/close")
         r.raise_for_status()
         close_res = r.json()

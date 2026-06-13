@@ -161,6 +161,7 @@ def has_election_configuration() -> bool:
     keys_dir = os.path.join(PROJECT_DIR, "data", "keys")
     receipts_dir = os.path.join(PROJECT_DIR, "data", "receipts")
     ae_state_path = os.path.join(PROJECT_DIR, "data", "ae_state.json")
+    pins_path = os.path.join(PROJECT_DIR, "data", "pins.json")
 
     return (
         os.path.exists(bulletin_board_path)
@@ -168,6 +169,7 @@ def has_election_configuration() -> bool:
         or os.path.isdir(keys_dir)
         or os.path.isdir(receipts_dir)
         or os.path.exists(ae_state_path)
+        or os.path.exists(pins_path)
     )
 
 
@@ -339,7 +341,8 @@ Questa operazione:
    - Coppia per firma dell'AE
 2. Crea il Bulletin Board (registro pubblico append-only)
 3. Definisce i candidati e i parametri dell'elezione
-4. Permette di SCEGLIERE tra:
+4. Genera le impronte trusted AE in data/pins.json
+5. Permette di SCEGLIERE tra:
    - Sistema preconfigurato (liste stock + utenti già registrati)
    - Solo liste di voto (registrazione utenti abilitata)
     """)
@@ -359,6 +362,7 @@ def reset_election() -> None:
     keys_dir = os.path.join(PROJECT_DIR, "data", "keys")
     receipts_dir = os.path.join(PROJECT_DIR, "data", "receipts")
     ae_state_path = os.path.join(PROJECT_DIR, "data", "ae_state.json")
+    pins_path = os.path.join(PROJECT_DIR, "data", "pins.json")
 
     if not has_election_configuration():
         print("Nessuna configurazione di elezione trovata da rimuovere.")
@@ -367,8 +371,8 @@ def reset_election() -> None:
     print_header("RESET CONFIGURAZIONE ELEZIONE")
     print_explanation("""
 Questa operazione elimina i file di configurazione dell'elezione, le chiavi RSA,
-lo stato privato dell'Autorità Elettorale e le ricevute JSON dei voti
-delle elezioni passate.
+lo stato privato dell'Autorità Elettorale, i pin trusted AE e le ricevute JSON
+dei voti delle elezioni passate.
 Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente nuove.
     """)
     confirm = input("Confermi la rimozione della configurazione dell'elezione? (s/n): ").strip().lower()
@@ -382,6 +386,8 @@ Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente
         os.remove(voters_path)
     if os.path.exists(ae_state_path):
         os.remove(ae_state_path)
+    if os.path.exists(pins_path):
+        os.remove(pins_path)
     if os.path.isdir(keys_dir):
         for filename in os.listdir(keys_dir):
             file_path = os.path.join(keys_dir, filename)
@@ -463,6 +469,10 @@ Quando le urne vengono chiuse:
     input("Premi Invio per chiudere le urne...")
     
     try:
+        # Chiamata al SA per pubblicare i token emessi (Riconciliazione)
+        if check_server_running(SA_URL):
+            requests.post(SA_URL + '/reconcile', timeout=10)
+
         # Invio di una richiesta POST all'endpoint /close dell'AE per chiudere le urne
         response = requests.post(AE_URL + '/close', timeout=10)
  
