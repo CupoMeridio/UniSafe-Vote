@@ -17,6 +17,22 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from crypto.keys import load_public_key, load_private_key, deserialize_public_key
 from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import sign, verify
+from client import compute_public_key_fingerprint
+
+
+def validate_pins(bulletin_board):
+    """Verifica che le chiavi AE del Bulletin Board corrispondano ai pin trusted."""
+    with open("data/pins.json", "r", encoding="utf-8") as f:
+        pins = json.load(f)
+
+    init_data = bulletin_board[0]["data"]
+
+    def normalize_pin(pin_value):
+        return pin_value[7:] if pin_value.startswith("sha256:") else pin_value
+
+    assert normalize_pin(pins["ae_encrypt_public"]) == compute_public_key_fingerprint(init_data["ae_encrypt_public"])
+    assert normalize_pin(pins["ae_sign_public"]) == compute_public_key_fingerprint(init_data["ae_sign_public"])
+    print("    Pin trusted AE verificati con successo!")
 
 
 SA_URL = "http://localhost:5001"
@@ -137,6 +153,7 @@ def main():
         print("\n[3] Caricamento chiavi...")
         with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
             bb = json.load(f)
+        validate_pins(bb)
         ae_pubkey = deserialize_public_key(bb[0]["data"]["ae_encrypt_public"])
         sa_privkey = load_private_key("sa_sign")
         print("    Chiavi caricate!")

@@ -19,6 +19,7 @@ Il menu principale coordina l'avvio di questi componenti e permette all'amminist
 """
 
 import os
+import json
 import subprocess
 import sys
 import time
@@ -31,6 +32,15 @@ AE_PROCESS: Optional[subprocess.Popen] = None  # Riferimento al processo del ser
 SA_URL = "http://localhost:5001"  # URL di base per connettersi al server SA
 AE_URL = "http://localhost:5002"  # URL di base per connettersi al server AE
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))  # Percorso assoluto della cartella del progetto
+
+ANSI_RESET = "\033[0m"
+ANSI_BRIGHT = "\033[1m"
+ANSI_DIM = "\033[90m"
+
+
+def colored(text: str, color_code: str) -> str:
+    """Restituisce il testo colorato solo se il terminale supporta ANSI."""
+    return f"{color_code}{text}{ANSI_RESET}"
 
 def launch_in_new_terminal(script_name: str) -> Optional[subprocess.Popen]:
     """
@@ -142,6 +152,108 @@ def is_election_initialized() -> bool:
     return os.path.exists(bulletin_board_path) and os.path.exists(voters_path)
 
 
+def has_election_configuration() -> bool:
+    """
+    Verifica se esiste almeno una configurazione da poter resettare.
+    """
+    bulletin_board_path = os.path.join(PROJECT_DIR, "data", "bulletin_board.json")
+    voters_path = os.path.join(PROJECT_DIR, "data", "voters.json")
+    keys_dir = os.path.join(PROJECT_DIR, "data", "keys")
+    receipts_dir = os.path.join(PROJECT_DIR, "data", "receipts")
+    ae_state_path = os.path.join(PROJECT_DIR, "data", "ae_state.json")
+    pins_path = os.path.join(PROJECT_DIR, "data", "pins.json")
+
+    return (
+        os.path.exists(bulletin_board_path)
+        or os.path.exists(voters_path)
+        or os.path.isdir(keys_dir)
+        or os.path.isdir(receipts_dir)
+        or os.path.exists(ae_state_path)
+        or os.path.exists(pins_path)
+    )
+
+
+def has_scrutinio() -> bool:
+    """
+    Verifica se nel Bulletin Board è presente il blocco finale di scrutinio.
+    """
+    bulletin_board_path = os.path.join(PROJECT_DIR, "data", "bulletin_board.json")
+    if not os.path.exists(bulletin_board_path):
+        return False
+
+    try:
+        with open(bulletin_board_path, "r", encoding="utf-8") as f:
+            bb = json.load(f)
+        return any(block.get("type") == "scrutinio" for block in bb)
+    except Exception:
+        return False
+
+
+def has_merkle_root() -> bool:
+    """
+    Verifica se nel Bulletin Board è presente la Merkle Root finale.
+    """
+    bulletin_board_path = os.path.join(PROJECT_DIR, "data", "bulletin_board.json")
+    if not os.path.exists(bulletin_board_path):
+        return False
+
+    try:
+        with open(bulletin_board_path, "r", encoding="utf-8") as f:
+            bb = json.load(f)
+        return any(block.get("type") == "merkle_root" for block in bb)
+    except Exception:
+        return False
+
+
+def get_urn_state(election_initialized: bool, ae_active: bool, ae_status: dict, scrutinio_presente: bool, merkle_root_presente: bool) -> str:
+    """
+    Restituisce lo stato leggibile delle urne.
+    """
+    if not election_initialized or not ae_active:
+        return "non disponibili"
+
+    if scrutinio_presente:
+        return "chiuse"
+
+    if merkle_root_presente:
+        return "chiuse"
+
+    urn_open = bool(ae_status.get("urn_open", False))
+    return "aperte" if urn_open else "chiuse"
+
+
+def get_ae_status() -> dict:
+    """
+    Recupera lo stato corrente dell'AE, se il server è raggiungibile.
+    """
+    try:
+        response = requests.get(AE_URL + "/status", timeout=0.5)
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return {}
+
+
+def menu_option(number: str, label: str, available: bool, suffix: str = "") -> str:
+    """
+    Stampa una voce di menu evidenziando quelle non disponibili.
+    """
+    text = f"  {number}. {label}"
+    if suffix:
+        text += f" [{suffix}]"
+    if not available:
+        return colored(f"{text} (non disponibile)", ANSI_DIM)
+    return colored(text, ANSI_BRIGHT)
+
+
+def section_title(text: str) -> str:
+    """
+    Evidenzia una sezione del menu principale.
+    """
+    return colored(text, ANSI_BRIGHT)
+
+
 def start_sa() -> None:
     """
     Avvia il Sistema di Autenticazione (SA) su un nuovo terminale.
@@ -229,7 +341,8 @@ Questa operazione:
    - Coppia per firma dell'AE
 2. Crea il Bulletin Board (registro pubblico append-only)
 3. Definisce i candidati e i parametri dell'elezione
-4. Permette di SCEGLIERE tra:
+4. Genera le impronte trusted AE in data/pins.json
+5. Permette di SCEGLIERE tra:
    - Sistema preconfigurato (liste stock + utenti già registrati)
    - Solo liste di voto (registrazione utenti abilitata)
     """)
@@ -249,22 +362,17 @@ def reset_election() -> None:
     keys_dir = os.path.join(PROJECT_DIR, "data", "keys")
     receipts_dir = os.path.join(PROJECT_DIR, "data", "receipts")
     ae_state_path = os.path.join(PROJECT_DIR, "data", "ae_state.json")
+    pins_path = os.path.join(PROJECT_DIR, "data", "pins.json")
 
-    if not (
-        os.path.exists(bulletin_board_path)
-        or os.path.exists(voters_path)
-        or os.path.isdir(keys_dir)
-        or os.path.isdir(receipts_dir)
-        or os.path.exists(ae_state_path)
-    ):
+    if not has_election_configuration():
         print("Nessuna configurazione di elezione trovata da rimuovere.")
         return
 
     print_header("RESET CONFIGURAZIONE ELEZIONE")
     print_explanation("""
 Questa operazione elimina i file di configurazione dell'elezione, le chiavi RSA,
-lo stato privato dell'Autorità Elettorale e le ricevute JSON dei voti
-delle elezioni passate.
+lo stato privato dell'Autorità Elettorale, i pin trusted AE e le ricevute JSON
+dei voti delle elezioni passate.
 Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente nuove.
     """)
     confirm = input("Confermi la rimozione della configurazione dell'elezione? (s/n): ").strip().lower()
@@ -278,6 +386,8 @@ Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente
         os.remove(voters_path)
     if os.path.exists(ae_state_path):
         os.remove(ae_state_path)
+    if os.path.exists(pins_path):
+        os.remove(pins_path)
     if os.path.isdir(keys_dir):
         for filename in os.listdir(keys_dir):
             file_path = os.path.join(keys_dir, filename)
@@ -359,6 +469,10 @@ Quando le urne vengono chiuse:
     input("Premi Invio per chiudere le urne...")
     
     try:
+        # Chiamata al SA per pubblicare i token emessi (Riconciliazione)
+        if check_server_running(SA_URL):
+            requests.post(SA_URL + '/reconcile', timeout=10)
+
         # Invio di una richiesta POST all'endpoint /close dell'AE per chiudere le urne
         response = requests.post(AE_URL + '/close', timeout=10)
  
@@ -399,12 +513,7 @@ Per eseguire l'Observer, inizializza prima una elezione dalla sezione PREPARAZIO
         """)
         return
 
-    bulletin_board_path = os.path.join(PROJECT_DIR, "data", "bulletin_board.json")
-    scrutinio_presente = False
-    if os.path.exists(bulletin_board_path):
-        with open(bulletin_board_path, "r", encoding="utf-8") as f:
-            bb = json.load(f)
-        scrutinio_presente = any(block.get("type") == "scrutinio" for block in bb)
+    scrutinio_presente = has_scrutinio()
 
     if not scrutinio_presente:
         print_header("VERIFICA UNIVERSALE (OBSERVER)")
@@ -448,30 +557,105 @@ def main_menu() -> None:
     """
     while True:
         clear_screen()
+        election_initialized = is_election_initialized()
+        sa_active = check_server_running(SA_URL)
+        ae_active = check_server_running(AE_URL)
+        ae_status = get_ae_status() if ae_active else {}
+        scrutinio_presente = has_scrutinio()
+        merkle_root_presente = has_merkle_root()
+        urn_state = get_urn_state(election_initialized, ae_active, ae_status, scrutinio_presente, merkle_root_presente)
+        urn_open = urn_state == "aperte"
+        has_configuration = has_election_configuration()
+
         print("\n" + "="*70)
         print("                   UNISAFE-VOTE - PANNELLO DI CONTROLLO")
         print("="*70)
-        
-        sa_status = "Attivo" if check_server_running(SA_URL) else "Inattivo"
-        ae_status = "Attivo" if check_server_running(AE_URL) else "Inattivo"
-        
-        print("\nSEZIONE PREPARAZIONE")
-        print("  1. Inizializza Elezione")
-        print("\nSEZIONE SERVER")
-        print(f"  2. Avvio SA (Sistema Autenticazione) [{sa_status}]")
-        print(f"  3. Avvio AE (Autorità Elettorale) [{ae_status}]")
-        print("\nSEZIONE VOTO")
-        print("  4. Apri Client Votante")
-        print("\nSEZIONE RISULTATI")
-        print("  5. Chiudi Urne e Avvia Scrutinio")
-        print("  6. Esegui Verifica Universale Finale (dopo scrutinio)")
-        print("  7. Reset configurazione elezione")
-        print("\nUSCITA")
-        print("  0. Esci")
+        print(f"\nStato: elezione inizializzata = {'sì' if election_initialized else 'no'}, "
+              f"SA = {'attivo' if sa_active else 'inattivo'}, "
+              f"AE = {'attivo' if ae_active else 'inattivo'}, "
+              f"urne = {urn_state}")
+        print(colored("\nLe voci in grigio non sono disponibili: esegui prima i passaggi precedenti.", ANSI_DIM))
+
+        print(f"\n{section_title('SEZIONE PREPARAZIONE')}")
+        print(menu_option(
+            "1",
+            "Inizializza Elezione",
+            available=not election_initialized,
+            suffix="già inizializzata" if election_initialized else ""
+        ))
+
+        print(f"\n{section_title('SEZIONE SERVER')}")
+        print(menu_option(
+            "2",
+            "Avvio SA (Sistema Autenticazione)",
+            available=election_initialized and not sa_active,
+            suffix="attivo" if sa_active else ("inizializza prima" if not election_initialized else "")
+        ))
+        print(menu_option(
+            "3",
+            "Avvio AE (Autorità Elettorale)",
+            available=election_initialized and not ae_active,
+            suffix="attivo" if ae_active else ("inizializza prima" if not election_initialized else "")
+        ))
+
+        print(f"\n{section_title('SEZIONE VOTO')}")
+        print(menu_option(
+            "4",
+            "Apri Client Votante",
+            available=election_initialized and sa_active,
+            suffix="urne chiuse: verifica/ricevuta" if urn_state == "chiuse" else ("AE inattivo: voto non disponibile" if not ae_active else "servono SA e AE attivi")
+        ))
+
+        print(f"\n{section_title('SEZIONE RISULTATI')}")
+        print(menu_option(
+            "5",
+            "Chiudi Urne e Avvia Scrutinio",
+            available=election_initialized and ae_active and urn_open,
+            suffix="urne chiuse" if election_initialized and urn_state == "chiuse" else "serve AE attivo e urne aperte"
+        ))
+        print(menu_option(
+            "6",
+            "Esegui Verifica Universale Finale (dopo scrutinio)",
+            available=scrutinio_presente,
+            suffix="scrutinio mancante" if not scrutinio_presente else "scrutinio pronto"
+        ))
+        print(menu_option(
+            "7",
+            "Reset configurazione elezione",
+            available=has_configuration,
+            suffix="nessuna configurazione" if not has_configuration else ""
+        ))
+
+        print(f"\n{section_title('USCITA')}")
+        print(menu_option("0", "Esci", available=True))
         print("="*70)
-        
+
+        disabled_choices = {}
+        if election_initialized:
+            disabled_choices["1"] = "l'elezione è già inizializzata; usa Reset se vuoi ricominciare."
+        if not election_initialized or sa_active:
+            disabled_choices["2"] = "per avviare il SA devi prima inizializzare l'elezione e il SA non deve essere già attivo."
+        if not election_initialized or ae_active:
+            disabled_choices["3"] = "per avviare l'AE devi prima inizializzare l'elezione e l'AE non deve essere già attiva."
+        if not election_initialized or not sa_active:
+            disabled_choices["4"] = "il client richiede elezione inizializzata e SA attivo."
+        if not election_initialized or not ae_active or not urn_open:
+            if election_initialized and urn_state == "chiuse":
+                disabled_choices["5"] = "le urne sono già chiuse; per la verifica finale usa l'opzione 6."
+            else:
+                disabled_choices["5"] = "la chiusura richiede elezione inizializzata, AE attivo e urne aperte."
+        if not scrutinio_presente:
+            disabled_choices["6"] = "la verifica universale finale richiede il blocco scrutinio; prima chiudi le urne ed esegui lo scrutinio."
+        if not has_configuration:
+            disabled_choices["7"] = "non esiste alcuna configurazione di elezione da resettare."
+
         choice = input("\nSeleziona un'opzione: ")
-        
+
+        if choice in disabled_choices:
+            print(colored(f"\nOpzione non disponibile: {disabled_choices[choice]}", ANSI_DIM))
+            input("\nPremi Invio per tornare al menu...")
+            continue
+
         if choice == '1':
             init_election()
         elif choice == '2':
@@ -487,11 +671,12 @@ def main_menu() -> None:
         elif choice == '7':
             reset_election()
         elif choice == '0':
+            clear_screen()
             print("\nArrivederci!")
             break
         else:
             print("\nOpzione non valida!")
-        
+
         input("\nPremi Invio per tornare al menu...")
 
 

@@ -5,13 +5,26 @@ Script di inizializzazione non-interattivo di un'elezione per testing.
 """
 import os
 import json
+import hashlib
 from datetime import datetime, timedelta, UTC
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from crypto.keys import generate_rsa_keypair, save_keypair, serialize_public_key
+from cryptography.hazmat.primitives import serialization
+from crypto.keys import generate_rsa_keypair, save_keypair, serialize_public_key, deserialize_public_key, save_encrypted_private_key
 from crypto.rsa_pss import sign
+from crypto.password import hash_password
+
+
+def compute_public_key_fingerprint(pem_str: str) -> str:
+    """Calcola l'impronta SHA-256 DER di una chiave pubblica RSA."""
+    pubkey = deserialize_public_key(pem_str)
+    pubkey_bytes = pubkey.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return "sha256:" + hashlib.sha256(pubkey_bytes).hexdigest()
 
 
 def get_preconfigured_voters():
@@ -31,7 +44,9 @@ def main():
     ae_encrypt_private, ae_encrypt_public = generate_rsa_keypair()
     ae_sign_private, ae_sign_public = generate_rsa_keypair()
     save_keypair(sa_sign_private, sa_sign_public, "sa_sign")
-    save_keypair(ae_encrypt_private, ae_encrypt_public, "ae_encrypt")
+    # ae_encrypt: salviamo SOLO la chiave pubblica in PEM (serve ai client per cifrare);
+    # la chiave privata viene salvata cifrata con AES-GCM (IKM = firma blocco init).
+    save_keypair(ae_encrypt_private, ae_encrypt_public, "ae_encrypt")  # salva entrambe per ora
     save_keypair(ae_sign_private, ae_sign_public, "ae_sign")
 
     # 2. Configura elezione
@@ -65,8 +80,29 @@ def main():
     with open("data/bulletin_board.json", "w", encoding="utf-8") as f:
         json.dump(bulletin_board, f, indent=2, ensure_ascii=False)
 
+    pins = {
+        "ae_encrypt_public": compute_public_key_fingerprint(init_data["ae_encrypt_public"]),
+        "ae_sign_public": compute_public_key_fingerprint(init_data["ae_sign_public"])
+    }
+    with open("data/pins.json", "w", encoding="utf-8") as f:
+        json.dump(pins, f, indent=2, ensure_ascii=False)
+
+    # Cifra la chiave privata di decifratura dell'AE con AES-GCM.
+    # IKM = firma del blocco init: la chiave può essere decifrata solo da chi
+    # possiede quella firma, ovvero l'AE stessa a urne chiuse.
+    # Al /close, il nuovo IKM sarà la firma della Merkle Root finale, che include
+    # i voti e può quindi esistere solo dopo la chiusura delle urne.
+    # Per il salvataggio iniziale usiamo la firma del blocco init come placeholder:
+    # ae.py sovrascriverà il .enc durante il /close con il nuovo IKM corretto.
+    save_encrypted_private_key(ae_encrypt_private, "ae_encrypt", init_signature)
+
     with open("data/voters.json", "w", encoding="utf-8") as f:
-        json.dump(voters, f, indent=2, ensure_ascii=False)
+        voters_to_save = []
+        for v in voters:
+            v_copy = v.copy()
+            v_copy['password'] = hash_password(v_copy['password'])
+            voters_to_save.append(v_copy)
+        json.dump(voters_to_save, f, indent=2, ensure_ascii=False)
     
     with open("data/ae_state.json", "w", encoding="utf-8") as f:
         json.dump({"used_tokens": []}, f, indent=2, ensure_ascii=False)

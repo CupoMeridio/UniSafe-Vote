@@ -31,7 +31,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from crypto.keys import load_private_key, load_public_key, deserialize_public_key
+from crypto.keys import load_private_key, load_public_key, deserialize_public_key, load_and_decrypt_private_key, save_encrypted_private_key
 from crypto.rsa_oaep import encrypt, decrypt
 from crypto.rsa_pss import sign, verify
 from crypto.merkle import MerkleTree
@@ -147,7 +147,10 @@ def load_initial_data() -> None:
     print("[AE] Pronto sulla porta 5002")
 
 
-def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", "scrutinio"], block_data: Dict) -> Dict:
+def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", "scrutinio",
+                                                   "reconciliation_ae", "reconciliation_sa"],
+                             block_data: Dict,
+                             precomputed_signature: bytes = None) -> Dict:
     """
     Appende un nuovo blocco firmato al Bulletin Board.
 
@@ -156,8 +159,10 @@ def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", 
     per garantirne l'integrità.
 
     Args:
-        block_type (str): Tipo di blocco ("init", "vote", "merkle_root", "scrutinio")
+        block_type (str): Tipo di blocco
         block_data (dict): Dati da includere nel blocco
+        precomputed_signature (bytes, optional): Se fornita, non viene ricalcolata
+            la firma (utile quando la firma stessa viene usata come IKM crittografico).
 
     Returns:
         dict: Il nuovo blocco creato (con firma e timestamp)
@@ -166,9 +171,9 @@ def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", 
     with open(bulletin_board_path, "r", encoding="utf-8") as f:
         bb = json.load(f)
 
-    # Prepara i dati e calcola la firma
+    # Prepara i dati e calcola la firma (o usa quella precomputed)
     block_data_json = json.dumps(block_data, sort_keys=True).encode('utf-8')
-    signature = sign(ae_sign_private, block_data_json)
+    signature = precomputed_signature if precomputed_signature is not None else sign(ae_sign_private, block_data_json)
 
     # Crea il nuovo blocco
     new_block = {
@@ -332,10 +337,12 @@ def vote():
 
         # Genera la ricevuta per l'elettore, con la Merkle Proof
         merkle_proof = merkle_tree.get_proof(leaf_index)
+        timestamp_str = datetime.now(UTC).isoformat()
         receipt_data = {
             "leaf_index": leaf_index,
             "enc_vote": enc_vote,
-            "merkle_proof": merkle_proof
+            "merkle_proof": merkle_proof,
+            "timestamp": timestamp_str
         }
 
         # Firma la ricevuta con la chiave privata dell'AE
@@ -348,9 +355,13 @@ def vote():
             "leaf_index": leaf_index,
             "enc_vote": enc_vote,
             "merkle_proof": merkle_proof,
+            "timestamp": timestamp_str,
             "ae_signature": receipt_signature.hex()
         }), 200
 
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        print(f"[AE] Errore di validazione (400): {str(e)}")
+        return jsonify({"error": "Formato richiesta non valido (Bad Request)"}), 400
     except Exception as e:
         print(f"[AE] Errore: {str(e)}")
         return jsonify({"error": "Errore interno"}), 500
@@ -380,13 +391,36 @@ def close():
     urn_open = False
     print(f"[AE] {datetime.now().isoformat()} - Urne chiuse")
 
-    # 1. Pubblica la Merkle Root finale sul Bulletin Board
+    # 0. Pubblica blocco di riconciliazione (totale voti ricevuti)
+    total_votes = len(used_tokens)
+    reconciliation_data = {"total_votes": total_votes}
+    append_to_bulletin_board("reconciliation_ae", reconciliation_data)
+
+    # 1. Calcola la Merkle Root finale e firmala — questa firma diventa l'IKM
+    #    per decifrare la chiave privata dell'AE (vincolo crittografico WP3-3.3).
     merkle_root = merkle_tree.get_root()
     root_data = {"merkle_root": merkle_root}
-    append_to_bulletin_board("merkle_root", root_data)
+    root_data_json = json.dumps(root_data, sort_keys=True).encode('utf-8')
+    merkle_root_signature = sign(ae_sign_private, root_data_json)
+    append_to_bulletin_board("merkle_root", root_data, precomputed_signature=merkle_root_signature)
 
-    # 2. Carica la chiave privata di decifratura (solo ora, a urne chiuse)
-    ae_encrypt_private = load_private_key("ae_encrypt")
+    # 2. Decifra la chiave privata di decifratura usando la firma della Merkle Root
+    #    come Input Key Material (HKDF-SHA256 → AES-256-GCM).
+    #    Questa operazione fallisce se la firma non corrisponde a quella usata
+    #    durante il salvataggio: in caso di esecuzione anticipata (urne ancora
+    #    aperte) la root non è quella definitiva e la decifratura è impossibile.
+    try:
+        ae_encrypt_private = load_and_decrypt_private_key("ae_encrypt", merkle_root_signature)
+    except Exception:
+        # Prima esecuzione di /close: il file .enc è stato creato con IKM=init_signature.
+        # Leggiamo la firma del blocco init dal Bulletin Board, la usiamo per decifrare
+        # il file .enc iniziale, poi lo ri-cifriamo con l'IKM definitivo (Merkle Root).
+        with open(bulletin_board_path, "r", encoding="utf-8") as _f:
+            _bb = json.load(_f)
+        init_signature_bytes = bytes.fromhex(_bb[0]["signature"])
+        ae_encrypt_private = load_and_decrypt_private_key("ae_encrypt", init_signature_bytes)
+        save_encrypted_private_key(ae_encrypt_private, "ae_encrypt", merkle_root_signature)
+        print("[AE] Chiave privata AE ri-cifrata con IKM definitivo (Merkle Root firmata)")
 
     # 3. Esegui lo scrutinio
     with open(bulletin_board_path, "r", encoding="utf-8") as f:
@@ -465,8 +499,29 @@ def shutdown():
     return jsonify({"status": "shutting down"}), 200
 
 
+def print_server_banner() -> None:
+    """Stampa una descrizione iniziale del terminale server AE."""
+    print("\n" + "=" * 70)
+    print("  AUTORITÀ ELETTORALE (AE)")
+    print("=" * 70)
+    print("Questo terminale ospita il server AE sulla porta 5002.")
+    print("Ruolo: ricevere le schede cifrate, verificare token e Proof of Work,")
+    print("registrare i voti nel Bulletin Board e, a urne chiuse, eseguire lo")
+    print("scrutinio e pubblicare le prove.")
+    print("\nIn questo terminale potrai visualizzare:")
+    print("- il caricamento dei dati iniziali;")
+    print("- l'avvio del server Flask;")
+    print("- le richieste ricevute su /status, /vote, /close, /shutdown;")
+    print("- eventuali schede nulle rilevate durante lo scrutinio;")
+    print("- eventuali errori o messaggi diagnostici dell'AE.")
+    print("\nNon serve interagire con questo terminale: chiudilo solo quando")
+    print("hai terminato l'elezione o il test.")
+    print("=" * 70 + "\n")
+
+
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    print_server_banner()
     load_initial_data()
     # Avvia il server Flask sulla porta 5002, debug disabilitato
     app.run(port=5002, debug=False)

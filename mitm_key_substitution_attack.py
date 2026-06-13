@@ -6,13 +6,11 @@
 import os
 import sys
 import json
-import hashlib
-from typing import Dict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from crypto.keys import generate_rsa_keypair, serialize_public_key
-from client import Client, SecurityError, compute_public_key_fingerprint
+from client import Client, SecurityError
 
 
 def main():
@@ -25,11 +23,10 @@ def main():
     from init_election_non_interactive import main as init_election
     init_election()
 
-    print("\n[2] Baseline client setup: load keys and set pinning")
+    print("\n[2] Baseline client setup: load keys and validate trusted pins")
     client = Client()
-    client._load_pins_from_bulletin_board()
-    print(f"Trusted pin for AE encrypt key: {client.pin_ae_encrypt_fingerprint[:20]}...")
-    print(f"Trusted pin for AE sign key: {client.pin_ae_sign_fingerprint[:20]}...")
+    print(f"Trusted pin for AE encrypt key: {client.trusted_pins['ae_encrypt_public']}")
+    print(f"Trusted pin for AE sign key: {client.trusted_pins['ae_sign_public']}")
 
     print("\n[3] Attacker step 1: generate malicious RSA key pair (fake AE keys)")
     fake_ae_encrypt_priv, fake_ae_encrypt_pub = generate_rsa_keypair()

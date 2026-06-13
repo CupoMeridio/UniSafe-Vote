@@ -31,12 +31,10 @@ from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import verify
 from crypto.merkle import verify_proof
-
-
-import hashlib
 SA_URL: str = "http://localhost:5001"  # URL del Sistema di Autenticazione
 AE_URL: str = "http://localhost:5002"  # URL dell'Autorità Elettorale
 BULLETIN_BOARD_PATH: str = "data/bulletin_board.json"
+PINS_PATH: str = "data/pins.json"
 
 
 class SecurityError(Exception):
@@ -68,55 +66,80 @@ class Client:
         self.candidates: List[str] = []  # Lista candidati
         self.ae_encrypt_public: Optional[RSAPublicKey] = None  # Chiave pubblica di cifratura AE
         self.ae_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica di firma AE
-        self.pin_ae_encrypt_fingerprint: Optional[str] = None
-        self.pin_ae_sign_fingerprint: Optional[str] = None
+        self.trusted_pins: Dict[str, str] = {}
 
-    def _load_pins_from_bulletin_board(self):
-        """Load trusted fingerprints of AE keys from the initial bulletin board.
-        In a real system these would be hardcoded or distributed via a secure channel.
-        """
-        # In a real system these pins would be hardcoded or distributed via a secure channel
-        # For this simulation we load them after initializing an election, but in real life they are pre-shared
         self.load_bulletin_board()
-        self.pin_ae_encrypt_fingerprint = compute_public_key_fingerprint(self.init_data["ae_encrypt_public"])
-        self.pin_ae_sign_fingerprint = compute_public_key_fingerprint(self.init_data["ae_sign_public"])
+
+    def load_pins(self) -> Dict[str, str]:
+        """
+        Carica le impronte trusted delle chiavi pubbliche AE.
+
+        Questo file rappresenta un canale separato rispetto al Bulletin Board.
+        In un sistema reale, questi pin sarebbero distribuiti agli elettori
+        tramite un canale istituzionale sicuro (es. portale web con TLS,
+        comunicazione ufficiale o documento firmato).
+        """
+        if not os.path.exists(PINS_PATH):
+            raise SecurityError(
+                "File data/pins.json non trovato. Inizializza prima l'elezione e assicurati "
+                "che il file dei pin trusted sia presente sul client."
+            )
+
+        with open(PINS_PATH, "r", encoding="utf-8") as f:
+            pins = json.load(f)
+
+        if not isinstance(pins, dict):
+            raise SecurityError("data/pins.json non valido: il file deve contenere un oggetto JSON.")
+
+        required = ["ae_encrypt_public", "ae_sign_public"]
+        missing = [key for key in required if key not in pins]
+        if missing:
+            raise SecurityError(f"data/pins.json incompleto: mancano i pin {', '.join(missing)}.")
+
+        return {
+            "ae_encrypt_public": pins["ae_encrypt_public"],
+            "ae_sign_public": pins["ae_sign_public"]
+        }
+
+    def _pin_matches(self, received: str, trusted: str) -> bool:
+        """Verifica un fingerprint ricevuto contro un pin trusted."""
+        trusted_value = trusted[7:] if trusted.startswith("sha256:") else trusted
+        return received == trusted_value
 
     def load_bulletin_board(self) -> None:
         """
-        Carica il Bulletin Board da file locale per ottenere:
-        - La lista dei candidati
-        - La chiave pubblica di cifratura dell'AE
-        - La chiave pubblica di firma dell'AE
-        Also verifies key fingerprints via certificate pinning
+        Carica il Bulletin Board da file locale e verifica le chiavi AE tramite pinning.
+
+        Le chiavi pubbliche vengono usate solo se le loro impronte coincidono con
+        quelle presenti in data/pins.json, file separato dal Bulletin Board.
         """
+        self.trusted_pins = self.load_pins()
+
         with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
             self.bb = json.load(f)
         self.init_data = self.bb[0]["data"]  # Dati di inizializzazione
         self.candidates = self.init_data["candidates"]  # Lista candidati
 
-        # Certificate Pinning: Verify fingerprints of AE public keys
+        # Certificate Pinning: verifica le impronte delle chiavi AE contro il
+        # canale trusted separato (data/pins.json), non contro il BB stesso.
         ae_encrypt_pem = self.init_data["ae_encrypt_public"]
         ae_sign_pem = self.init_data["ae_sign_public"]
 
-        # Compute fingerprints of received keys
         received_encrypt_fingerprint = compute_public_key_fingerprint(ae_encrypt_pem)
         received_sign_fingerprint = compute_public_key_fingerprint(ae_sign_pem)
 
-        # If pins are not yet set, set them (only once, during first initialization)
-        if self.pin_ae_encrypt_fingerprint is None or self.pin_ae_sign_fingerprint is None:
-            self.pin_ae_encrypt_fingerprint = received_encrypt_fingerprint
-            self.pin_ae_sign_fingerprint = received_sign_fingerprint
-        else:
-            if received_encrypt_fingerprint != self.pin_ae_encrypt_fingerprint:
-                raise SecurityError(
-                    "Impronta della chiave pubblica di cifratura AE non corrispondente! Possibile attacco MitM!"
-                )
-            if received_sign_fingerprint != self.pin_ae_sign_fingerprint:
-                raise SecurityError(
-                    "Impronta della chiave pubblica di firma AE non corrispondente! Possibile attacco MitM!"
-                )
+        if not self._pin_matches(received_encrypt_fingerprint, self.trusted_pins["ae_encrypt_public"]):
+            raise SecurityError(
+                "Impronta della chiave pubblica di cifratura AE non corrispondente! "
+                "Possibile attacco MitM o sostituzione del Bulletin Board."
+            )
+        if not self._pin_matches(received_sign_fingerprint, self.trusted_pins["ae_sign_public"]):
+            raise SecurityError(
+                "Impronta della chiave pubblica di firma AE non corrispondente! "
+                "Possibile attacco MitM o sostituzione del Bulletin Board."
+            )
 
-        # Now load the keys normally
+        # Ora le chiavi sono state validate contro il canale trusted separato.
         self.ae_encrypt_public = deserialize_public_key(ae_encrypt_pem)
         self.ae_sign_public = deserialize_public_key(ae_sign_pem)
 
@@ -269,6 +292,14 @@ class Client:
             print("\nDevi prima autenticarti!")
             return
 
+        # Ricarica i parametri pubblici dal Bulletin Board prima del voto, così
+        # da usare la configurazione corrente dell'elezione.
+        self.load_bulletin_board()
+
+        if not self.candidates:
+            print("\nNessuna lista di voto configurata nel Bulletin Board. Impossibile votare.")
+            return
+
         # Mostra la lista dei candidati
         print("\nLista candidati:")
         for i, candidate in enumerate(self.candidates):
@@ -392,7 +423,8 @@ class Client:
             receipt_data_to_verify = {
                 "leaf_index": receipt['leaf_index'],
                 "enc_vote": receipt['enc_vote'],
-                "merkle_proof": receipt['merkle_proof']
+                "merkle_proof": receipt['merkle_proof'],
+                "timestamp": receipt['timestamp']
             }
             receipt_json = json.dumps(receipt_data_to_verify, sort_keys=True).encode('utf-8')
             receipt_signature = bytes.fromhex(receipt['ae_signature'])
@@ -487,6 +519,11 @@ class Client:
 
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    client = Client()
-    client.menu()
+    try:
+        client = Client()
+        client.menu()
+    except SecurityError as e:
+        print(f"\nErrore di sicurezza: {e}")
+        print("Il client non può continuare senza pin trusted validi.")
+        input("\nPremi Invio per uscire...")
 

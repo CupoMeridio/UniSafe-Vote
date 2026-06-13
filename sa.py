@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from crypto.keys import load_private_key
 from crypto.rsa_pss import sign
+from crypto.password import hash_password, verify_password
 
 
 app = Flask(__name__)
@@ -119,6 +120,27 @@ def is_valid_unisa_email(email: str) -> bool:
     """
     email = email.strip().lower()
     return email.endswith('@studenti.unisa.it') or email.endswith('@unisa.it')
+def append_to_bulletin_board(block_type: str, block_data: dict) -> dict:
+    """Appende un nuovo blocco firmato al Bulletin Board."""
+    with open("data/bulletin_board.json", "r", encoding="utf-8") as f:
+        bb = json.load(f)
+
+    block_data_json = json.dumps(block_data, sort_keys=True).encode('utf-8')
+    signature = sign(sa_sign_private, block_data_json)
+
+    new_block = {
+        "type": block_type,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "data": block_data,
+        "signature": signature.hex()
+    }
+
+    bb.append(new_block)
+
+    with open("data/bulletin_board.json", "w", encoding="utf-8") as f:
+        json.dump(bb, f, indent=2, ensure_ascii=False)
+
+    return new_block
 
 
 @app.route('/register', methods=['POST'])
@@ -181,7 +203,7 @@ def register():
             "id": new_id,
             "email": email,
             "username": username,
-            "password": password
+            "password": hash_password(password)
         }
         voters_list.append(new_voter)
 
@@ -191,6 +213,9 @@ def register():
         print(f"[SA] {datetime.now().isoformat()} - Nuovo elettore registrato: {username} ({email})")
         return jsonify({"message": "Registrazione avvenuta con successo!"}), 201
 
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        print(f"[SA] Errore di validazione (400): {str(e)}")
+        return jsonify({"error": "Formato richiesta non valido (Bad Request)"}), 400
     except Exception as e:
         print(f"[SA] Errore durante registrazione: {str(e)}")
         return jsonify({"error": "Errore interno"}), 500
@@ -227,7 +252,7 @@ def authenticate():
         # 1. Verifica che le credenziali siano valide
         voter = None
         for v in voters_list:
-            if v["username"] == username and v["password"] == password:
+            if v["username"] == username and verify_password(v["password"], password):
                 voter = v
                 break
 
@@ -262,6 +287,9 @@ def authenticate():
             "signature": signature.hex()
         }), 200
 
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        print(f"[SA] Errore di validazione (400): {str(e)}")
+        return jsonify({"error": "Formato richiesta non valido (Bad Request)"}), 400
     except Exception as e:
         print(f"[SA] Errore: {str(e)}")
         return jsonify({"error": "Errore interno"}), 500
@@ -276,21 +304,60 @@ def status():
         JSON con il numero di token emessi e la lista degli ID degli elettori serviti.
     """
     return jsonify({
-        "tokens_issued": len(issued_tokens),
+        "status": "online",
+        "issued_tokens": len(issued_tokens),
         "voters_served": list(issued_tokens)
     }), 200
 
 
+@app.route('/reconcile', methods=['POST'])
+def reconcile():
+    """
+    Endpoint per la riconciliazione: il SA pubblica sul Bulletin Board il numero totale
+    di token emessi, firmando digitalmente questo conteggio.
+    """
+    try:
+        total_tokens = len(issued_tokens)
+        block_data = {
+            "total_tokens": total_tokens
+        }
+        append_to_bulletin_board("reconciliation_sa", block_data)
+        print(f"[SA] Riconciliazione completata: {total_tokens} token emessi")
+        return jsonify({"status": "success", "total_tokens": total_tokens}), 200
+    except Exception as e:
+        print(f"[SA] Errore in riconciliazione: {str(e)}")
+        return jsonify({"error": "Errore interno"}), 500
+
+
 @app.route('/shutdown', methods=['POST'])
 def shutdown():
-    """Termina il server SA in modo controllato (adatto all'uso locale)."""
+    """Termina il server SA in modo controllato."""
     import threading
     threading.Timer(0.5, lambda: os._exit(0)).start()
     return jsonify({"status": "shutting down"}), 200
 
 
+def print_server_banner() -> None:
+    """Stampa una descrizione iniziale del terminale server SA."""
+    print("\n" + "=" * 70)
+    print("  SISTEMA DI AUTENTICAZIONE (SA)")
+    print("=" * 70)
+    print("Questo terminale ospita il server SA sulla porta 5001.")
+    print("Ruolo: registrare gli elettori, autenticarli e rilasciare/recuperare")
+    print("il token firmato usato successivamente per votare presso l'AE.")
+    print("\nIn questo terminale potrai visualizzare:")
+    print("- il caricamento dei dati iniziali;")
+    print("- l'avvio del server Flask;")
+    print("- le richieste ricevute su /status, /register, /authenticate, /shutdown;")
+    print("- eventuali errori o messaggi diagnostici del SA.")
+    print("\nNon serve interagire con questo terminale: chiudilo solo quando")
+    print("hai terminato l'elezione o il test.")
+    print("=" * 70 + "\n")
+
+
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    print_server_banner()
     load_initial_data()
     # Avvia il server Flask sulla porta 5001, debug disabilitato per sicurezza
     app.run(port=5001, debug=False)

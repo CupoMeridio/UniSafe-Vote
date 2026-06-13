@@ -17,14 +17,27 @@ Il Bulletin Board è un registro append-only che contiene:
 """
 import os
 import json
+import hashlib
 from datetime import datetime, timedelta, UTC
 from typing import List, Dict
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from crypto.keys import generate_rsa_keypair, save_keypair, serialize_public_key
+from cryptography.hazmat.primitives import serialization
+from crypto.keys import generate_rsa_keypair, save_keypair, serialize_public_key, deserialize_public_key, save_encrypted_private_key
 from crypto.rsa_pss import sign
+from crypto.password import hash_password
+
+
+def compute_public_key_fingerprint(pem_str: str) -> str:
+    """Calcola l'impronta SHA-256 DER di una chiave pubblica RSA."""
+    pubkey = deserialize_public_key(pem_str)
+    pubkey_bytes = pubkey.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return "sha256:" + hashlib.sha256(pubkey_bytes).hexdigest()
 
 
 def get_preconfigured_voters() -> List[Dict[str, str]]:
@@ -159,6 +172,24 @@ def main() -> None:
         json.dump(bulletin_board, f, indent=2, ensure_ascii=False)
     print("  Bulletin Board inizializzato in data/bulletin_board.json")
 
+    # Genera i pin trusted delle chiavi pubbliche AE. Questo file simula il
+    # canale separato e sicuro con cui, in un sistema reale, le impronte
+    # verrebbero distribuite agli elettori prima della consultazione.
+    pins = {
+        "ae_encrypt_public": compute_public_key_fingerprint(init_data["ae_encrypt_public"]),
+        "ae_sign_public": compute_public_key_fingerprint(init_data["ae_sign_public"])
+    }
+    with open("data/pins.json", "w", encoding="utf-8") as f:
+        json.dump(pins, f, indent=2, ensure_ascii=False)
+    print("  Impronte AE salvate in data/pins.json")
+
+    # Vincolo crittografico sull'escrow della chiave privata AE (WP3 - 3.3):
+    # La chiave viene cifrata con AES-GCM; la chiave simmetrica è derivata
+    # (HKDF-SHA256) dalla firma del blocco init. L'AE sovrascriverà il file
+    # con il nuovo IKM (firma della Merkle Root finale) al momento del /close.
+    save_encrypted_private_key(ae_encrypt_private, "ae_encrypt", init_signature)
+    print("  Chiave privata AE cifrata e protetta in data/keys/ae_encrypt_private.enc")
+
     # I token NON vengono pre-generati in inizializzazione: ciascun token è
     # rilasciato dal SA solo al momento dell'autenticazione dell'elettore
     # (WP2 Fase 2), così che la finestra di validità decorra dal rilascio.
@@ -167,7 +198,12 @@ def main() -> None:
     # gli utenti potranno registrarsi successivamente tramite il SA, e il token
     # verrà rilasciato solo durante la loro autenticazione (WP2 Fase 2).
     with open("data/voters.json", "w", encoding="utf-8") as f:
-        json.dump(voters, f, indent=2, ensure_ascii=False)
+        voters_to_save = []
+        for v in voters:
+            v_copy = v.copy()
+            v_copy['password'] = hash_password(v_copy['password'])
+            voters_to_save.append(v_copy)
+        json.dump(voters_to_save, f, indent=2, ensure_ascii=False)
     if voters:
         print("\nLista elettori salvata in data/voters.json")
     else:
