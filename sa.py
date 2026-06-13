@@ -283,14 +283,33 @@ def status():
 
 @app.route('/shutdown', methods=['POST'])
 def shutdown():
-    """Termina il server SA in modo controllato (adatto all'uso locale)."""
+    """Termina il server SA in modo controllato."""
     import threading
     threading.Timer(0.5, lambda: os._exit(0)).start()
     return jsonify({"status": "shutting down"}), 200
 
 
+def print_server_banner() -> None:
+    """Stampa una descrizione iniziale del terminale server SA."""
+    print("\n" + "=" * 70)
+    print("  SISTEMA DI AUTENTICAZIONE (SA)")
+    print("=" * 70)
+    print("Questo terminale ospita il server SA sulla porta 5001.")
+    print("Ruolo: registrare gli elettori, autenticarli e rilasciare/recuperare")
+    print("il token firmato usato successivamente per votare presso l'AE.")
+    print("\nIn questo terminale potrai visualizzare:")
+    print("- il caricamento dei dati iniziali;")
+    print("- l'avvio del server Flask;")
+    print("- le richieste ricevute su /status, /register, /authenticate, /shutdown;")
+    print("- eventuali errori o messaggi diagnostici del SA.")
+    print("\nNon serve interagire con questo terminale: chiudilo solo quando")
+    print("hai terminato l'elezione o il test.")
+    print("=" * 70 + "\n")
+
+
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    print_server_banner()
     load_initial_data()
     # Avvia il server Flask sulla porta 5001, debug disabilitato per sicurezza
     app.run(port=5001, debug=False)

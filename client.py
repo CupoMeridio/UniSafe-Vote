@@ -31,9 +31,6 @@ from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import verify
 from crypto.merkle import verify_proof
-
-
-import hashlib
 SA_URL: str = "http://localhost:5001"  # URL del Sistema di Autenticazione
 AE_URL: str = "http://localhost:5002"  # URL dell'Autorità Elettorale
 BULLETIN_BOARD_PATH: str = "data/bulletin_board.json"
@@ -70,6 +67,8 @@ class Client:
         self.ae_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica di firma AE
         self.pin_ae_encrypt_fingerprint: Optional[str] = None
         self.pin_ae_sign_fingerprint: Optional[str] = None
+
+        self.load_bulletin_board()
 
     def _load_pins_from_bulletin_board(self):
         """Load trusted fingerprints of AE keys from the initial bulletin board.
@@ -267,6 +266,14 @@ class Client:
         """
         if not self.token:
             print("\nDevi prima autenticarti!")
+            return
+
+        # Ricarica i parametri pubblici dal Bulletin Board prima del voto, così
+        # da usare la configurazione corrente dell'elezione.
+        self.load_bulletin_board()
+
+        if not self.candidates:
+            print("\nNessuna lista di voto configurata nel Bulletin Board. Impossibile votare.")
             return
 
         # Mostra la lista dei candidati

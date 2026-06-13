@@ -465,8 +465,29 @@ def shutdown():
     return jsonify({"status": "shutting down"}), 200
 
 
+def print_server_banner() -> None:
+    """Stampa una descrizione iniziale del terminale server AE."""
+    print("\n" + "=" * 70)
+    print("  AUTORITÀ ELETTORALE (AE)")
+    print("=" * 70)
+    print("Questo terminale ospita il server AE sulla porta 5002.")
+    print("Ruolo: ricevere le schede cifrate, verificare token e Proof of Work,")
+    print("registrare i voti nel Bulletin Board e, a urne chiuse, eseguire lo")
+    print("scrutinio e pubblicare le prove.")
+    print("\nIn questo terminale potrai visualizzare:")
+    print("- il caricamento dei dati iniziali;")
+    print("- l'avvio del server Flask;")
+    print("- le richieste ricevute su /status, /vote, /close, /shutdown;")
+    print("- eventuali schede nulle rilevate durante lo scrutinio;")
+    print("- eventuali errori o messaggi diagnostici dell'AE.")
+    print("\nNon serve interagire con questo terminale: chiudilo solo quando")
+    print("hai terminato l'elezione o il test.")
+    print("=" * 70 + "\n")
+
+
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    print_server_banner()
     load_initial_data()
     # Avvia il server Flask sulla porta 5002, debug disabilitato
     app.run(port=5002, debug=False)
