@@ -280,7 +280,7 @@ Il server verrà avviato in un nuovo terminale.
     """)
     
     # Avvio del server SA in una nuova finestra
-    SA_PROCESS = launch_in_new_terminal("sa.py")
+    SA_PROCESS = launch_in_new_terminal("src/sa.py")
     
     if wait_for_server(SA_URL, "SA"):
         print("SA avviato con successo!")
@@ -314,7 +314,7 @@ Il server verrà avviato in un nuovo terminale.
     """)
     
     # Avvio del server AE in una nuova finestra
-    AE_PROCESS = launch_in_new_terminal("ae.py")
+    AE_PROCESS = launch_in_new_terminal("src/ae.py")
     
     if wait_for_server(AE_URL, "AE"):
         print("AE avviato con successo!")
@@ -347,7 +347,7 @@ Questa operazione:
    - Solo liste di voto (registrazione utenti abilitata)
     """)
     input("Premi Invio per continuare...")
-    subprocess.run([sys.executable, "init_election.py"], cwd=PROJECT_DIR)
+    subprocess.run([sys.executable, "src/init_election.py"], cwd=PROJECT_DIR)
 
 
 def reset_election() -> None:
@@ -420,7 +420,7 @@ Il client votante permette di:
 Verrà aperto un nuovo terminale per il client.
     """)
     input("Premi Invio per aprire il client...")
-    launch_in_new_terminal("client.py")
+    launch_in_new_terminal("src/client.py")
 
 
 def close_election() -> None:
@@ -536,7 +536,7 @@ L'Observer permette di verificare:
 Verrà aperto un nuovo terminale per eseguire la verifica.
     """)
     input("Premi Invio per eseguire la verifica...")
-    launch_in_new_terminal("observer.py")
+    launch_in_new_terminal("src/observer.py")
 
 
 def main_menu() -> None:

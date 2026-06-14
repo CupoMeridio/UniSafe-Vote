@@ -419,7 +419,7 @@ def print_server_banner() -> None:
 
 
 if __name__ == "__main__":
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     print_server_banner()
     load_initial_data()
     # Avvia il server Flask sulla porta 5001, debug disabilitato per sicurezza
