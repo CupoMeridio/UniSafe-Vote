@@ -671,8 +671,8 @@ def main_menu() -> None:
         elif choice == '7':
             reset_election()
         elif choice == '0':
+            print("\nChiusura programma...")
             clear_screen()
-            print("\nArrivederci!")
             break
         else:
             print("\nOpzione non valida!")
@@ -716,6 +716,6 @@ if __name__ == "__main__":
     try:
         main_menu()
     except KeyboardInterrupt:
-        print("\n\nArrivederci!")
+        print("\n\nChiusura programma...")
     finally:
         stop_processes()
