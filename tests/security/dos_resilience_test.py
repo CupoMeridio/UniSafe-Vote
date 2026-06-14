@@ -328,57 +328,73 @@ def authenticate_user(user: dict) -> Optional[Tuple[str, str]]:
 def vote_user(user: dict, token: str, token_sig: str,
               ae_pub_key, candidate_idx: int) -> Tuple[bool, float]:
     """
-    Esegue il flusso di voto completo per un utente onesto:
-    1. Genera un seed casuale e cifra il voto con RSA-OAEP.
-    2. Cifra il seed separatamente per la verifica universale.
-    3. Richiede la difficoltà PoW adattiva corrente all'AE.
-    4. Calcola il nonce della PoW.
-    5. Invia il voto all'AE e salva la ricevuta.
-    Restituisce (successo, tempo_di_risposta_ms).
+    Esegue il flusso di voto completo per un utente onesto con retry automatico.
+
+    La difficoltà PoW può aumentare tra il momento in cui viene letta e il
+    momento in cui il voto arriva all'AE (il flood nel frattempo aggiunge
+    richieste alla finestra di osservazione). In caso di risposta 400 per
+    PoW invalida il voto viene ricalcolato con la difficoltà aggiornata,
+    fino a MAX_POW_RETRIES tentativi.
     """
+    MAX_POW_RETRIES = 5
     try:
-        # Si genera un seed casuale come randomness di padding OAEP: due
-        # cifrature dello stesso voto producono ciphertext diversi.
         seed         = os.urandom(32)
         vote_byte    = candidate_idx.to_bytes(1, "big")
-        # Si cifra il voto con il seed esplicito (cifratura deterministica).
         enc_vote     = encrypt(ae_pub_key, vote_byte, seed=seed)
-        # Si cifra il seed separatamente per abilitare la verifica universale
-        # (l'AE lo pubblicherà a urne chiuse insieme al voto in chiaro).
         enc_seed     = encrypt(ae_pub_key, seed)
         enc_vote_hex = enc_vote.hex()
 
-        # Si recupera la difficoltà PoW adattiva corrente dall'AE.
-        # Durante un attacco DoS questa sarà aumentata rispetto al minimo.
-        difficulty   = get_pow_difficulty()
-        # Si calcola il nonce che soddisfa i requisiti della PoW.
-        pow_nonce    = solve_pow(enc_vote, difficulty)
-
-        # Si misura il tempo di risposta dell'AE come indicatore dell'impatto
-        # dell'attacco sugli utenti legittimi.
         t0 = time.perf_counter()
-        r  = requests.post(
-            f"{AE_URL}/vote",
-            json={
-                "enc_vote":        enc_vote_hex,
-                "enc_seed":        enc_seed.hex(),
-                "token":           token,
-                "token_signature": token_sig,
-                "pow_nonce":       pow_nonce,
-            },
-            timeout=60,
-        )
-        elapsed_ms = (time.perf_counter() - t0) * 1000
 
-        if r.status_code == 200:
-            # Si salva la ricevuta firmata dall'AE in data/receipts/.
-            receipt_path = os.path.join(RECEIPTS_DIR, f"{user['username']}.json")
-            with open(receipt_path, "w", encoding="utf-8") as f:
-                json.dump(r.json(), f, indent=2)
-            return True, elapsed_ms
+        for attempt in range(MAX_POW_RETRIES):
+            difficulty = get_pow_difficulty()
+            pow_nonce  = solve_pow(enc_vote, difficulty)
+
+            r = requests.post(
+                f"{AE_URL}/vote",
+                json={
+                    "enc_vote":        enc_vote_hex,
+                    "enc_seed":        enc_seed.hex(),
+                    "token":           token,
+                    "token_signature": token_sig,
+                    "pow_nonce":       pow_nonce,
+                },
+                timeout=60,
+            )
+
+            if r.status_code == 200:
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                receipt_path = os.path.join(RECEIPTS_DIR, f"{user['username']}.json")
+                with open(receipt_path, "w", encoding="utf-8") as f:
+                    json.dump(r.json(), f, indent=2)
+                return True, elapsed_ms
+
+            # Se la PoW non è più valida (difficoltà cambiata durante il calcolo)
+            # si riprova immediatamente con la difficoltà aggiornata.
+            if r.status_code == 400:
+                try:
+                    err = r.json().get("error", "")
+                except Exception:
+                    err = ""
+                if "Proof of Work" in err or "PoW" in err:
+                    continue  # retry con difficoltà aggiornata
+
+            # Qualsiasi altro errore non è risolvibile con un retry
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            try:
+                err_body = r.json()
+            except Exception:
+                err_body = r.text
+            print(f"    [VOTO FALLITO] {user['username']}: HTTP {r.status_code} — {err_body}")
+            return False, elapsed_ms
+
+        # Esauriti i tentativi
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        print(f"    [VOTO FALLITO] {user['username']}: PoW invalida dopo {MAX_POW_RETRIES} tentativi")
         return False, elapsed_ms
 
-    except Exception:
+    except Exception as e:
+        print(f"    [ECCEZIONE VOTO] {user['username']}: {e}")
         return False, 0.0
 
 
@@ -489,15 +505,16 @@ def main() -> None:
         diff_before = get_pow_difficulty()
         print(f"\n  Difficoltà PoW prima dell'attacco: {diff_before} bit")
 
-        # Si avvia il flood in background: i thread inviano richieste invalide
-        # in loop continuo fino alla chiamata a flood.stop().
+        # Si avvia il flood in background.
         flood = FloodController(FLOOD_THREADS)
         flood.start()
         print(f"  Flood avviato ({FLOOD_THREADS} thread con PoW invalida).")
 
-        # Si attende qualche secondo affinché il flood saturi la finestra
-        # di osservazione dell'AE e la difficoltà aumenti.
-        time.sleep(2)
+        # Si attende che il flood saturi la finestra di osservazione dell'AE
+        # e la difficoltà si stabilizzi prima di avviare la votazione.
+        # Senza questa attesa la difficoltà può ancora salire mentre gli utenti
+        # onesti stanno già calcolando la PoW, invalidando il nonce appena trovato.
+        time.sleep(3)
 
         # Si misura la difficoltà durante l'attacco: deve essere maggiore
         # di quella di base (POW_MIN_DIFFICULTY).
@@ -594,11 +611,14 @@ def main() -> None:
         all_pass = p1 and p2_pow and p2_vote and p2_rej and p3
         print("\n" + ("=" * 70))
         if all_pass:
-            print("  [SUCCESS] Il sistema ha resistito all'attacco DoS mantenendo")
+            print("\n  [SUCCESS] Il sistema ha resistito all'attacco DoS mantenendo")
             print("  la funzionalità per gli utenti onesti e ripristinando")
             print("  la difficoltà minima al cessare del traffico anomalo.")
+            print(f"\n  Nota: il tempo medio di voto è aumentato a {round(sum(times_ms)/len(times_ms), 0):.0f} ms")
+            print("  (contro i ~100-200 ms a sistema a riposo) perché la PoW adattiva")
+            print("  penalizza anche gli utenti onesti, ma non li blocca.")
         else:
-            print("  [ATTENZIONE] Uno o più controlli non sono stati superati.")
+            print("\n  [ATTENZIONE] Uno o più controlli non sono stati superati.")
             print("  Consulta i dettagli sopra per identificare il problema.")
         print("=" * 70)
 

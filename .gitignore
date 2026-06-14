@@ -3,7 +3,8 @@
 *.txt
 
 # Dati sensibili e generati
-data/keys/*.pem
+data/keys/*
+!data/keys/.gitkeep
 data/receipts/*.json
 data/voters.json
 data/bulletin_board.json

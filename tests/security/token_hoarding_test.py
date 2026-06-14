@@ -301,111 +301,151 @@ def create_vote_payload(token: str, token_signature: str, ae_pubkey) -> dict:
 def main():
     global sa_process, ae_process
     try:
-        # Si esegue il setup completo: init elezione, avvio SA e AE.
         setup()
 
         print("=" * 80)
-        print("TEST TOKEN HOARDING & EXPIRED TOKEN EXPLOITATION")
-        print("(Use-it-or-Lose-it Policy)")
+        print("  TEST TOKEN HOARDING & EXPIRED TOKEN EXPLOITATION")
+        print("  (Use-it-or-Lose-it Policy)")
         print("=" * 80)
 
-        # Si caricano il Bulletin Board e le chiavi necessarie per il test.
-        print("\n[3] Caricamento chiavi...")
+        # Caricamento chiavi e dati
         with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
             bb = json.load(f)
         validate_pins(bb)
-        # Si deserializza la chiave pubblica di cifratura dell'AE dal BB.
-        ae_pubkey = deserialize_public_key(bb[0]["data"]["ae_encrypt_public"])
-        # Si carica la chiave privata di firma del SA per creare token scaduti
-        # con firma valida (necessario per il TEST 2).
+        ae_pubkey  = deserialize_public_key(bb[0]["data"]["ae_encrypt_public"])
         sa_privkey = load_private_key("sa_sign")
-        print("    Chiavi caricate!")
+        election_id = bb[0]["data"]["election_id"]
 
         with open(VOTERS_PATH, "r", encoding="utf-8") as f:
             voters = json.load(f)
-        test_voter = voters[0]
-        # La password in chiaro viene presa dalla costante VOTERS (non da voters.json,
-        # che contiene già l'hash Argon2 salvato dal setup).
+        test_voter          = voters[0]
         test_voter_password = VOTERS[0]["password"]
-        print(f"\n[4] Utilizzando l'elettore di test: {test_voter['username']}")
 
-        # Si autentica l'elettore presso il SA per ottenere il primo token.
-        print("\n[5] Autenticazione al SA per ottenere token valido...")
-        auth_response1 = requests.post(
-            f"{SA_URL}/authenticate",
-            json={"username": test_voter["username"], "password": test_voter_password}
-        )
-        assert auth_response1.status_code == 200, "Prima autenticazione fallita!"
-        auth_data1 = auth_response1.json()
-        token1 = auth_data1["token"]
-        signature1 = auth_data1["signature"]
-        print(f"    Token 1 ricevuto!")
+        print(f"\n  Elettore di test: {test_voter['username']}  (id: {test_voter['id']})")
+        print(f"  Elezione:         {election_id}")
 
-        # TEST 1: Si tenta una seconda autenticazione con le stesse credenziali.
-        # Il SA deve restituire lo stesso token (non un nuovo token distinto),
-        # impedendo così il "token hoarding" (accumulare più credenziali di voto).
-        print("\n[6] TEST 1: Tentativo di RI-AUTENTICARSI al SA per ottenere nuovo token...")
-        auth_response2 = requests.post(
-            f"{SA_URL}/authenticate",
-            json={"username": test_voter["username"], "password": test_voter_password}
-        )
-        assert auth_response2.status_code == 200, "Seconda autenticazione fallita!"
-        auth_data2 = auth_response2.json()
-        token2 = auth_data2["token"]
+        # ------------------------------------------------------------------ #
+        # TEST 1 — Token Hoarding: il SA non emette una seconda credenziale   #
+        # ------------------------------------------------------------------ #
+        print("\n" + "-" * 80)
+        print("TEST 1 — Token Hoarding (il SA non può rilasciare due token distinti)")
+        print("-" * 80)
 
-        print(f"    Token 1: {token1[:80]}...")
-        print(f"    Token 2: {token2[:80]}...")
+        print("\n  Prima autenticazione...")
+        r1 = requests.post(f"{SA_URL}/authenticate",
+                           json={"username": test_voter["username"],
+                                 "password": test_voter_password})
+        assert r1.status_code == 200, "Prima autenticazione fallita!"
+        token1     = r1.json()["token"]
+        signature1 = r1.json()["signature"]
+        token1_obj = json.loads(token1)
 
-        # Si verifica che i due token siano identici: il SA non deve mai
-        # emettere una seconda credenziale distinta per lo stesso elettore.
-        assert token1 == token2, "SA ha emesso due token distinti!"
-        print("\n    [OK] TEST 1 PASS: SA restituisce sempre LO STESSO token (nessun token nuovo)")
+        print(f"  HTTP {r1.status_code} — token ricevuto:")
+        print(f"    nonce:      {token1_obj['nonce']}")
+        print(f"    issued_at:  {token1_obj['issued_at']}")
+        print(f"    expires_at: {token1_obj['expires_at']}")
+        print(f"  Firma SA (prime 48 hex): {signature1[:48]}...")
 
-        # TEST 2: Si costruisce un token con firma RSA-PSS valida ma con
-        # expires_at nel passato (31 minuti fa). L'AE deve rifiutarlo con
-        # HTTP 401 "Token scaduto" anche se la firma è crittograficamente corretta,
-        # dimostrando che la validità temporale è verificata indipendentemente.
-        print("\n[7] TEST 2: Creazione token SCADUTO (firma valida) e invio ad AE...")
-        election_id = bb[0]["data"]["election_id"]
+        print("\n  Seconda autenticazione con le stesse credenziali...")
+        r2 = requests.post(f"{SA_URL}/authenticate",
+                           json={"username": test_voter["username"],
+                                 "password": test_voter_password})
+        assert r2.status_code == 200, "Seconda autenticazione fallita!"
+        token2     = r2.json()["token"]
+        token2_obj = json.loads(token2)
+
+        print(f"  HTTP {r2.status_code} — token ricevuto:")
+        print(f"    nonce:      {token2_obj['nonce']}")
+        print(f"    issued_at:  {token2_obj['issued_at']}")
+        print(f"    expires_at: {token2_obj['expires_at']}")
+
+        tokens_identical = (token1 == token2)
+        print(f"\n  Nonce token 1:  {token1_obj['nonce']}")
+        print(f"  Nonce token 2:  {token2_obj['nonce']}")
+        print(f"  Token identici: {'✓ sì — stesso nonce, stessa finestra temporale' if tokens_identical else '✗ no — SA ha emesso una nuova credenziale!'}")
+
+        assert tokens_identical, "SA ha emesso due token distinti!"
+        print("\n  [PASS] TEST 1: il SA restituisce sempre lo stesso token.")
+        print("  Un attaccante non può accumulare più credenziali di voto.")
+
+        # ------------------------------------------------------------------ #
+        # TEST 2 — Token scaduto con firma valida                             #
+        # ------------------------------------------------------------------ #
+        print("\n" + "-" * 80)
+        print("TEST 2 — Token scaduto (firma RSA-PSS valida, expires_at nel passato)")
+        print("-" * 80)
+
+        expired_nonce = os.urandom(16).hex()
+        issued_at_exp  = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        expires_at_exp = (datetime.now(UTC) - timedelta(minutes=31)).isoformat()
+
         expired_token_obj = {
             "election_id": election_id,
-            "nonce": os.urandom(16).hex(),
-            # Il token è stato emesso un'ora fa ed è scaduto 31 minuti fa.
-            "issued_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
-            "expires_at": (datetime.now(UTC) - timedelta(minutes=31)).isoformat(),
+            "nonce":       expired_nonce,
+            "issued_at":   issued_at_exp,
+            "expires_at":  expires_at_exp,
         }
         expired_token_str = json.dumps(expired_token_obj, sort_keys=True)
-        # Si firma il token con la chiave privata del SA: la firma è valida,
-        # ma la finestra temporale è già scaduta.
-        expired_signature = sign(sa_privkey, expired_token_str.encode("utf-8")).hex()
+        expired_sig       = sign(sa_privkey, expired_token_str.encode()).hex()
 
-        expired_payload = create_vote_payload(expired_token_str, expired_signature, ae_pubkey)
-        expired_response = requests.post(f"{AE_URL}/vote", json=expired_payload)
+        print(f"\n  Token costruito dall'attaccante:")
+        print(f"    nonce:      {expired_nonce}")
+        print(f"    issued_at:  {issued_at_exp}  (1 ora fa)")
+        print(f"    expires_at: {expires_at_exp}  (scaduto 31 minuti fa)")
+        print(f"  Firma SA sul token scaduto (prime 48 hex): {expired_sig[:48]}...")
+        print(f"  (La firma è crittograficamente valida — è firmata con la chiave SA reale)")
 
-        print(f"    Risposta AE: {expired_response.status_code}")
-        print(f"    Contenuto: {json.dumps(expired_response.json(), indent=2, ensure_ascii=False)}")
+        expired_payload = create_vote_payload(expired_token_str, expired_sig, ae_pubkey)
+        print(f"\n  Invio voto con token scaduto all'AE...")
+        expired_resp = requests.post(f"{AE_URL}/vote", json=expired_payload)
 
-        # Si verifica che l'AE abbia rifiutato il token scaduto con HTTP 401.
-        assert expired_response.status_code == 401, "AE non ha bloccato token scaduto!"
-        assert "Token scaduto" in expired_response.json().get("error", ""), "Messaggio non corretto!"
-        print("\n    [OK] TEST 2 PASS: AE blocca token scaduto con firma valida!")
+        print(f"\n  Risposta AE — HTTP {expired_resp.status_code}:")
+        print(f"  {json.dumps(expired_resp.json(), indent=4, ensure_ascii=False)}")
 
-        # TEST 3: Si invia un voto con il token valido ottenuto al passo [5].
-        # L'AE deve accettarlo con HTTP 200, confermando che il sistema
-        # funziona normalmente per gli elettori legittimi.
-        print("\n[8] TEST 3: Utilizziamo il token valido per votare (per vedere che funziona)...")
+        assert expired_resp.status_code == 401, "AE non ha bloccato il token scaduto!"
+        assert "Token scaduto" in expired_resp.json().get("error", "")
+        print("\n  [PASS] TEST 2: l'AE ha rifiutato il token nonostante la firma valida.")
+        print("  La scadenza temporale è verificata indipendentemente dalla firma.")
+
+        # ------------------------------------------------------------------ #
+        # TEST 3 — Voto legittimo accettato normalmente                       #
+        # ------------------------------------------------------------------ #
+        print("\n" + "-" * 80)
+        print("TEST 3 — Voto legittimo con token valido")
+        print("-" * 80)
+
+        print(f"\n  Token valido (nonce: {token1_obj['nonce']})")
+        print(f"  expires_at: {token1_obj['expires_at']}")
         valid_payload = create_vote_payload(token1, signature1, ae_pubkey)
-        valid_response = requests.post(f"{AE_URL}/vote", json=valid_payload)
-        print(f"    Risposta AE: {valid_response.status_code}")
-        assert valid_response.status_code == 200, "Voto valido rifiutato!"
-        print("\n    [OK] TEST 3 PASS: Voto valido accettato!")
+        print(f"  enc_vote (prime 60 hex): {valid_payload['enc_vote'][:60]}...")
+        print(f"  pow_nonce: {valid_payload['pow_nonce']}")
+        print(f"\n  Invio voto all'AE...")
+        valid_resp = requests.post(f"{AE_URL}/vote", json=valid_payload)
 
+        print(f"\n  Risposta AE — HTTP {valid_resp.status_code}:")
+        print(f"  {json.dumps(valid_resp.json(), indent=4, ensure_ascii=False)}")
+
+        assert valid_resp.status_code == 200, "Voto valido rifiutato!"
+        receipt = valid_resp.json()
+        print(f"\n  Ricevuta:")
+        print(f"    leaf_index:   {receipt.get('leaf_index')}")
+        print(f"    merkle_proof: {len(receipt.get('merkle_proof', []))} nodi")
+        print(f"    ae_signature (prime 48 hex): {receipt.get('ae_signature', '')[:48]}...")
+        print("\n  [PASS] TEST 3: voto legittimo accettato e ricevuta firmata dall'AE.")
+
+        # ------------------------------------------------------------------ #
+        # Riepilogo                                                           #
+        # ------------------------------------------------------------------ #
         print("\n" + "=" * 80)
-        print("TEST COMPLETATO CON SUCCESSO!")
-        print("\nRISULTATI:")
-        print("  1. SA non emette nuovi token dopo il primo (previene Token Hoarding)")
-        print("  2. AE rifiuta token scaduti (Use-it-or-Lose-it, 30 minuti di validità)")
-        print("  3. Voti validi sono accettati normalmente")
+        print("RIEPILOGO")
+        print("=" * 80)
+        print(f"  TEST 1 — Token Hoarding:     [PASS]  stesso nonce ({token1_obj['nonce'][:16]}...)")
+        print(f"  TEST 2 — Token scaduto:      [PASS]  HTTP 401 — {expired_resp.json().get('error')}")
+        print(f"  TEST 3 — Voto legittimo:     [PASS]  HTTP 200 — leaf_index {receipt.get('leaf_index')}")
+        print("\n  La politica use-it-or-lose-it è rispettata:")
+        print("  · un elettore ottiene al massimo un token per elezione;")
+        print("  · il token ha una finestra temporale di 30 minuti;")
+        print("  · fuori finestra, anche una firma valida viene rifiutata.")
         print("=" * 80)
 
         save_report(
@@ -413,29 +453,33 @@ def main():
             test_name="Token Hoarding & Expired Token Exploitation (Use-it-or-Lose-it Policy)",
             outcome="PASS",
             details={
+                "voter": test_voter["username"],
                 "test1_hoarding": {
-                    "description": "SA restituisce lo stesso token alla seconda autenticazione",
-                    "token1_prefix": token1[:40] + "...",
-                    "token2_prefix": token2[:40] + "...",
-                    "tokens_identical": token1 == token2,
-                    "passed": True,
+                    "token1_nonce":      token1_obj["nonce"],
+                    "token2_nonce":      token2_obj["nonce"],
+                    "tokens_identical":  tokens_identical,
+                    "passed":            True,
                 },
                 "test2_expired_token": {
-                    "description": "AE rifiuta token con firma valida ma expires_at nel passato",
-                    "http_status": expired_response.status_code,
-                    "error_message": expired_response.json().get("error"),
-                    "passed": expired_response.status_code == 401,
+                    "expired_nonce":     expired_nonce,
+                    "issued_at":         issued_at_exp,
+                    "expires_at":        expires_at_exp,
+                    "signature_valid":   True,
+                    "http_status":       expired_resp.status_code,
+                    "error_message":     expired_resp.json().get("error"),
+                    "passed":            expired_resp.status_code == 401,
                 },
                 "test3_valid_vote": {
-                    "description": "Voto con token valido accettato normalmente",
-                    "http_status": valid_response.status_code,
-                    "passed": valid_response.status_code == 200,
+                    "token_nonce":       token1_obj["nonce"],
+                    "http_status":       valid_resp.status_code,
+                    "leaf_index":        receipt.get("leaf_index"),
+                    "merkle_proof_nodes": len(receipt.get("merkle_proof", [])),
+                    "passed":            valid_resp.status_code == 200,
                 },
             },
         )
 
     finally:
-        # Il teardown viene eseguito sempre, anche in caso di errore.
         teardown()
 
 
