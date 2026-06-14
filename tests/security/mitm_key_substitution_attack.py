@@ -1,5 +1,5 @@
 """
-Test script for Man-in-the-Middle Key Substitution Attack.
+Test di attacco MitM — Sostituzione Chiave Pubblica (Key Substitution Attack).
 
 Verifica che il certificate pinning del client rilevi correttamente
 la sostituzione delle chiavi pubbliche dell'AE nel Bulletin Board.
@@ -153,96 +153,191 @@ from client import Client, SecurityError
 
 
 def main():
-    # Si imposta la directory corrente alla root del progetto affinché
-    # Client() trovi correttamente i file in data/ e data/pins.json.
     os.chdir(PROJECT_ROOT)
 
     print("=" * 80)
-    print("TEST: Man-in-the-Middle Key Substitution Attack")
+    print("  TEST ATTACCO MitM — SOSTITUZIONE CHIAVE PUBBLICA")
+    print("  (Certificate Pinning contro Key Substitution Attack)")
     print("=" * 80)
 
-    # PASSO 1: Si inizializza una nuova elezione con chiavi fresche.
-    # Questo garantisce che pins.json contenga le impronte delle chiavi
-    # legittime appena generate.
-    print("\n[1] Initialize a new election to set up baseline")
+    # ------------------------------------------------------------------ #
+    # PASSO 1 — Inizializzazione elezione con chiavi legittime            #
+    # ------------------------------------------------------------------ #
+    print("\n" + "-" * 80)
+    print("PASSO 1 — Inizializzazione elezione con chiavi legittime")
+    print("-" * 80)
     init_election()
 
-    # PASSO 2: Si istanzia il client e si verifica che il caricamento del
-    # Bulletin Board avvenga correttamente con le chiavi legittime.
-    # Il client legge pins.json e confronta le impronte con quelle nel BB.
-    print("\n[2] Baseline client setup: load keys and validate trusted pins")
+    # Si legge il Bulletin Board appena creato per mostrare le chiavi reali.
+    with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
+        original_bb = json.load(f)
+
+    legit_enc_pem  = original_bb[0]["data"]["ae_encrypt_public"]
+    legit_sign_pem = original_bb[0]["data"]["ae_sign_public"]
+
+    legit_enc_fp  = compute_public_key_fingerprint(legit_enc_pem)
+    legit_sign_fp = compute_public_key_fingerprint(legit_sign_pem)
+
+    print(f"\n  Chiave pubblica AE (cifratura) sul Bulletin Board:")
+    print(f"    {legit_enc_pem.splitlines()[1][:64]}...")
+    print(f"  Impronta SHA-256:  {legit_enc_fp}")
+
+    print(f"\n  Chiave pubblica AE (firma) sul Bulletin Board:")
+    print(f"    {legit_sign_pem.splitlines()[1][:64]}...")
+    print(f"  Impronta SHA-256:  {legit_sign_fp}")
+
+    # ------------------------------------------------------------------ #
+    # PASSO 2 — Caricamento pin trusted dal canale sicuro (pins.json)     #
+    # ------------------------------------------------------------------ #
+    print("\n" + "-" * 80)
+    print("PASSO 2 — Pin trusted caricati dal canale sicuro (pins.json)")
+    print("-" * 80)
+
     client = Client()
-    print(f"Trusted pin for AE encrypt key: {client.trusted_pins['ae_encrypt_public']}")
-    print(f"Trusted pin for AE sign key: {client.trusted_pins['ae_sign_public']}")
+    pin_enc  = client.trusted_pins["ae_encrypt_public"]
+    pin_sign = client.trusted_pins["ae_sign_public"]
 
-    # PASSO 3: L'attaccante genera una coppia di chiavi RSA contraffatte,
-    # che userà per sostituire le chiavi pubbliche legittime dell'AE nel BB.
-    # Con queste chiavi false, l'attaccante potrebbe decifrare i voti.
-    print("\n[3] Attacker step 1: generate malicious RSA key pair (fake AE keys)")
-    fake_ae_encrypt_priv, fake_ae_encrypt_pub = generate_rsa_keypair()
-    fake_ae_sign_priv, fake_ae_sign_pub = generate_rsa_keypair()
-    fake_ae_encrypt_pem = serialize_public_key(fake_ae_encrypt_pub)
-    fake_ae_sign_pem = serialize_public_key(fake_ae_sign_pub)
-    print("Attacker generated fake AE keys!")
+    print(f"\n  Pin trusted AE (cifratura):  {pin_enc}")
+    print(f"  Pin trusted AE (firma):      {pin_sign}")
 
-    # PASSO 4: L'attaccante intercetta il Bulletin Board e sostituisce
-    # le chiavi pubbliche legittime dell'AE con quelle contraffatte.
-    # In uno scenario reale questo avverrebbe tramite un attacco MitM
-    # sulla rete o una compromissione del server che distribuisce il BB.
-    print("\n[4] Simulate MitM intercepting Bulletin Board: replace AE public keys")
+    # Verifica che i pin corrispondano alle impronte delle chiavi legittime.
+    match_enc  = pin_enc.removeprefix("sha256:") == legit_enc_fp
+    match_sign = pin_sign.removeprefix("sha256:") == legit_sign_fp
+    print(f"\n  Corrispondenza pin ↔ chiave legittima (cifratura): {'✓ sì' if match_enc  else '✗ no'}")
+    print(f"  Corrispondenza pin ↔ chiave legittima (firma):     {'✓ sì' if match_sign else '✗ no'}")
+
+    # ------------------------------------------------------------------ #
+    # PASSO 3 — L'attaccante genera chiavi RSA contraffatte               #
+    # ------------------------------------------------------------------ #
+    print("\n" + "-" * 80)
+    print("PASSO 3 — L'attaccante genera chiavi RSA contraffatte")
+    print("-" * 80)
+
+    fake_enc_priv,  fake_enc_pub  = generate_rsa_keypair()
+    fake_sign_priv, fake_sign_pub = generate_rsa_keypair()
+    fake_enc_pem  = serialize_public_key(fake_enc_pub)
+    fake_sign_pem = serialize_public_key(fake_sign_pub)
+
+    fake_enc_fp  = compute_public_key_fingerprint(fake_enc_pem)
+    fake_sign_fp = compute_public_key_fingerprint(fake_sign_pem)
+
+    print(f"\n  Chiave CONTRAFFATTA AE (cifratura):")
+    print(f"    {fake_enc_pem.splitlines()[1][:64]}...")
+    print(f"  Impronta SHA-256:  {fake_enc_fp}")
+
+    print(f"\n  Chiave CONTRAFFATTA AE (firma):")
+    print(f"    {fake_sign_pem.splitlines()[1][:64]}...")
+    print(f"  Impronta SHA-256:  {fake_sign_fp}")
+
+    print(f"\n  Confronto impronte (cifratura):")
+    print(f"    Legittima:    {legit_enc_fp}")
+    print(f"    Contraffatta: {fake_enc_fp}")
+    print(f"    Uguali? {'sì' if legit_enc_fp == fake_enc_fp else 'no — sono chiavi diverse, come atteso'}")
+
+    # ------------------------------------------------------------------ #
+    # PASSO 4 — L'attaccante inietta le chiavi false nel Bulletin Board   #
+    # ------------------------------------------------------------------ #
+    print("\n" + "-" * 80)
+    print("PASSO 4 — L'attaccante inietta le chiavi false nel Bulletin Board")
+    print("-" * 80)
+
     with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
         tampered_bb = json.load(f)
 
-    # Si sostituiscono le chiavi nel blocco init del Bulletin Board.
-    tampered_bb[0]["data"]["ae_encrypt_public"] = fake_ae_encrypt_pem
-    tampered_bb[0]["data"]["ae_sign_public"] = fake_ae_sign_pem
+    tampered_bb[0]["data"]["ae_encrypt_public"] = fake_enc_pem
+    tampered_bb[0]["data"]["ae_sign_public"]    = fake_sign_pem
 
     with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
         json.dump(tampered_bb, f, indent=2, ensure_ascii=False)
-    print("Tampered Bulletin Board saved (fake AE keys injected)!")
 
-    # PASSO 5: Si verifica che il client rilevi la sostituzione delle chiavi.
-    # Quando il client carica il BB manomesso, deve confrontare le impronte
-    # delle chiavi ricevute con quelle in pins.json: le chiavi contraffatte
-    # non corrispondono ai pin trusted, quindi deve sollevare SecurityError.
-    print("\n[5] Client loads bulletin board (now tampered!)")
+    # Si mostra il diff: la chiave nel BB ora è quella contraffatta.
+    with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
+        bb_after = json.load(f)
+
+    fp_after_enc  = compute_public_key_fingerprint(bb_after[0]["data"]["ae_encrypt_public"])
+    fp_after_sign = compute_public_key_fingerprint(bb_after[0]["data"]["ae_sign_public"])
+
+    print(f"\n  Bulletin Board PRIMA della manomissione:")
+    print(f"    ae_encrypt_public SHA-256: {legit_enc_fp}")
+    print(f"    ae_sign_public    SHA-256: {legit_sign_fp}")
+    print(f"\n  Bulletin Board DOPO la manomissione:")
+    print(f"    ae_encrypt_public SHA-256: {fp_after_enc}")
+    print(f"    ae_sign_public    SHA-256: {fp_after_sign}")
+    print(f"\n  Le chiavi nel BB coincidono ancora con i pin trusted?")
+    print(f"    ae_encrypt_public: {'✓ sì' if pin_enc.removeprefix('sha256:') == fp_after_enc  else '✗ no — BB manomesso!'}")
+    print(f"    ae_sign_public:    {'✓ sì' if pin_sign.removeprefix('sha256:') == fp_after_sign else '✗ no — BB manomesso!'}")
+
+    # ------------------------------------------------------------------ #
+    # PASSO 5 — Il client tenta di caricare il BB manomesso               #
+    # ------------------------------------------------------------------ #
+    print("\n" + "-" * 80)
+    print("PASSO 5 — Il client tenta di caricare il BB manomesso")
+    print("-" * 80)
+    print("\n  Il client confronta le impronte delle chiavi ricevute dal BB")
+    print("  con i pin trusted caricati dal canale sicuro (pins.json).")
+    print("  Se non corrispondono, deve bloccarsi con SecurityError.\n")
+
+    error_message = None
+    detected = False
     try:
         client.load_bulletin_board()
-        # Se il client accetta le chiavi false, il test è fallito.
-        print("ERROR: Client accepted tampered keys! That's BAD!")
-        sys.exit(1)
+        print("  [FALLIMENTO] Il client ha accettato le chiavi contraffatte!")
     except SecurityError as e:
-        # Il client ha correttamente rilevato la discrepanza e ha bloccato
-        # l'operazione prima di usare le chiavi contraffatte.
-        print("SUCCESS: Client raised SecurityError!")
-        print(f"Error message: {str(e)}")
-        print("\nThis means the Certificate Pinning worked!")
-        print("The client detected key substitution and stopped before proceeding!")
+        error_message = str(e)
+        detected = True
+        print(f"  [PASS] SecurityError sollevato correttamente!")
+        print(f"  Messaggio: {error_message}")
 
-    # PASSO 6: Si ripristina il Bulletin Board con chiavi legittime
-    # per lasciare lo stato del sistema pulito dopo il test.
-    print("\n[6] Cleanup: restore original bulletin board")
+    # ------------------------------------------------------------------ #
+    # PASSO 6 — Ripristino                                                #
+    # ------------------------------------------------------------------ #
+    print("\n" + "-" * 80)
+    print("PASSO 6 — Ripristino stato pulito")
+    print("-" * 80)
     init_election()
+    print("  Bulletin Board ripristinato con chiavi legittime.")
 
+    # ------------------------------------------------------------------ #
+    # Riepilogo                                                           #
+    # ------------------------------------------------------------------ #
     print("\n" + "=" * 80)
-    print("[SUCCESS] MitM Key Substitution Attack test PASSED!")
-    print("[SUCCESS] Certificate Pinning successfully blocked the attack!")
+    print("RIEPILOGO")
+    print("=" * 80)
+    print(f"  Chiave legittima (cifratura):    {legit_enc_fp[:48]}...")
+    print(f"  Chiave contraffatta (cifratura): {fake_enc_fp[:48]}...")
+    print(f"  Pin trusted (cifratura):         {pin_enc[7:55]}...")
+    print(f"\n  Il client ha rilevato la manomissione: {'✓ SÌ' if detected else '✗ NO'}")
+    if error_message:
+        print(f"  Errore restituito: {error_message}")
+
+    if detected:
+        print("\n  [SUCCESS] Certificate Pinning ha bloccato l'attacco MitM.")
+        print("  Le chiavi contraffatte non corrispondono ai pin trusted:")
+        print("  il client si è rifiutato di procedere prima di usarle.")
+    else:
+        print("\n  [FAIL] Il client ha accettato chiavi contraffatte!")
     print("=" * 80)
 
     save_report(
         test_id="mitm_key_substitution",
         test_name="Attacco MitM / Sostituzione Chiave Pubblica (Certificate Pinning)",
-        outcome="PASS",
+        outcome="PASS" if detected else "FAIL",
         details={
-            "steps": [
-                "Elezione inizializzata con chiavi legittime",
-                "Client carica BB con chiavi legittime: OK",
-                "Attaccante sostituisce chiavi AE nel BB con chiavi false",
-                "Client rileva discrepanza con pins.json e solleva SecurityError",
-                "BB ripristinato con chiavi legittime",
-            ],
-            "security_mechanism": "Certificate Pinning (SHA-256 DER fingerprint)",
-            "error_raised": "SecurityError",
+            "legitimate_keys": {
+                "ae_encrypt_public_fp": legit_enc_fp,
+                "ae_sign_public_fp":    legit_sign_fp,
+            },
+            "fake_keys": {
+                "ae_encrypt_public_fp": fake_enc_fp,
+                "ae_sign_public_fp":    fake_sign_fp,
+            },
+            "trusted_pins": {
+                "ae_encrypt_public": pin_enc,
+                "ae_sign_public":    pin_sign,
+            },
+            "tampering_detected": detected,
+            "security_error_message": error_message,
+            "protection_mechanism": "Certificate Pinning (SHA-256 DER fingerprint)",
         },
     )
 

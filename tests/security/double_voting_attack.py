@@ -282,26 +282,22 @@ def get_pow_difficulty():
 
 
 def get_valid_token():
-    """Ottieni un token valido autenticandosi al SA (avviato dal setup)."""
-    # Si legge il primo elettore da voters.json per ottenere le credenziali.
-    with open(os.path.join(DATA_DIR, "voters.json"), "r", encoding="utf-8") as f:
-        voters = json.load(f)
-
-    test_voter = voters[0]
-    print(f"[INFO] Autenticazione utente: {test_voter['username']}")
-    # Si invia la richiesta di autenticazione al SA: se le credenziali sono
-    # valide, il SA restituisce il token firmato con RSA-PSS.
+    """Ottieni un token valido autenticandosi al SA usando la password in chiaro."""
+    # La password in chiaro viene presa dalla costante VOTERS, non da voters.json
+    # che contiene già l'hash Argon2 salvato dal setup.
+    voter_plain = VOTERS[0]
+    print(f"  Autenticazione elettore: {voter_plain['username']}")
     response = requests.post(
         f"{SA_URL}/authenticate",
-        json={"username": test_voter["username"], "password": test_voter["password"]},
+        json={"username": voter_plain["username"], "password": voter_plain["password"]},
         timeout=5
     )
     if response.status_code == 200:
         data = response.json()
-        print("[SUCCESS] Token ottenuto con successo dal SA!")
+        print("  Token ottenuto dal SA.")
         return data["token"], data["signature"]
 
-    print(f"[ERROR] Autenticazione SA fallita: {response.status_code}")
+    print(f"  [ERRORE] Autenticazione SA fallita: HTTP {response.status_code}")
     sys.exit(1)
 
 
@@ -342,92 +338,106 @@ def create_vote_payload(token: str, token_signature: str, candidate_index: int =
     }
 
 
-def send_vote(payload, vote_number):
-    """Invia un voto all'AE e stampa la risposta ricevuta."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-    print(f"\n{'='*60}")
-    print(f"[INVIO VOTO {vote_number}] - {timestamp}")
-    print(f"{'='*60}")
-    print(f"Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}")
-
-    try:
-        response = requests.post(f"{AE_URL}/vote", json=payload, timeout=10)
-        print(f"\nRisposta AE:")
-        print(f"  Status Code: {response.status_code}")
-        print(f"  Contenuto: {json.dumps(response.json(), indent=2, ensure_ascii=False)}")
-        return response
-    except requests.exceptions.RequestException as e:
-        print(f"\n[ERRORE] Impossibile connettersi all'AE: {e}")
-        sys.exit(1)
 
 
 def main():
     global sa_process, ae_process
     try:
-        # Si esegue il setup completo: init elezione, avvio SA e AE.
         setup()
 
-        print("\n" + "="*60)
-        print("SIMULAZIONE ATTACCO DOUBLE VOTING / TOKEN REPLAY")
-        print("="*60)
+        print("\n" + "=" * 70)
+        print("  TEST DOUBLE VOTING / TOKEN REPLAY ATTACK")
+        print("=" * 70)
 
-        # Si ottiene un token valido autenticandosi al SA con le credenziali
-        # del primo elettore presente in voters.json.
+        # ------------------------------------------------------------------ #
+        # FASE 1 — Autenticazione e ottenimento token                         #
+        # ------------------------------------------------------------------ #
+        print("\n" + "-" * 70)
+        print("FASE 1 — Autenticazione e ottenimento token")
+        print("-" * 70)
         token, token_signature = get_valid_token()
+        token_obj = json.loads(token)
+        print(f"\n  Token ottenuto (contenuto):")
+        print(f"    election_id: {token_obj.get('election_id')}")
+        print(f"    nonce:       {token_obj.get('nonce')}")
+        print(f"    expires_at:  {token_obj.get('expires_at')}")
+        print(f"  Firma SA (prime 64 hex): {token_signature[:64]}...")
 
-        # PASSO 1: Si invia il primo voto con il token appena ottenuto.
-        # L'AE deve accettarlo (HTTP 200) e marcare il token come usato.
+        # ------------------------------------------------------------------ #
+        # FASE 2 — Primo voto (legittimo)                                     #
+        # ------------------------------------------------------------------ #
+        print("\n" + "-" * 70)
+        print("FASE 2 — Primo voto (legittimo, candidato 0 — Lista A)")
+        print("-" * 70)
         payload1 = create_vote_payload(token, token_signature, candidate_index=0)
-        response1 = send_vote(payload1, 1)
+        print(f"  enc_vote (prime 60 hex): {payload1['enc_vote'][:60]}...")
+        print(f"  pow_nonce:               {payload1['pow_nonce']}")
+        print(f"  Invio voto 1...")
+        response1 = requests.post(f"{AE_URL}/vote", json=payload1, timeout=10)
+        print(f"\n  Risposta AE — HTTP {response1.status_code}:")
+        print(f"  {json.dumps(response1.json(), indent=4, ensure_ascii=False)}")
 
-        # PASSO 2: Si tenta di votare una seconda volta con lo stesso token,
-        # ma per un candidato diverso. Questo simula l'attacco di double voting.
-        # L'AE deve rifiutare la richiesta con HTTP 409 "Token già usato",
-        # perché il nonce del token è già presente nello stato privato dell'AE.
-        print("\n" + "="*60)
-        print("ATTACCO: INVIO SECONDO VOTO CON LO STESSO TOKEN!")
-        print("="*60)
+        # ------------------------------------------------------------------ #
+        # FASE 3 — Secondo voto con lo stesso token (attacco)                 #
+        # ------------------------------------------------------------------ #
+        print("\n" + "-" * 70)
+        print("FASE 3 — Secondo voto con lo STESSO token (candidato 1 — Lista B)")
+        print("-" * 70)
+        print("  L'attaccante riutilizza il token già consumato per votare di nuovo.")
+        print(f"  Nonce del token (già marcato come usato dall'AE): {token_obj.get('nonce')}")
         payload2 = create_vote_payload(token, token_signature, candidate_index=1)
-        response2 = send_vote(payload2, 2)
+        print(f"  enc_vote (prime 60 hex): {payload2['enc_vote'][:60]}...")
+        print(f"  pow_nonce:               {payload2['pow_nonce']}")
+        print(f"  Invio voto 2...")
+        response2 = requests.post(f"{AE_URL}/vote", json=payload2, timeout=10)
+        print(f"\n  Risposta AE — HTTP {response2.status_code}:")
+        print(f"  {json.dumps(response2.json(), indent=4, ensure_ascii=False)}")
 
-        # Si valuta l'esito: il test è superato se il primo voto è stato
-        # accettato e il secondo rifiutato con il codice corretto.
-        print("\n" + "="*60)
-        print("RISULTATO DELL'ATTACCO")
-        print("="*60)
-        if response1.status_code == 200 and response2.status_code == 409:
-            print("[SUCCESS] Il sistema è protetto!")
-            print("  - Primo voto: ACCETTATO (status 200)")
-            print("  - Secondo voto: RIFIUTATO (status 409, 'Token già usato')")
-            passed = True
+        # ------------------------------------------------------------------ #
+        # Riepilogo                                                           #
+        # ------------------------------------------------------------------ #
+        print("\n" + "=" * 70)
+        print("RIEPILOGO")
+        print("=" * 70)
+        voto1_ok   = response1.status_code == 200
+        voto2_rej  = response2.status_code == 409
+        passed     = voto1_ok and voto2_rej
+
+        print(f"  Voto 1 (legittimo):  HTTP {response1.status_code}  — {'✓ accettato' if voto1_ok  else '✗ errore inatteso'}")
+        print(f"  Voto 2 (replay):     HTTP {response2.status_code}  — {'✓ rifiutato (409 Token già usato)' if voto2_rej else '✗ accettato — sistema vulnerabile!'}")
+
+        if passed:
+            print("\n  [SUCCESS] Il sistema è protetto contro il double voting.")
+            print("  Il nonce del token viene marcato come usato dopo il primo voto:")
+            print("  qualsiasi replay dello stesso token viene bloccato con HTTP 409.")
         else:
-            print("[FALLIMENTO] Il sistema NON è protetto correttamente!")
-            passed = False
-
-        print("\n" + "="*60)
+            print("\n  [FAIL] Il sistema non ha risposto come atteso.")
+        print("=" * 70)
 
         save_report(
             test_id="double_voting",
             test_name="Double Voting / Token Replay Attack",
             outcome="PASS" if passed else "FAIL",
             details={
+                "token_nonce": token_obj.get("nonce"),
+                "token_expires_at": token_obj.get("expires_at"),
                 "first_vote": {
-                    "http_status": response1.status_code,
                     "candidate_index": 0,
-                    "accepted": response1.status_code == 200,
+                    "http_status": response1.status_code,
+                    "accepted": voto1_ok,
+                    "response": response1.json(),
                 },
                 "second_vote": {
-                    "http_status": response2.status_code,
                     "candidate_index": 1,
-                    "rejected": response2.status_code == 409,
-                    "error": response2.json().get("error") if response2.content else None,
+                    "http_status": response2.status_code,
+                    "rejected": voto2_rej,
+                    "response": response2.json(),
                 },
                 "protection_mechanism": "Token nonce blacklist (ae_state.json used_tokens)",
             },
         )
 
     finally:
-        # Il teardown viene eseguito sempre, anche in caso di errore.
         teardown()
 
 
