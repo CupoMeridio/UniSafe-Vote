@@ -34,7 +34,7 @@ def measure_size(data_dict: Dict) -> int:
 
 def test_crypto_performance():
     print("=" * 70)
-    print("1. COSTO COMPUTAZIONALE OPERAZIONI CRITTOGRAFICHE")
+    print("COSTO COMPUTAZIONALE OPERAZIONI CRITTOGRAFICHE")
     print("   (Media su {} iterazioni)".format(NUM_ITERATIONS))
     print("=" * 70)
 
@@ -273,17 +273,20 @@ def test_network_latency_and_flow():
 
 
 if __name__ == "__main__":
-    print("\n" + "=" * 70)
-    print("ANALISI PRESTAZIONI SISTEMA UNISAFE-VOTE")
-    print("=" * 70)
-    
-    test_crypto_performance()
-    test_pow_performance()
-    test_merkle_performance()
-    test_payload_sizes()
-    test_network_latency_and_flow()
-    
-    print("\n" + "=" * 70)
-    print("ANALISI COMPLETATA!")
-    print("=" * 70)
+    try:
+        print("\n" + "=" * 70)
+        print("ANALISI PRESTAZIONI SISTEMA UNISAFE-VOTE")
+        print("=" * 70)
+        
+        test_crypto_performance()
+        test_pow_performance()
+        test_merkle_performance()
+        test_payload_sizes()
+        test_network_latency_and_flow()
+        
+        print("\n" + "=" * 70)
+        print("ANALISI COMPLETATA!")
+        print("=" * 70)
+    finally:
+        input("\nPremi Invio per chiudere...")
 

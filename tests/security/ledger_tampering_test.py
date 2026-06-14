@@ -9,8 +9,15 @@ import json
 import hashlib
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Risale alla root del progetto e aggiunge src/ al path,
+# così Python trova crypto.merkle in src/crypto/merkle.py.
+PROJECT_ROOT  = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR       = os.path.join(PROJECT_ROOT, "src")
+TESTS_SEC_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SRC_DIR)
+sys.path.insert(0, TESTS_SEC_DIR)
 
+from test_reporter import save_report
 from crypto.merkle import MerkleTree, verify_proof
 
 
@@ -119,8 +126,40 @@ def main():
     print("TEST COMPLETATO CON SUCCESSO!")
     print("=" * 90)
 
+    roots_match       = original_root == modified_root
+    orig_valid_orig   = verify_proof(original_leaf_hash,  original_proof,  original_root)
+    orig_valid_mod    = verify_proof(original_leaf_hash,  original_proof,  modified_root)
+    mod_valid_orig    = verify_proof(modified_leaf_hash,  modified_proof,  original_root)
+    mod_valid_mod     = verify_proof(modified_leaf_hash,  modified_proof,  modified_root)
+
+    save_report(
+        test_id="ledger_tampering",
+        test_name="Manomissione del Bulletin Board (Ledger Tampering / Merkle Tree)",
+        outcome="PASS" if (not roots_match and orig_valid_orig and not orig_valid_mod) else "FAIL",
+        details={
+            "leaves_count": 8,
+            "tampered_leaf_index": leaf_to_modify_index,
+            "original_root": original_root,
+            "modified_root": modified_root,
+            "roots_match": roots_match,
+            "verification": {
+                "original_leaf_original_proof_vs_original_root": orig_valid_orig,
+                "original_leaf_original_proof_vs_modified_root": orig_valid_mod,
+                "modified_leaf_modified_proof_vs_original_root": mod_valid_orig,
+                "modified_leaf_modified_proof_vs_modified_root": mod_valid_mod,
+            },
+            "conclusion": (
+                "Qualsiasi modifica ai dati del Bulletin Board altera la Merkle Root: "
+                "la manomissione è rilevabile da chiunque conosca la root originale."
+            ),
+        },
+    )
+
 
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    main()
+    try:
+        main()
+    finally:
+        input("\nPremi Invio per chiudere...")
 

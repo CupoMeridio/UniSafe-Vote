@@ -170,4 +170,7 @@ def main():
         print("Server spenti.")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        input("\nPremi Invio per chiudere...")

@@ -24,7 +24,7 @@ import hashlib
 import time
 from collections import deque
 from datetime import datetime, UTC
-from typing import Optional, Dict, List, Set, Literal, Deque
+from typing import Optional, Dict, Set, Literal, Deque
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from flask import Flask, request, jsonify
 import sys
@@ -32,14 +32,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from crypto.keys import load_private_key, load_public_key, deserialize_public_key, load_and_decrypt_private_key, save_encrypted_private_key
-from crypto.rsa_oaep import encrypt, decrypt
+from crypto.rsa_oaep import decrypt
 from crypto.rsa_pss import sign, verify
 from crypto.merkle import MerkleTree
 
 
 app = Flask(__name__)
-
-# Rimossa la gestione complessa di SHUTDOWN_TOKEN per semplicità locale
 
 # Stato interno del server (in memoria)
 used_tokens: Set[str] = set()  # Set di nonce di token già usati (privato AE)

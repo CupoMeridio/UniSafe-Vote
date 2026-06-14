@@ -539,6 +539,221 @@ Verrà aperto un nuovo terminale per eseguire la verifica.
     launch_in_new_terminal("src/observer.py")
 
 
+def run_security_tests() -> None:
+    """
+    Sottomenu per l'esecuzione dei test di sicurezza.
+
+    Ogni test è autocontenuto: inizializza la propria elezione di test,
+    avvia i server necessari, esegue le verifiche e fa teardown alla fine.
+    Il test viene eseguito in un nuovo terminale visibile all'utente, così
+    è possibile seguire le fasi intermedie e i risultati in tempo reale.
+    """
+
+    # Descrizioni dei test mostrate all'utente prima dell'esecuzione.
+    # La chiave è il numero mostrato nel menu; i test offline vengono prima,
+    # seguiti dai test che richiedono server, con numerazione continua.
+    TESTS = {
+        "1": {
+            "name": "Attacco Dizionario / Analisi di Frequenza",
+            "file": "tests/security/dictionary_attack_test.py",
+            "description": """
+Verifica che RSA-OAEP sia sicuro contro attacchi di tipo dizionario.
+
+Un attaccante conosce tutti i possibili valori di voto (sono pubblici
+sul Bulletin Board) e tenta di cifrare ciascuno con seed diversi per
+trovare una corrispondenza con un ciphertext intercettato.
+
+Il test dimostra che RSA-OAEP è uno schema PROBABILISTICO (IND-CPA):
+ogni cifratura usa un seed casuale diverso, quindi lo stesso voto
+produce ciphertext completamente differenti ad ogni esecuzione.
+L'attacco dizionario è computazionalmente impossibile.
+
+Non richiede server avviati — è un test crittografico offline.
+            """,
+        },
+        "2": {
+            "name": "Attacco MitM / Sostituzione Chiave Pubblica",
+            "file": "tests/security/mitm_key_substitution_attack.py",
+            "description": """
+Simula un attacco Man-in-the-Middle in cui l'attaccante sostituisce le
+chiavi pubbliche dell'AE nel Bulletin Board con chiavi contraffatte.
+
+Con le chiavi false, l'attaccante potrebbe decifrare i voti degli
+elettori. Il test verifica che il certificate pinning del client rilevi
+la sostituzione: le impronte delle chiavi ricevute non corrispondono
+ai pin trusted in data/pins.json, quindi il client solleva un errore
+di sicurezza e blocca l'operazione prima di usare le chiavi false.
+
+Non richiede server avviati — è un test offline sul client.
+            """,
+        },
+        "3": {
+            "name": "Manomissione del Bulletin Board (Ledger Tampering)",
+            "file": "tests/security/ledger_tampering_test.py",
+            "description": """
+Dimostra che la struttura Merkle Tree del Bulletin Board rende
+impossibile nascondere la manomissione retroattiva di un voto.
+
+Un "amministratore corrotto" modifica un voto già registrato nel
+Merkle Tree. Il test verifica che:
+- La Merkle Root cambia dopo la modifica (rilevabile da chiunque).
+- La ricevuta originale dell'elettore non è più valida con la nuova root.
+- L'osservatore universale rileva immediatamente la discrepanza.
+
+Non richiede server avviati — è un test offline sul Merkle Tree.
+            """,
+        },
+        "4": {
+            "name": "Attacco DoS / Flood con PoW invalida",
+            "file": "tests/security/dos_attack_test.py",
+            "description": """
+Simula una botnet che invia 500 richieste concorrenti con Proof of Work
+deliberatamente sbagliata all'Autorità Elettorale (AE).
+
+Il test verifica che l'AE blocchi le richieste PRIMA di eseguire
+operazioni crittografiche costose, rispondendo con HTTP 400 (Bad Request)
+quasi istantaneamente. Almeno il 90% delle richieste deve essere rifiutato.
+
+Il test avvia e termina l'AE automaticamente.
+            """,
+        },
+        "5": {
+            "name": "PoW Adattiva — Aumento e Recovery della Difficoltà",
+            "file": "tests/security/pow_adaptive_test.py",
+            "description": """
+Verifica il meccanismo di PoW adattiva dell'AE in quattro fasi:
+
+  Fase 1 — Baseline: la difficoltà a sistema a riposo deve essere
+           al valore minimo (4 bit).
+  Fase 2 — Flood: si inviano 60 richieste con PoW invalida per saturare
+           la finestra di osservazione dell'AE.
+  Fase 3 — Sotto carico: la difficoltà deve essere aumentata rispetto
+           al baseline, proporzionalmente al numero di richieste in eccesso.
+  Fase 4 — Recovery: dopo la scadenza della finestra (10 secondi), la
+           difficoltà deve tornare al valore minimo.
+
+Il test avvia e termina l'AE automaticamente.
+            """,
+        },
+        "6": {
+            "name": "Resilienza DoS durante la votazione",
+            "file": "tests/security/dos_resilience_test.py",
+            "description": """
+Test in tre fasi che verifica il comportamento del sistema sotto attacco:
+
+  Fase 1: 5 utenti onesti si autenticano presso il SA (pre-attacco).
+  Fase 2: Un flood di richieste invalide viene avviato in parallelo
+          mentre gli utenti onesti tentano di votare. Si misura la
+          difficoltà PoW (deve aumentare) e si verifica che tutti i
+          voti legittimi vengano comunque accettati.
+  Fase 3: Si attende la scadenza della finestra di osservazione e si
+          verifica che la difficoltà PoW torni al valore minimo.
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
+        "7": {
+            "name": "Double Voting / Token Replay",
+            "file": "tests/security/double_voting_attack.py",
+            "description": """
+Simula un elettore malevolo che tenta di votare due volte con lo stesso
+token di autenticazione.
+
+Il primo voto viene accettato normalmente (HTTP 200). Il secondo invio,
+con lo stesso token ma per un candidato diverso, deve essere rifiutato
+con HTTP 409 "Token già usato": l'AE marca il nonce del token come usato
+dopo la prima accettazione, impedendo riutilizzi successivi.
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
+        "8": {
+            "name": "Token Hoarding & Token Scaduto",
+            "file": "tests/security/token_hoarding_test.py",
+            "description": """
+Verifica due proprietà della politica use-it-or-lose-it sui token:
+
+  Test 1 — Token Hoarding: un elettore si autentica due volte presso il
+           SA. Il SA deve restituire sempre lo stesso token (non emettere
+           una seconda credenziale distinta), impedendo l'accumulo di
+           più token di voto.
+
+  Test 2 — Token scaduto: si costruisce un token con firma RSA-PSS
+           valida ma con finestra temporale scaduta (expires_at nel
+           passato). L'AE deve rifiutarlo con HTTP 401.
+
+  Test 3 — Voto valido: si verifica che un token regolare venga
+           accettato normalmente.
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
+    }
+
+    while True:
+        clear_screen()
+        print("\n" + "="*70)
+        print("                   UNISAFE-VOTE - TEST DI SICUREZZA")
+        print("="*70)
+        print(colored(
+            "\nOgni test è autocontenuto: inizializza la propria elezione,\n"
+            "avvia i server necessari e fa teardown alla fine.\n"
+            "Verrà aperto un nuovo terminale per seguire l'esecuzione.",
+            ANSI_DIM
+        ))
+
+        print(f"\n{section_title('TEST CRITTOGRAFICI (offline — nessun server richiesto)')}")
+        print(menu_option("1", TESTS["1"]["name"], available=True))
+        print(menu_option("2", TESTS["2"]["name"], available=True))
+        print(menu_option("3", TESTS["3"]["name"], available=True))
+
+        print(f"\n{section_title('TEST DI ATTACCO (server avviati automaticamente)')}")
+        print(menu_option("4", TESTS["4"]["name"], available=True))
+        print(menu_option("5", TESTS["5"]["name"], available=True))
+        print(menu_option("6", TESTS["6"]["name"], available=True))
+        print(menu_option("7", TESTS["7"]["name"], available=True))
+        print(menu_option("8", TESTS["8"]["name"], available=True))
+
+        print(f"\n{section_title('NAVIGAZIONE')}")
+        print(menu_option("0", "Torna al menu principale", available=True))
+        print("="*70)
+
+        choice = input("\nSeleziona un test (0-8): ").strip()
+
+        if choice == "0":
+            break
+
+        if choice not in TESTS:
+            print("\nOpzione non valida!")
+            input("\nPremi Invio per continuare...")
+            continue
+
+        test = TESTS[choice]
+        clear_screen()
+
+        # Si mostra il nome e la descrizione del test prima di eseguirlo.
+        print("\n" + "="*70)
+        print(f"  TEST {choice}: {test['name'].upper()}")
+        print("="*70)
+        print(test["description"])
+        print("-"*70)
+        print("Il test verrà eseguito in un nuovo terminale.")
+        print("Attendi la chiusura del terminale di test prima di procedere.")
+        print("-"*70)
+
+        risposta = input("\nAvviare il test? (s/n): ").strip().lower()
+        if risposta != "s":
+            print("Test annullato.")
+            input("\nPremi Invio per tornare al menu dei test...")
+            continue
+
+        # Si lancia il file di test in un nuovo terminale visibile,
+        # così l'utente può seguire le fasi intermedie e i risultati.
+        launch_in_new_terminal(test["file"])
+        print(f"\nTest '{test['name']}' avviato nel nuovo terminale.")
+        input("\nPremi Invio quando hai terminato di leggere i risultati...")
+
+
 def main_menu() -> None:
     """
     Mostra il menu principale e gestisce l'interazione con l'utente.
@@ -626,6 +841,9 @@ def main_menu() -> None:
             suffix="nessuna configurazione" if not has_configuration else ""
         ))
 
+        print(f"\n{section_title('TEST DI SICUREZZA')}")
+        print(menu_option("8", "Esegui Test di Sicurezza", available=True))
+
         print(f"\n{section_title('USCITA')}")
         print(menu_option("0", "Esci", available=True))
         print("="*70)
@@ -670,6 +888,8 @@ def main_menu() -> None:
             run_observer()
         elif choice == '7':
             reset_election()
+        elif choice == '8':
+            run_security_tests()
         elif choice == '0':
             print("\nChiusura programma...")
             clear_screen()
