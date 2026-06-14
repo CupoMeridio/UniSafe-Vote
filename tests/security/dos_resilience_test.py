@@ -62,8 +62,9 @@ from cryptography.hazmat.primitives import serialization
 # ---------------------------------------------------------------------------
 # Costanti
 # ---------------------------------------------------------------------------
-SA_URL             = "http://localhost:5001"
-AE_URL             = "http://localhost:5002"
+import sys as _sys
+_sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
+from tls_config import SA_URL, AE_URL, sa_verify, ae_verify
 DATA_DIR           = os.path.join(PROJECT_ROOT, "data")
 KEYS_DIR           = os.path.join(DATA_DIR, "keys")
 RECEIPTS_DIR       = os.path.join(DATA_DIR, "receipts")
@@ -134,7 +135,7 @@ def solve_pow(enc_vote_bytes: bytes, difficulty: int) -> str:
 
 def get_pow_difficulty() -> int:
     """Interroga l'AE per ottenere la difficoltà PoW adattiva corrente."""
-    r = requests.get(f"{AE_URL}/status", timeout=3)
+    r = requests.get(f"{AE_URL}/status", timeout=3, verify=ae_verify())
     return int(r.json().get("pow_difficulty", POW_MIN_DIFFICULTY))
 
 
@@ -144,9 +145,10 @@ def get_pow_difficulty() -> int:
 
 def _wait_server(url: str, name: str, timeout: int = SERVER_STARTUP_SEC) -> bool:
     """Attende che il server risponda sull'endpoint /status entro il timeout."""
+    _cert = ae_verify() if "5002" in url else sa_verify()
     for _ in range(timeout * 2):
         try:
-            if requests.get(f"{url}/status", timeout=0.5).status_code == 200:
+            if requests.get(f"{url}/status", timeout=0.5, verify=_cert).status_code == 200:
                 return True
         except Exception:
             pass
@@ -291,7 +293,7 @@ def teardown(sa_proc: subprocess.Popen, ae_proc: subprocess.Popen) -> None:
         # Si tenta prima lo shutdown HTTP controllato; se non risponde,
         # si termina il processo con wait() e infine con kill().
         try:
-            requests.post(f"{url}/shutdown", timeout=1)
+            requests.post(f"{url}/shutdown", timeout=1, verify=(ae_verify() if "5002" in url else sa_verify()))
         except Exception:
             pass
         try:
@@ -316,6 +318,7 @@ def authenticate_user(user: dict) -> Optional[Tuple[str, str]]:
             f"{SA_URL}/authenticate",
             json={"username": user["username"], "password": user["password"]},
             timeout=10,
+            verify=sa_verify(),
         )
         if r.status_code == 200:
             data = r.json()
@@ -360,6 +363,7 @@ def vote_user(user: dict, token: str, token_sig: str,
                     "pow_nonce":       pow_nonce,
                 },
                 timeout=60,
+                verify=ae_verify(),
             )
 
             if r.status_code == 200:
@@ -431,7 +435,7 @@ class FloodController:
                 "pow_nonce":       "0000000000000000",  # PoW invalida
             }
             try:
-                r = requests.post(f"{AE_URL}/vote", json=payload, timeout=3)
+                r = requests.post(f"{AE_URL}/vote", json=payload, timeout=3, verify=ae_verify())
                 with self._lock:
                     self.sent += 1
                     # Si conta ogni risposta 400 come richiesta bloccata dalla PoW.

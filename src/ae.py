@@ -521,6 +521,18 @@ if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     print_server_banner()
     load_initial_data()
+
+    # Certificati TLS self-signed per HTTPS
+    tls_cert = os.path.join("data", "tls", "ae_cert.pem")
+    tls_key  = os.path.join("data", "tls", "ae_key.pem")
+
+    if os.path.exists(tls_cert) and os.path.exists(tls_key):
+        ssl_ctx = (tls_cert, tls_key)
+        print("[AE] TLS abilitato — in ascolto su https://localhost:5002")
+    else:
+        ssl_ctx = None
+        print("[AE] Certificati TLS non trovati — avvio in HTTP (esegui generate_tls_certs.py)")
+
     # Avvia il server Flask sulla porta 5002, debug disabilitato
-    app.run(port=5002, debug=False)
+    app.run(port=5002, debug=False, ssl_context=ssl_ctx)
 

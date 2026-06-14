@@ -13,6 +13,17 @@ PROJECT_ROOT = os.path.abspath(os.path.join(TESTS_DIR, ".."))
 SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 sys.path.insert(0, SRC_DIR)
 
+SA_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "sa_cert.pem")
+AE_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "ae_cert.pem")
+
+
+def verify_for(url: str) -> str | bool:
+    if "5001" in url:
+        return SA_CERT if os.path.exists(SA_CERT) else True
+    if "5002" in url:
+        return AE_CERT if os.path.exists(AE_CERT) else True
+    return True
+
 from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
 from client import compute_public_key_fingerprint
@@ -34,7 +45,7 @@ def validate_pins(bulletin_board):
 
 def check_server(url):
     try:
-        r = requests.get(url + "/status", timeout=1)
+        r = requests.get(url + "/status", timeout=1, verify=verify_for(url))
         return r.status_code == 200
     except:
         return False
@@ -74,7 +85,7 @@ def main():
         # Attesa del boot
         print("Attesa che i server rispondano...")
         for _ in range(15):
-            if check_server("http://localhost:5001") and check_server("http://localhost:5002"):
+            if check_server("https://localhost:5001") and check_server("https://localhost:5002"):
                 print("Server pronti!")
                 break
             time.sleep(1)
@@ -83,10 +94,10 @@ def main():
             
         # 1. Autenticazione elettore
         print("Autenticazione mario.rossi...")
-        r = requests.post("http://localhost:5001/authenticate", json={
+        r = requests.post("https://localhost:5001/authenticate", json={
             "username": "mario.rossi",
             "password": "password123"
-        })
+        }, verify=verify_for("https://localhost:5001"))
         r.raise_for_status()
         auth_data = r.json()
         token = auth_data["token"]
@@ -112,21 +123,21 @@ def main():
         
         # 3. Invio del voto all'AE
         print("Invio del voto all'AE...")
-        r = requests.post("http://localhost:5002/vote", json={
+        r = requests.post("https://localhost:5002/vote", json={
             "enc_vote": enc_vote,
             "enc_seed": enc_seed,
             "token": token,
             "token_signature": token_signature,
             "pow_nonce": pow_nonce
-        })
+        }, verify=verify_for("https://localhost:5002"))
         r.raise_for_status()
         receipt = r.json()
         print(f"Voto accettato! Leaf index: {receipt['leaf_index']}")
         
         # 4. Chiusura elezione e scrutinio
         print("Chiusura dell'elezione e riconciliazione...")
-        requests.post("http://localhost:5001/reconcile").raise_for_status()
-        r = requests.post("http://localhost:5002/close")
+        requests.post("https://localhost:5001/reconcile", verify=verify_for("https://localhost:5001")).raise_for_status()
+        r = requests.post("https://localhost:5002/close", verify=verify_for("https://localhost:5002"))
         r.raise_for_status()
         close_res = r.json()
         print("Scrutinio completato:", close_res["result"])
@@ -149,11 +160,11 @@ def main():
     finally:
         print("Spegnimento dei server...")
         try:
-            requests.post("http://localhost:5001/shutdown", timeout=2)
+            requests.post("https://localhost:5001/shutdown", timeout=2, verify=verify_for("https://localhost:5001"))
         except:
             pass
         try:
-            requests.post("http://localhost:5002/shutdown", timeout=2)
+            requests.post("https://localhost:5002/shutdown", timeout=2, verify=verify_for("https://localhost:5002"))
         except:
             pass
             

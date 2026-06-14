@@ -57,8 +57,10 @@ def compute_public_key_fingerprint(pem_str: str) -> str:
 # ---------------------------------------------------------------------------
 # Configurazione
 # ---------------------------------------------------------------------------
-AE_URL              = "http://localhost:5002"
-SA_URL              = "http://localhost:5001"
+import sys as _sys
+_sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
+from tls_config import AE_URL, SA_URL, ae_verify, sa_verify
+
 BULLETIN_BOARD_PATH = os.path.join(DATA_DIR, "bulletin_board.json")
 
 SERVER_STARTUP_SEC = 6
@@ -81,9 +83,10 @@ ae_process = None
 
 def _wait_server(url: str, name: str, timeout: int = SERVER_STARTUP_SEC) -> bool:
     """Attende che il server risponda sull'endpoint /status entro il timeout."""
+    _cert = ae_verify() if "5002" in url else sa_verify()
     for _ in range(timeout * 2):
         try:
-            if requests.get(f"{url}/status", timeout=0.5).status_code == 200:
+            if requests.get(f"{url}/status", timeout=0.5, verify=_cert).status_code == 200:
                 return True
         except Exception:
             pass
@@ -202,7 +205,8 @@ def teardown():
         # Si tenta prima lo shutdown HTTP controllato; se il server non risponde,
         # si termina il processo con terminate() e infine con kill().
         try:
-            requests.post(f"{url}/shutdown", timeout=1)
+            requests.post(f"{url}/shutdown", timeout=1,
+                          verify=(ae_verify() if "5002" in url else sa_verify()))
         except Exception:
             pass
         if proc:
@@ -273,7 +277,7 @@ def solve_pow(enc_vote_hex: str, difficulty: int = 4) -> str:
 def get_pow_difficulty():
     """Interroga l'AE per ottenere la difficoltà PoW adattiva corrente."""
     try:
-        response = requests.get(f"{AE_URL}/status", timeout=5)
+        response = requests.get(f"{AE_URL}/status", timeout=5, verify=ae_verify())
         if response.status_code == 200:
             return int(response.json().get("pow_difficulty", 4))
     except requests.exceptions.RequestException:
@@ -290,7 +294,8 @@ def get_valid_token():
     response = requests.post(
         f"{SA_URL}/authenticate",
         json={"username": voter_plain["username"], "password": voter_plain["password"]},
-        timeout=5
+        timeout=5,
+        verify=sa_verify()
     )
     if response.status_code == 200:
         data = response.json()
@@ -373,7 +378,7 @@ def main():
         print(f"  enc_vote (prime 60 hex): {payload1['enc_vote'][:60]}...")
         print(f"  pow_nonce:               {payload1['pow_nonce']}")
         print(f"  Invio voto 1...")
-        response1 = requests.post(f"{AE_URL}/vote", json=payload1, timeout=10)
+        response1 = requests.post(f"{AE_URL}/vote", json=payload1, timeout=10, verify=ae_verify())
         print(f"\n  Risposta AE — HTTP {response1.status_code}:")
         print(f"  {json.dumps(response1.json(), indent=4, ensure_ascii=False)}")
 
@@ -389,7 +394,7 @@ def main():
         print(f"  enc_vote (prime 60 hex): {payload2['enc_vote'][:60]}...")
         print(f"  pow_nonce:               {payload2['pow_nonce']}")
         print(f"  Invio voto 2...")
-        response2 = requests.post(f"{AE_URL}/vote", json=payload2, timeout=10)
+        response2 = requests.post(f"{AE_URL}/vote", json=payload2, timeout=10, verify=ae_verify())
         print(f"\n  Risposta AE — HTTP {response2.status_code}:")
         print(f"  {json.dumps(response2.json(), indent=4, ensure_ascii=False)}")
 

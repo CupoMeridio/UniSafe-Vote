@@ -56,8 +56,10 @@ def compute_public_key_fingerprint(pem_str: str) -> str:
 # ---------------------------------------------------------------------------
 # Configurazione
 # ---------------------------------------------------------------------------
-SA_URL              = "http://localhost:5001"
-AE_URL              = "http://localhost:5002"
+import sys as _sys
+_sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
+from tls_config import SA_URL, AE_URL, sa_verify, ae_verify
+
 BULLETIN_BOARD_PATH = os.path.join(DATA_DIR, "bulletin_board.json")
 VOTERS_PATH         = os.path.join(DATA_DIR, "voters.json")
 
@@ -81,9 +83,10 @@ ae_process = None
 
 def _wait_server(url: str, name: str, timeout: int = SERVER_STARTUP_SEC) -> bool:
     """Attende che il server risponda sull'endpoint /status entro il timeout."""
+    _cert = ae_verify() if "5002" in url else sa_verify()
     for _ in range(timeout * 2):
         try:
-            if requests.get(f"{url}/status", timeout=0.5).status_code == 200:
+            if requests.get(f"{url}/status", timeout=0.5, verify=_cert).status_code == 200:
                 return True
         except Exception:
             pass
@@ -200,7 +203,8 @@ def teardown():
     print("\n[TEARDOWN] Chiusura server...")
     for url, proc, name in [(SA_URL, sa_process, "SA"), (AE_URL, ae_process, "AE")]:
         try:
-            requests.post(f"{url}/shutdown", timeout=1)
+            requests.post(f"{url}/shutdown", timeout=1,
+                          verify=(ae_verify() if "5002" in url else sa_verify()))
         except Exception:
             pass
         if proc:
@@ -263,7 +267,7 @@ def solve_pow(enc_vote_hex: str, difficulty: int = 4) -> str:
 def get_pow_difficulty() -> int:
     """Interroga l'AE per ottenere la difficoltà PoW adattiva corrente."""
     try:
-        response = requests.get(f"{AE_URL}/status", timeout=2)
+        response = requests.get(f"{AE_URL}/status", timeout=2, verify=ae_verify())
         if response.status_code == 200:
             return int(response.json().get("pow_difficulty", 4))
     except Exception:
@@ -334,7 +338,8 @@ def main():
         print("\n  Prima autenticazione...")
         r1 = requests.post(f"{SA_URL}/authenticate",
                            json={"username": test_voter["username"],
-                                 "password": test_voter_password})
+                                 "password": test_voter_password},
+                           verify=sa_verify())
         assert r1.status_code == 200, "Prima autenticazione fallita!"
         token1     = r1.json()["token"]
         signature1 = r1.json()["signature"]
@@ -349,7 +354,8 @@ def main():
         print("\n  Seconda autenticazione con le stesse credenziali...")
         r2 = requests.post(f"{SA_URL}/authenticate",
                            json={"username": test_voter["username"],
-                                 "password": test_voter_password})
+                                 "password": test_voter_password},
+                           verify=sa_verify())
         assert r2.status_code == 200, "Seconda autenticazione fallita!"
         token2     = r2.json()["token"]
         token2_obj = json.loads(token2)
@@ -397,7 +403,7 @@ def main():
 
         expired_payload = create_vote_payload(expired_token_str, expired_sig, ae_pubkey)
         print(f"\n  Invio voto con token scaduto all'AE...")
-        expired_resp = requests.post(f"{AE_URL}/vote", json=expired_payload)
+        expired_resp = requests.post(f"{AE_URL}/vote", json=expired_payload, verify=ae_verify())
 
         print(f"\n  Risposta AE — HTTP {expired_resp.status_code}:")
         print(f"  {json.dumps(expired_resp.json(), indent=4, ensure_ascii=False)}")
@@ -420,7 +426,7 @@ def main():
         print(f"  enc_vote (prime 60 hex): {valid_payload['enc_vote'][:60]}...")
         print(f"  pow_nonce: {valid_payload['pow_nonce']}")
         print(f"\n  Invio voto all'AE...")
-        valid_resp = requests.post(f"{AE_URL}/vote", json=valid_payload)
+        valid_resp = requests.post(f"{AE_URL}/vote", json=valid_payload, verify=ae_verify())
 
         print(f"\n  Risposta AE — HTTP {valid_resp.status_code}:")
         print(f"  {json.dumps(valid_resp.json(), indent=4, ensure_ascii=False)}")

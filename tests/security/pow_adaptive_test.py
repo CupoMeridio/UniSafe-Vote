@@ -57,7 +57,10 @@ from cryptography.hazmat.primitives import serialization
 # ---------------------------------------------------------------------------
 # Configurazione
 # ---------------------------------------------------------------------------
-AE_URL              = "http://localhost:5002"
+import sys as _sys
+_sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
+from tls_config import AE_URL, ae_verify
+
 POW_MIN_DIFFICULTY  = 4
 POW_RATE_THRESHOLD  = 5
 POW_WINDOW_SECONDS  = 10.0
@@ -95,7 +98,7 @@ def _compute_fingerprint(pem_str: str) -> str:
 def _wait_server(url: str, name: str, timeout: int = SERVER_STARTUP_SEC) -> bool:
     for _ in range(timeout * 2):
         try:
-            if requests.get(f"{url}/status", timeout=0.5).status_code == 200:
+            if requests.get(f"{url}/status", timeout=0.5, verify=ae_verify()).status_code == 200:
                 return True
         except Exception:
             pass
@@ -188,7 +191,7 @@ def teardown():
     global ae_process
     print("\n[TEARDOWN] Chiusura AE...")
     try:
-        requests.post(f"{AE_URL}/shutdown", timeout=1)
+        requests.post(f"{AE_URL}/shutdown", timeout=1, verify=ae_verify())
     except Exception:
         pass
     if ae_process:
@@ -205,7 +208,7 @@ def teardown():
 
 def get_pow_status() -> dict:
     """Restituisce l'intero payload JSON di /status per mostrare evidenza raw."""
-    resp = requests.get(f"{AE_URL}/status", timeout=3)
+    resp = requests.get(f"{AE_URL}/status", timeout=3, verify=ae_verify())
     resp.raise_for_status()
     return resp.json()
 
@@ -227,7 +230,7 @@ def send_invalid_request(_: int) -> dict:
         "pow_nonce":       "0000000000000000",
     }
     try:
-        resp = requests.post(f"{AE_URL}/vote", json=payload, timeout=5)
+        resp = requests.post(f"{AE_URL}/vote", json=payload, timeout=5, verify=ae_verify())
         body = resp.json() if resp.content else {}
         return {"status_code": resp.status_code, "body": body}
     except Exception as e:

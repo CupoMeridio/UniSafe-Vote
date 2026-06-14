@@ -10,6 +10,7 @@ data/voters.json
 data/bulletin_board.json
 data/ae_state.json
 data/pins.json
+data/tls/
 
 # Report dei test di sicurezza (artefatti locali, generati a runtime)
 # e CSV di Locust — tutta la cartella tests/output/ è esclusa

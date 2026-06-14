@@ -65,8 +65,8 @@ class LegitimateUser(HttpUser):
         """Carica la chiave dell'AE e autentica l'utente"""
         
         # 1. Carica la chiave pubblica dell'AE per cifrare i voti
-        # Data è ora in src/data/
-        bb_path = os.path.join(PROJECT_ROOT, "src", "data", "bulletin_board.json")
+        # Data è ora in data/
+        bb_path = os.path.join(PROJECT_ROOT, "data", "bulletin_board.json")
         try:
             with open(bb_path, "r", encoding="utf-8") as f:
                 bb = json.load(f)
@@ -85,7 +85,7 @@ class LegitimateUser(HttpUser):
         
         # Autenticazione sul SA
         auth_response = self.client.post(
-            "http://localhost:5001/authenticate",
+            "/authenticate",
             json={"username": self.username, "password": password},
             headers=self.headers
         )
@@ -119,7 +119,7 @@ class LegitimateUser(HttpUser):
         
         # 3. Invia il voto all'AE
         response = self.client.post(
-            "http://localhost:5002/vote",
+            "/vote",
             json=vote_payload,
             headers=self.headers
         )
@@ -129,7 +129,7 @@ class LegitimateUser(HttpUser):
     @task(1)  # 1 verifica ogni 3 voti
     def verify_status(self):
         self.client.get(
-            "http://localhost:5002/status",
+            "/status",
             headers=self.headers
         )
 
@@ -155,7 +155,7 @@ class MaliciousDoSUser(HttpUser):
             "pow_nonce": "0000000000000000"
         }
         self.client.post(
-            "http://localhost:5002/vote",
+            "/vote",
             json=vote_payload,
             headers=self.headers
         )
