@@ -798,6 +798,14 @@ def main_menu() -> None:
     """
     while True:
         clear_screen()
+        print("""
+ ██╗   ██╗███╗   ██╗██╗███████╗ █████╗ ███████╗███████╗    ██╗   ██╗ ██████╗ ████████╗███████╗
+ ██║   ██║████╗  ██║██║██╔════╝██╔══██╗██╔════╝██╔════╝    ██║   ██║██╔═══██╗╚══██╔══╝██╔════╝
+ ██║   ██║██╔██╗ ██║██║███████╗███████║█████╗  █████╗      ██║   ██║██║   ██║   ██║   █████╗
+ ██║   ██║██║╚██╗██║██║╚════██║██╔══██║██╔══╝  ██╔══╝      ╚██╗ ██╔╝██║   ██║   ██║   ██╔══╝
+ ╚██████╔╝██║ ╚████║██║███████║██║  ██║██║     ███████╗     ╚████╔╝ ╚██████╔╝   ██║   ███████╗
+  ╚═════╝ ╚═╝  ╚═══╝╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚══════╝      ╚═══╝   ╚═════╝    ╚═╝   ╚══════╝
+""")
         election_initialized = is_election_initialized()
         sa_active = check_server_running(SA_URL)
         ae_active = check_server_running(AE_URL)
@@ -808,9 +816,6 @@ def main_menu() -> None:
         urn_open = urn_state == "aperte"
         has_configuration = has_election_configuration()
 
-        print("\n" + "="*70)
-        print("                   UNISAFE-VOTE - PANNELLO DI CONTROLLO")
-        print("="*70)
         print(f"\nStato: elezione inizializzata = {'sì' if election_initialized else 'no'}, "
               f"SA = {'attivo' if sa_active else 'inattivo'}, "
               f"AE = {'attivo' if ae_active else 'inattivo'}, "
