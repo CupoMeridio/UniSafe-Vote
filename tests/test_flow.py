@@ -12,6 +12,7 @@ TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(TESTS_DIR, ".."))
 SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 sys.path.insert(0, SRC_DIR)
+sys.path.insert(0, TESTS_DIR)
 
 SA_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "sa_cert.pem")
 AE_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "ae_cert.pem")
@@ -24,6 +25,7 @@ def verify_for(url: str) -> str | bool:
         return AE_CERT if os.path.exists(AE_CERT) else True
     return True
 
+from tls_config import ensure_tls_certs
 from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
 from client import compute_public_key_fingerprint
@@ -76,6 +78,7 @@ def solve_pow(enc_vote_hex, difficulty=4):
 def main():
     print("Avvio dei server SA e AE per il test...")
     python_exe = sys.executable
+    ensure_tls_certs()
     
     # Avvia i server SA e AE in background
     sa_proc = subprocess.Popen([python_exe, "sa.py"], cwd=SRC_DIR)

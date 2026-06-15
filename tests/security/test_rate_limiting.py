@@ -13,6 +13,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(TESTS_SECURITY_DIR, "..", ".."))
 SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 sys.path.insert(0, SRC_DIR)
 sys.path.insert(0, TESTS_SECURITY_DIR)
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 
 SA_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "sa_cert.pem")
 
@@ -20,9 +21,12 @@ SA_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "sa_cert.pem")
 def sa_verify() -> str | bool:
     return SA_CERT if os.path.exists(SA_CERT) else True
 
+from tls_config import ensure_tls_certs
+
 def main():
     # Initialize election
     print("[*] Initializing election first...")
+    ensure_tls_certs()
     subprocess.run([sys.executable, os.path.join(SRC_DIR, "init_election_non_interactive.py")], cwd=PROJECT_ROOT, check=True)
 
     # Start SA in background

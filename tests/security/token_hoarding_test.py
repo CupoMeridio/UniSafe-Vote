@@ -58,12 +58,12 @@ def compute_public_key_fingerprint(pem_str: str) -> str:
 # ---------------------------------------------------------------------------
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
-from tls_config import SA_URL, AE_URL, sa_verify, ae_verify
+from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs
 
 BULLETIN_BOARD_PATH = os.path.join(DATA_DIR, "bulletin_board.json")
 VOTERS_PATH         = os.path.join(DATA_DIR, "voters.json")
 
-SERVER_STARTUP_SEC = 6
+SERVER_STARTUP_SEC = 15  # Aumentato a 15s per overhead inizializzazione TLS
 
 VOTERS = [
     {"id": "v001", "email": "mario.rossi@studenti.unisa.it",
@@ -106,11 +106,16 @@ def setup():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(KEYS_DIR, exist_ok=True)
 
+    # Genera i certificati TLS self-signed se non presenti (necessari per HTTPS).
+    ensure_tls_certs()
+
     for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
         p = os.path.join(DATA_DIR, fname)
         if os.path.exists(p):
             os.remove(p)
     for f in os.listdir(KEYS_DIR):
+        if f == ".gitkeep":
+            continue
         os.remove(os.path.join(KEYS_DIR, f))
 
     # Si generano tre coppie RSA-2048: firma SA, cifratura AE e firma AE.

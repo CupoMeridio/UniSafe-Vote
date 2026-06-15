@@ -37,14 +37,15 @@ import hashlib
 # Numero totale di richieste di attacco da inviare e thread concorrenti.
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
-from tls_config import AE_URL, ae_verify
+from tls_config import AE_URL, ae_verify, ensure_tls_certs
 
 AE_VOTE_URL = f"{AE_URL}/vote"
 NUM_REQUESTS = 500
 NUM_THREADS = 50
 
 # Secondi di attesa affinché il server Flask sia pronto dopo l'avvio.
-SERVER_STARTUP_SEC = 6
+# Aumentato a 15s per tener conto dell'overhead di inizializzazione TLS/SSL.
+SERVER_STARTUP_SEC = 15
 
 VOTERS = [
     {"id": "v001", "email": "mario.rossi@studenti.unisa.it",
@@ -95,11 +96,16 @@ def setup():
     os.makedirs(DATA_DIR,  exist_ok=True)
     os.makedirs(KEYS_DIR,  exist_ok=True)
 
+    # Genera i certificati TLS self-signed se non presenti (necessari per HTTPS).
+    ensure_tls_certs()
+
     for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
         p = os.path.join(DATA_DIR, fname)
         if os.path.exists(p):
             os.remove(p)
     for f in os.listdir(KEYS_DIR):
+        if f == ".gitkeep":
+            continue
         os.remove(os.path.join(KEYS_DIR, f))
 
     # Si generano tre coppie RSA-2048 distinte per SA, cifratura AE e firma AE.

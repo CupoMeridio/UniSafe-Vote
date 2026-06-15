@@ -271,13 +271,19 @@ def vote():
         token_signature = req_data.get('token_signature')
         pow_nonce = req_data.get('pow_nonce')
 
-        # Registra la richiesta per il calcolo della difficoltà PoW adattiva
-        request_timestamps.append(time.monotonic())
-
-        # 1. Verifica la Proof of Work alla difficoltà adattiva corrente
+        # 1. Verifica la Proof of Work alla difficoltà adattiva corrente.
+        # Il timestamp viene registrato SOLO se la PoW è valida: le richieste
+        # con nonce casuale (attacco spazzatura) non contribuiscono al contatore
+        # adattivo e non alzano la difficoltà per gli elettori legittimi.
+        # La difficoltà aumenta esclusivamente quando un attaccante risolve
+        # davvero la PoW a raffica (botnet), che è l'unico caso in cui il
+        # meccanismo adattivo ha senso.
         if not verify_pow(enc_vote, pow_nonce, current_pow_difficulty()):
             print(f"[AE] {datetime.now().isoformat()} - PoW invalida")
             return jsonify({"error": "Proof of Work invalida"}), 400
+
+        # PoW valida: registra la richiesta per l'adattamento della difficoltà
+        request_timestamps.append(time.monotonic())
 
         # 2. Verifica la firma del token con la chiave pubblica del SA
         token_bytes = token.encode('utf-8')
