@@ -208,7 +208,7 @@ def setup():
 
 
 def teardown():
-    """Chiude l'AE."""
+    """Chiude l'AE e pulisce i file di stato."""
     global ae_process
     print("\n[TEARDOWN] Chiusura AE...")
     try:
@@ -221,6 +221,15 @@ def teardown():
         except subprocess.TimeoutExpired:
             ae_process.kill()
     print("[TEARDOWN] AE terminata.")
+    # Pulizia dei file di stato lasciati dal test.
+    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
+        p = os.path.join(DATA_DIR, fname)
+        if os.path.exists(p):
+            os.remove(p)
+    for f in os.listdir(KEYS_DIR):
+        if f != ".gitkeep":
+            os.remove(os.path.join(KEYS_DIR, f))
+    print("[TEARDOWN] File di stato rimossi.")
 
 
 # ---------------------------------------------------------------------------
@@ -357,15 +366,14 @@ def flood(n_requests: int, n_threads: int, sender_fn) -> List[dict]:
 
 def main() -> None:
     global ae_process
+    print("=" * 70)
+    print("  TEST POW ADATTIVA — MITIGAZIONE DoS SELETTIVA (WP2 Fase 3 / WP3 §2.4)")
+    print("=" * 70)
+    print()
+    print("  Principio: la difficoltà aumenta SOLO per richieste con PoW valida.")
+    print("  Un flood di nonce casuali (spazzatura) NON deve alzare la difficoltà.")
     try:
         setup()
-
-        print("=" * 70)
-        print("  TEST POW ADATTIVA — MITIGAZIONE DoS SELETTIVA (WP2 Fase 3 / WP3 §2.4)")
-        print("=" * 70)
-        print()
-        print("  Principio: la difficoltà aumenta SOLO per richieste con PoW valida.")
-        print("  Un flood di nonce casuali (spazzatura) NON deve alzare la difficoltà.")
 
         # ------------------------------------------------------------------ #
         # FASE 1 — Baseline                                                   #

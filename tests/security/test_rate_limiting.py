@@ -24,6 +24,18 @@ def sa_verify() -> str | bool:
 from tls_config import ensure_tls_certs
 
 def main():
+    # Pulizia stato precedente prima di reinizializzare
+    data_dir  = os.path.join(PROJECT_ROOT, "data")
+    keys_dir  = os.path.join(data_dir, "keys")
+    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
+        p = os.path.join(data_dir, fname)
+        if os.path.exists(p):
+            os.remove(p)
+    if os.path.isdir(keys_dir):
+        for f in os.listdir(keys_dir):
+            if f != ".gitkeep":
+                os.remove(os.path.join(keys_dir, f))
+
     # Initialize election
     print("[*] Initializing election first...")
     ensure_tls_certs()
@@ -67,6 +79,16 @@ def main():
             sa_proc.wait(timeout=3)
         except:
             sa_proc.kill()
+        # Pulizia dei file di stato lasciati dal test.
+        for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
+            p = os.path.join(data_dir, fname)
+            if os.path.exists(p):
+                os.remove(p)
+        if os.path.isdir(keys_dir):
+            for f in os.listdir(keys_dir):
+                if f != ".gitkeep":
+                    os.remove(os.path.join(keys_dir, f))
+        print("[*] File di stato rimossi.")
 
 
 if __name__ == "__main__":

@@ -429,6 +429,41 @@ Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente
     print("Configurazione elezione rimossa. È ora possibile inizializzare una nuova elezione.")
 
 
+def _silent_reset_after_test() -> None:
+    """
+    Reset silenzioso eseguito automaticamente dopo ogni test di sicurezza.
+
+    I test sono autocontenuti e fanno il proprio teardown, ma possono lasciare
+    residui in data/ se interrotti prematuramente. Questo cleanup garantisce
+    che il sistema torni in uno stato neutro prima di tornare al menu principale,
+    senza sovrascrivere un'elezione reale già inizializzata dall'utente.
+    """
+    data_dir     = os.path.join(PROJECT_DIR, "data")
+    keys_dir     = os.path.join(data_dir, "keys")
+    receipts_dir = os.path.join(data_dir, "receipts")
+
+    cleaned = False
+    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
+        p = os.path.join(data_dir, fname)
+        if os.path.exists(p):
+            os.remove(p)
+            cleaned = True
+    if os.path.isdir(keys_dir):
+        for f in os.listdir(keys_dir):
+            fp = os.path.join(keys_dir, f)
+            if os.path.isfile(fp) and f != ".gitkeep":
+                os.remove(fp)
+                cleaned = True
+    if os.path.isdir(receipts_dir):
+        for f in os.listdir(receipts_dir):
+            fp = os.path.join(receipts_dir, f)
+            if os.path.isfile(fp) and f.lower().endswith(".json"):
+                os.remove(fp)
+                cleaned = True
+    if cleaned:
+        print(colored("  [reset automatico] Stato del test rimosso.", ANSI_DIM))
+
+
 def open_client() -> None:
     """
     Apri il client votante in un nuovo terminale.
@@ -778,6 +813,9 @@ Il test avvia e termina SA e AE automaticamente.
         launch_in_new_terminal(test["file"])
         print(f"\nTest '{test['name']}' avviato nel nuovo terminale.")
         input("\nPremi Invio quando hai terminato di leggere i risultati...")
+        # Reset automatico: rimuove eventuali residui lasciati dal test
+        # (file di stato, chiavi, ricevute) prima di tornare al menu.
+        _silent_reset_after_test()
 
 
 def main_menu() -> None:

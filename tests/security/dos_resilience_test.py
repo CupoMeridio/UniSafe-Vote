@@ -302,7 +302,7 @@ def setup() -> Tuple[subprocess.Popen, subprocess.Popen, dict]:
 
 
 def teardown(sa_proc: subprocess.Popen, ae_proc: subprocess.Popen) -> None:
-    """Invia il segnale di shutdown a SA e AE e termina i processi."""
+    """Invia il segnale di shutdown a SA e AE, termina i processi e pulisce i file di stato."""
     print("\n" + "=" * 70)
     print("  TEARDOWN")
     print("=" * 70)
@@ -318,6 +318,18 @@ def teardown(sa_proc: subprocess.Popen, ae_proc: subprocess.Popen) -> None:
         except subprocess.TimeoutExpired:
             proc.kill()
         print(f"  {name} terminato.")
+    # Pulizia dei file di stato e delle ricevute lasciate dal test.
+    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
+        p = os.path.join(DATA_DIR, fname)
+        if os.path.exists(p):
+            os.remove(p)
+    for f in os.listdir(KEYS_DIR):
+        if f != ".gitkeep":
+            os.remove(os.path.join(KEYS_DIR, f))
+    for f in os.listdir(RECEIPTS_DIR):
+        if f.endswith(".json"):
+            os.remove(os.path.join(RECEIPTS_DIR, f))
+    print("  File di stato rimossi.")
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +543,10 @@ class ValidFlood:
 
 def main() -> None:
     os.chdir(PROJECT_ROOT)
+    print("=" * 70)
+    print("  TEST RESILIENZA DoS DURANTE LA VOTAZIONE")
+    print("  (WP2 Fase 3 / WP3 §2.4)")
+    print("=" * 70)
     sa_proc, ae_proc, ctx = setup()
     ae_pub = ctx["ae_encrypt_public"]
 

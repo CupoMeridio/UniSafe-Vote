@@ -239,67 +239,69 @@ def main():
     print(f"    Uguali? {'sì' if legit_enc_fp == fake_enc_fp else 'no — sono chiavi diverse, come atteso'}")
 
     # ------------------------------------------------------------------ #
-    # PASSO 4 — L'attaccante inietta le chiavi false nel Bulletin Board   #
+    # PASSO 4-5-6 — Tamper, rilevamento, ripristino (protetto da finally) #
     # ------------------------------------------------------------------ #
-    print("\n" + "-" * 80)
-    print("PASSO 4 — L'attaccante inietta le chiavi false nel Bulletin Board")
-    print("-" * 80)
-
-    with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
-        tampered_bb = json.load(f)
-
-    tampered_bb[0]["data"]["ae_encrypt_public"] = fake_enc_pem
-    tampered_bb[0]["data"]["ae_sign_public"]    = fake_sign_pem
-
-    with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
-        json.dump(tampered_bb, f, indent=2, ensure_ascii=False)
-
-    # Si mostra il diff: la chiave nel BB ora è quella contraffatta.
-    with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
-        bb_after = json.load(f)
-
-    fp_after_enc  = compute_public_key_fingerprint(bb_after[0]["data"]["ae_encrypt_public"])
-    fp_after_sign = compute_public_key_fingerprint(bb_after[0]["data"]["ae_sign_public"])
-
-    print(f"\n  Bulletin Board PRIMA della manomissione:")
-    print(f"    ae_encrypt_public SHA-256: {legit_enc_fp}")
-    print(f"    ae_sign_public    SHA-256: {legit_sign_fp}")
-    print(f"\n  Bulletin Board DOPO la manomissione:")
-    print(f"    ae_encrypt_public SHA-256: {fp_after_enc}")
-    print(f"    ae_sign_public    SHA-256: {fp_after_sign}")
-    print(f"\n  Le chiavi nel BB coincidono ancora con i pin trusted?")
-    print(f"    ae_encrypt_public: {'✓ sì' if pin_enc.removeprefix('sha256:') == fp_after_enc  else '✗ no — BB manomesso!'}")
-    print(f"    ae_sign_public:    {'✓ sì' if pin_sign.removeprefix('sha256:') == fp_after_sign else '✗ no — BB manomesso!'}")
-
-    # ------------------------------------------------------------------ #
-    # PASSO 5 — Il client tenta di caricare il BB manomesso               #
-    # ------------------------------------------------------------------ #
-    print("\n" + "-" * 80)
-    print("PASSO 5 — Il client tenta di caricare il BB manomesso")
-    print("-" * 80)
-    print("\n  Il client confronta le impronte delle chiavi ricevute dal BB")
-    print("  con i pin trusted caricati dal canale sicuro (pins.json).")
-    print("  Se non corrispondono, deve bloccarsi con SecurityError.\n")
-
+    # Il ripristino è in un finally: anche se il test crasha dopo aver
+    # scritto le chiavi false, il Bulletin Board viene sempre restaurato.
     error_message = None
     detected = False
-    try:
-        client.load_bulletin_board()
-        print("  [FALLIMENTO] Il client ha accettato le chiavi contraffatte!")
-    except SecurityError as e:
-        error_message = str(e)
-        detected = True
-        print(f"  [PASS] SecurityError sollevato correttamente!")
-        print(f"  Messaggio: {error_message}")
 
-    # ------------------------------------------------------------------ #
-    # PASSO 6 — Ripristino                                                #
-    # ------------------------------------------------------------------ #
-    print("\n" + "-" * 80)
-    print("PASSO 6 — Ripristino stato pulito")
-    print("-" * 80)
-    init_election()
-    print("  Bulletin Board ripristinato con chiavi legittime.")
+    try:
+        # PASSO 4 — L'attaccante inietta le chiavi false nel Bulletin Board
+        print("\n" + "-" * 80)
+        print("PASSO 4 — L'attaccante inietta le chiavi false nel Bulletin Board")
+        print("-" * 80)
+
+        with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
+            tampered_bb = json.load(f)
+
+        tampered_bb[0]["data"]["ae_encrypt_public"] = fake_enc_pem
+        tampered_bb[0]["data"]["ae_sign_public"]    = fake_sign_pem
+
+        with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
+            json.dump(tampered_bb, f, indent=2, ensure_ascii=False)
+
+        # Si mostra il diff: la chiave nel BB ora è quella contraffatta.
+        with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
+            bb_after = json.load(f)
+
+        fp_after_enc  = compute_public_key_fingerprint(bb_after[0]["data"]["ae_encrypt_public"])
+        fp_after_sign = compute_public_key_fingerprint(bb_after[0]["data"]["ae_sign_public"])
+
+        print(f"\n  Bulletin Board PRIMA della manomissione:")
+        print(f"    ae_encrypt_public SHA-256: {legit_enc_fp}")
+        print(f"    ae_sign_public    SHA-256: {legit_sign_fp}")
+        print(f"\n  Bulletin Board DOPO la manomissione:")
+        print(f"    ae_encrypt_public SHA-256: {fp_after_enc}")
+        print(f"    ae_sign_public    SHA-256: {fp_after_sign}")
+        print(f"\n  Le chiavi nel BB coincidono ancora con i pin trusted?")
+        print(f"    ae_encrypt_public: {'✓ sì' if pin_enc.removeprefix('sha256:') == fp_after_enc  else '✗ no — BB manomesso!'}")
+        print(f"    ae_sign_public:    {'✓ sì' if pin_sign.removeprefix('sha256:') == fp_after_sign else '✗ no — BB manomesso!'}")
+
+        # PASSO 5 — Il client tenta di caricare il BB manomesso
+        print("\n" + "-" * 80)
+        print("PASSO 5 — Il client tenta di caricare il BB manomesso")
+        print("-" * 80)
+        print("\n  Il client confronta le impronte delle chiavi ricevute dal BB")
+        print("  con i pin trusted caricati dal canale sicuro (pins.json).")
+        print("  Se non corrispondono, deve bloccarsi con SecurityError.\n")
+
+        try:
+            client.load_bulletin_board()
+            print("  [FALLIMENTO] Il client ha accettato le chiavi contraffatte!")
+        except SecurityError as e:
+            error_message = str(e)
+            detected = True
+            print(f"  [PASS] SecurityError sollevato correttamente!")
+            print(f"  Messaggio: {error_message}")
+
+    finally:
+        # PASSO 6 — Ripristino (eseguito sempre, anche in caso di eccezione)
+        print("\n" + "-" * 80)
+        print("PASSO 6 — Ripristino stato pulito")
+        print("-" * 80)
+        init_election()
+        print("  Bulletin Board ripristinato con chiavi legittime.")
 
     # ------------------------------------------------------------------ #
     # Riepilogo                                                           #

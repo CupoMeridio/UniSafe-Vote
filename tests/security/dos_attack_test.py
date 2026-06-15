@@ -187,7 +187,7 @@ def setup():
 
 
 def teardown():
-    """Invia il segnale di shutdown all'AE e termina il processo."""
+    """Invia il segnale di shutdown all'AE e termina il processo, poi pulisce i file di stato."""
     global ae_process
     print("\n[TEARDOWN] Chiusura AE...")
     # Si tenta prima lo shutdown controllato via HTTP; se fallisce, si termina
@@ -202,6 +202,15 @@ def teardown():
         except subprocess.TimeoutExpired:
             ae_process.kill()
     print("[TEARDOWN] AE terminata.")
+    # Pulizia dei file di stato lasciati dal test.
+    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
+        p = os.path.join(DATA_DIR, fname)
+        if os.path.exists(p):
+            os.remove(p)
+    for f in os.listdir(KEYS_DIR):
+        if f != ".gitkeep":
+            os.remove(os.path.join(KEYS_DIR, f))
+    print("[TEARDOWN] File di stato rimossi.")
 
 
 # ---------------------------------------------------------------------------
@@ -251,14 +260,13 @@ def attack_request(request_id: int) -> dict:
 
 def main():
     global ae_process
+    print("=" * 80)
+    print("TEST ATTACCO VOLUMETRICO / NAIVE DOS")
+    print("(Bypass della Proof of Work)")
+    print("=" * 80)
     try:
         # Si esegue il setup completo prima di avviare il test.
         setup()
-
-        print("=" * 80)
-        print("TEST ATTACCO VOLUMETRICO / NAIVE DOS")
-        print("(Bypass della Proof of Work)")
-        print("=" * 80)
 
         print(f"\nConfigurazione:")
         print(f"  - Numero di richieste totali: {NUM_REQUESTS}")

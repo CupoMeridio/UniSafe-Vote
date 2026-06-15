@@ -205,7 +205,7 @@ def setup():
 
 
 def teardown():
-    """Invia il segnale di shutdown a SA e AE e termina i processi."""
+    """Invia il segnale di shutdown a SA e AE e termina i processi, poi pulisce i file di stato."""
     global sa_process, ae_process
     print("\n[TEARDOWN] Chiusura server...")
     for url, proc, name in [(SA_URL, sa_process, "SA"), (AE_URL, ae_process, "AE")]:
@@ -220,6 +220,15 @@ def teardown():
             except subprocess.TimeoutExpired:
                 proc.kill()
         print(f"[TEARDOWN] {name} terminato.")
+    # Pulizia dei file di stato lasciati dal test.
+    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
+        p = os.path.join(DATA_DIR, fname)
+        if os.path.exists(p):
+            os.remove(p)
+    for f in os.listdir(KEYS_DIR):
+        if f != ".gitkeep":
+            os.remove(os.path.join(KEYS_DIR, f))
+    print("[TEARDOWN] File di stato rimossi.")
 
 
 # ---------------------------------------------------------------------------
@@ -311,13 +320,12 @@ def create_vote_payload(token: str, token_signature: str, ae_pubkey) -> dict:
 
 def main():
     global sa_process, ae_process
+    print("=" * 80)
+    print("  TEST TOKEN HOARDING & EXPIRED TOKEN EXPLOITATION")
+    print("  (Use-it-or-Lose-it Policy)")
+    print("=" * 80)
     try:
         setup()
-
-        print("=" * 80)
-        print("  TEST TOKEN HOARDING & EXPIRED TOKEN EXPLOITATION")
-        print("  (Use-it-or-Lose-it Policy)")
-        print("=" * 80)
 
         # Caricamento chiavi e dati
         with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
