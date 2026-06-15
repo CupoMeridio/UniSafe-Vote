@@ -32,10 +32,12 @@ from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import verify
 from crypto.merkle import verify_proof
-SA_URL: str = "http://localhost:5001"  # URL del Sistema di Autenticazione
-AE_URL: str = "http://localhost:5002"  # URL dell'Autorità Elettorale
+SA_URL: str = "https://localhost:5001"  # URL del Sistema di Autenticazione
+AE_URL: str = "https://localhost:5002"  # URL dell'Autorità Elettorale
 BULLETIN_BOARD_PATH: str = "data/bulletin_board.json"
 PINS_PATH: str = "data/pins.json"
+SA_CERT: str = "data/tls/sa_cert.pem"  # Certificato TLS self-signed del SA (pinning)
+AE_CERT: str = "data/tls/ae_cert.pem"  # Certificato TLS self-signed dell'AE (pinning)
 
 
 class SecurityError(Exception):
@@ -144,6 +146,16 @@ class Client:
         self.ae_encrypt_public = deserialize_public_key(ae_encrypt_pem)
         self.ae_sign_public = deserialize_public_key(ae_sign_pem)
 
+    def _sa_verify(self) -> str | bool:
+        """Restituisce il parametro verify per requests verso il SA.
+        Se il certificato TLS self-signed è presente lo usa come CA bundle
+        (certificate pinning), altrimenti lascia la verifica standard."""
+        return SA_CERT if os.path.exists(SA_CERT) else True
+
+    def _ae_verify(self) -> str | bool:
+        """Restituisce il parametro verify per requests verso l'AE."""
+        return AE_CERT if os.path.exists(AE_CERT) else True
+
     def get_pow_difficulty(self) -> int:
         """
         Interroga l'AE per ottenere la difficoltà di Proof of Work corrente.
@@ -156,7 +168,7 @@ class Client:
             int: Numero di bit a zero richiesti dalla PoW.
         """
         try:
-            response = requests.get(f"{AE_URL}/status", timeout=5)
+            response = requests.get(f"{AE_URL}/status", timeout=5, verify=self._ae_verify())
             if response.status_code == 200:
                 return int(response.json().get("pow_difficulty", 4))
         except requests.exceptions.RequestException:
@@ -226,7 +238,7 @@ class Client:
         """Check if urns are open by contacting AE or reading BB."""
         # First try AE status endpoint for real-time info
         try:
-            r = requests.get(f"{AE_URL}/status", timeout=2)
+            r = requests.get(f"{AE_URL}/status", timeout=2, verify=self._ae_verify())
             if r.status_code == 200:
                 return r.json().get("urn_open", True)
         except requests.exceptions.RequestException:
@@ -286,7 +298,8 @@ class Client:
         try:
             response = requests.post(
                 f"{SA_URL}/register",
-                json={"email": email, "username": username, "password": password}
+                json={"email": email, "username": username, "password": password},
+                verify=self._sa_verify()
             )
 
             if response.status_code == 201:
@@ -311,7 +324,8 @@ class Client:
         try:
             response = requests.post(
                 f"{SA_URL}/authenticate",
-                json={"username": username, "password": password}
+                json={"username": username, "password": password},
+                verify=self._sa_verify()
             )
 
             if response.status_code == 200:
@@ -394,40 +408,59 @@ class Client:
         enc_vote_hex = enc_vote_bytes.hex()
         enc_seed_hex = enc_seed_bytes.hex()
 
-        # 3. Risolve la Proof of Work alla difficoltà adattiva corrente dell'AE
-        difficulty = self.get_pow_difficulty()
-        pow_nonce_hex = self.solve_pow(enc_vote_hex, difficulty)
+        # 3. Risolve la Proof of Work e invia il voto all'AE.
+        # In caso di 400 per PoW invalida (difficoltà aumentata nel frattempo),
+        # rilegge la difficoltà aggiornata e riprova automaticamente fino a
+        # MAX_POW_RETRIES volte prima di arrendersi.
+        MAX_POW_RETRIES = 3
+        for attempt in range(1, MAX_POW_RETRIES + 1):
+            difficulty = self.get_pow_difficulty()
+            if attempt > 1:
+                print(f"  [Tentativo {attempt}/{MAX_POW_RETRIES}] "
+                      f"Difficoltà aggiornata: {difficulty} bit")
+            pow_nonce_hex = self.solve_pow(enc_vote_hex, difficulty)
 
-        # 4. Invia il voto all'Autorità Elettorale
-        try:
-            response = requests.post(
-                f"{AE_URL}/vote",
-                json={
-                    "enc_vote": enc_vote_hex,
-                    "enc_seed": enc_seed_hex,
-                    "token": self.token,
-                    "token_signature": self.token_signature,
-                    "pow_nonce": pow_nonce_hex
-                }
-            )
+            try:
+                response = requests.post(
+                    f"{AE_URL}/vote",
+                    json={
+                        "enc_vote": enc_vote_hex,
+                        "enc_seed": enc_seed_hex,
+                        "token": self.token,
+                        "token_signature": self.token_signature,
+                        "pow_nonce": pow_nonce_hex
+                    },
+                    verify=self._ae_verify()
+                )
+            except requests.exceptions.ConnectionError:
+                print("\nImpossibile connettersi all'AE. Assicurati che sia in esecuzione.")
+                return
 
             if response.status_code == 200:
                 receipt_data = response.json()
                 self.receipt = receipt_data
 
-                # Salva la ricevuta su file
                 receipt_path = f"data/receipts/{self.username}.json"
-                # Crea la cartella se non esiste
                 os.makedirs(os.path.dirname(receipt_path), exist_ok=True)
                 with open(receipt_path, "w", encoding="utf-8") as f:
                     json.dump(receipt_data, f, indent=2, ensure_ascii=False)
 
                 print(f"\nVoto espresso con successo! Ricevuta salvata in {receipt_path}")
-            else:
-                print(f"\nErrore: {response.json().get('error')}")
+                return
 
-        except requests.exceptions.ConnectionError:
-            print("\nImpossibile connettersi all'AE. Assicurati che sia in esecuzione.")
+            # Se l'errore è PoW invalida, potrebbe essere che la difficoltà è
+            # salita mentre la calcolavamo: riprova con la difficoltà aggiornata.
+            error_msg = response.json().get("error", "")
+            if response.status_code == 400 and "Proof of Work" in error_msg:
+                if attempt < MAX_POW_RETRIES:
+                    print(f"\n  PoW non più valida (difficoltà cambiata). Ricalcolo...")
+                    continue
+                else:
+                    print(f"\nErrore: PoW invalida dopo {MAX_POW_RETRIES} tentativi. "
+                          f"Il server potrebbe essere sotto attacco.")
+            else:
+                print(f"\nErrore: {error_msg}")
+            return
 
     def show_receipt(self) -> None:
         """
@@ -546,7 +579,7 @@ class Client:
                 print("\nNota: Questa è una scheda nulla, non verifichiamo la corrispondenza crittografica (non abbiamo un indice di candidato valido).")
                 # Ma gli altri controlli sono già passati (Firma ricevuta, Merkle Proof, incluso nel scrutinio)
             else:
-                voto_chiaro_index = int(candidates.index(voto_chiaro_str))  # indice (es: 0,1,2)
+                voto_chiaro_index = int(self.candidates.index(voto_chiaro_str))  # indice (es: 0,1,2)
                 voto_chiaro_bytes = voto_chiaro_index.to_bytes(1, byteorder='big')
                 seed_pubblicato_bytes = bytes.fromhex(matching.get('seed'))
 

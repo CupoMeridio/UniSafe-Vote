@@ -35,12 +35,17 @@ from cryptography.hazmat.primitives import serialization
 import hashlib
 
 # Numero totale di richieste di attacco da inviare e thread concorrenti.
-AE_URL = "http://localhost:5002/vote"
+import sys as _sys
+_sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
+from tls_config import AE_URL, ae_verify, ensure_tls_certs
+
+AE_VOTE_URL = f"{AE_URL}/vote"
 NUM_REQUESTS = 500
 NUM_THREADS = 50
 
 # Secondi di attesa affinché il server Flask sia pronto dopo l'avvio.
-SERVER_STARTUP_SEC = 6
+# Aumentato a 15s per tener conto dell'overhead di inizializzazione TLS/SSL.
+SERVER_STARTUP_SEC = 15
 
 VOTERS = [
     {"id": "v001", "email": "mario.rossi@studenti.unisa.it",
@@ -71,7 +76,7 @@ def _wait_server(url: str, name: str, timeout: int = SERVER_STARTUP_SEC) -> bool
     """Attende che il server risponda sull'endpoint /status entro il timeout."""
     for _ in range(timeout * 2):
         try:
-            if requests.get(f"{url}/status", timeout=0.5).status_code == 200:
+            if requests.get(f"{url}/status", timeout=0.5, verify=ae_verify()).status_code == 200:
                 return True
         except Exception:
             pass
@@ -91,11 +96,16 @@ def setup():
     os.makedirs(DATA_DIR,  exist_ok=True)
     os.makedirs(KEYS_DIR,  exist_ok=True)
 
+    # Genera i certificati TLS self-signed se non presenti (necessari per HTTPS).
+    ensure_tls_certs()
+
     for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
         p = os.path.join(DATA_DIR, fname)
         if os.path.exists(p):
             os.remove(p)
     for f in os.listdir(KEYS_DIR):
+        if f == ".gitkeep":
+            continue
         os.remove(os.path.join(KEYS_DIR, f))
 
     # Si generano tre coppie RSA-2048 distinte per SA, cifratura AE e firma AE.
@@ -170,7 +180,7 @@ def setup():
         stderr=subprocess.DEVNULL,
     )
     print(f"[SETUP] AE avviata (PID {ae_process.pid}), attendo...", end=" ", flush=True)
-    assert _wait_server("http://localhost:5002", "AE"), "AE non risponde."
+    assert _wait_server(AE_URL, "AE"), "AE non risponde."
     print("OK")
 
 
@@ -181,7 +191,7 @@ def teardown():
     # Si tenta prima lo shutdown controllato via HTTP; se fallisce, si termina
     # il processo con terminate() e, come ultima risorsa, con kill().
     try:
-        requests.post("http://localhost:5002/shutdown", timeout=1)
+        requests.post(f"{AE_URL}/shutdown", timeout=1, verify=ae_verify())
     except Exception:
         pass
     if ae_process:
@@ -219,7 +229,7 @@ def attack_request(request_id: int) -> dict:
 
     start_time = time.time()
     try:
-        response = requests.post(AE_URL, json=payload, timeout=5)
+        response = requests.post(AE_VOTE_URL, json=payload, timeout=5, verify=ae_verify())
         elapsed = time.time() - start_time
         return {
             "id": request_id,
@@ -251,11 +261,11 @@ def main():
         print(f"\nConfigurazione:")
         print(f"  - Numero di richieste totali: {NUM_REQUESTS}")
         print(f"  - Thread concorrenti: {NUM_THREADS}")
-        print(f"  - Endpoint target: {AE_URL}")
+        print(f"  - Endpoint target: {AE_VOTE_URL}")
 
         # Si verifica che l'AE sia raggiungibile prima di avviare l'attacco.
         try:
-            test_response = requests.get("http://localhost:5002/status", timeout=2)
+            test_response = requests.get(f"{AE_URL}/status", timeout=2, verify=ae_verify())
             if test_response.status_code == 200:
                 print("\n[OK] AE è raggiungibile e in esecuzione!")
             else:

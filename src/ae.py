@@ -271,13 +271,19 @@ def vote():
         token_signature = req_data.get('token_signature')
         pow_nonce = req_data.get('pow_nonce')
 
-        # Registra la richiesta per il calcolo della difficoltà PoW adattiva
-        request_timestamps.append(time.monotonic())
-
-        # 1. Verifica la Proof of Work alla difficoltà adattiva corrente
+        # 1. Verifica la Proof of Work alla difficoltà adattiva corrente.
+        # Il timestamp viene registrato SOLO se la PoW è valida: le richieste
+        # con nonce casuale (attacco spazzatura) non contribuiscono al contatore
+        # adattivo e non alzano la difficoltà per gli elettori legittimi.
+        # La difficoltà aumenta esclusivamente quando un attaccante risolve
+        # davvero la PoW a raffica (botnet), che è l'unico caso in cui il
+        # meccanismo adattivo ha senso.
         if not verify_pow(enc_vote, pow_nonce, current_pow_difficulty()):
             print(f"[AE] {datetime.now().isoformat()} - PoW invalida")
             return jsonify({"error": "Proof of Work invalida"}), 400
+
+        # PoW valida: registra la richiesta per l'adattamento della difficoltà
+        request_timestamps.append(time.monotonic())
 
         # 2. Verifica la firma del token con la chiave pubblica del SA
         token_bytes = token.encode('utf-8')
@@ -521,6 +527,18 @@ if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     print_server_banner()
     load_initial_data()
+
+    # Certificati TLS self-signed per HTTPS
+    tls_cert = os.path.join("data", "tls", "ae_cert.pem")
+    tls_key  = os.path.join("data", "tls", "ae_key.pem")
+
+    if os.path.exists(tls_cert) and os.path.exists(tls_key):
+        ssl_ctx = (tls_cert, tls_key)
+        print("[AE] TLS abilitato — in ascolto su https://localhost:5002")
+    else:
+        ssl_ctx = None
+        print("[AE] Certificati TLS non trovati — avvio in HTTP (esegui generate_tls_certs.py)")
+
     # Avvia il server Flask sulla porta 5002, debug disabilitato
-    app.run(port=5002, debug=False)
+    app.run(port=5002, debug=False, ssl_context=ssl_ctx)
 

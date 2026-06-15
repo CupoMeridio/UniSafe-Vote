@@ -14,7 +14,9 @@ import hashlib
 import requests
 from typing import List, Dict, Any
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 
 from crypto.keys import generate_rsa_keypair, serialize_public_key
 from crypto.rsa_oaep import encrypt, decrypt
@@ -22,9 +24,19 @@ from crypto.rsa_pss import sign, verify
 from crypto.merkle import MerkleTree, verify_proof
 
 # Configurazione
-AE_URL = "http://localhost:5002"
-SA_URL = "http://localhost:5001"
+SA_URL = "https://localhost:5001"
+AE_URL = "https://localhost:5002"
+SA_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "sa_cert.pem")
+AE_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "ae_cert.pem")
 NUM_ITERATIONS = 5  # Numero di iterazioni per calcolare media e deviazione standard
+
+
+def _verify_for(url: str) -> str | bool:
+    if "5001" in url:
+        return SA_CERT if os.path.exists(SA_CERT) else True
+    if "5002" in url:
+        return AE_CERT if os.path.exists(AE_CERT) else True
+    return True
 
 
 def measure_size(data_dict: Dict) -> int:
@@ -239,12 +251,12 @@ def test_network_latency_and_flow():
     try:
         # Status SA
         start = time.perf_counter()
-        requests.get(f"{SA_URL}/status", timeout=2)
+        requests.get(f"{SA_URL}/status", timeout=2, verify=_verify_for(SA_URL))
         print(f"Ping Server Autenticazione: {(time.perf_counter() - start)*1000:.2f} ms")
 
         # Status AE
         start = time.perf_counter()
-        requests.get(f"{AE_URL}/status", timeout=2)
+        requests.get(f"{AE_URL}/status", timeout=2, verify=_verify_for(AE_URL))
         print(f"Ping Autorità Elettorale: {(time.perf_counter() - start)*1000:.2f} ms")
         
         # Se i server sono su, testiamo un flusso completo (se possibile, senza init elezione)
@@ -255,7 +267,7 @@ def test_network_latency_and_flow():
             auth_resp = requests.post(f"{SA_URL}/authenticate", json={
                 "username": "mario.rossi",
                 "password": "password123"
-            }, timeout=5)
+            }, timeout=5, verify=_verify_for(SA_URL))
             auth_time = (time.perf_counter() - start_auth)*1000
             
             if auth_resp.status_code == 200:

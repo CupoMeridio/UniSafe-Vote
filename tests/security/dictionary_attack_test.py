@@ -79,6 +79,8 @@ def setup_data():
         if os.path.exists(p):
             os.remove(p)
     for f in os.listdir(KEYS_DIR):
+        if f == ".gitkeep":
+            continue
         os.remove(os.path.join(KEYS_DIR, f))
 
     # Si generano tre coppie di chiavi RSA-2048 distinte per funzione:

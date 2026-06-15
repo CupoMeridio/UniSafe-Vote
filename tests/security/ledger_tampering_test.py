@@ -80,8 +80,16 @@ def main():
     print("\n[3] ESECUZIONE TAMPERING")
     print("-" * 90)
     print(f"  [Foglia {leaf_to_modify_index}] Dati modificati!")
-    print(f"    - Vecchio encrypted_vote: {original_leaf['encrypted_vote'][:50]}...")
-    print(f"    - Nuovo encrypted_vote: {modified_vote['encrypted_vote'][:50]}...")
+    old_hex = original_leaf['encrypted_vote']
+    new_hex = modified_vote['encrypted_vote']
+    # Trova il primo byte diverso per mostrare dove avviene la modifica
+    diff_pos = next((i for i in range(min(len(old_hex), len(new_hex))) if old_hex[i] != new_hex[i]), None)
+    print(f"    - Vecchio encrypted_vote: {old_hex}")
+    print(f"    - Nuovo encrypted_vote:   {new_hex}")
+    if diff_pos is not None:
+        print(f"    → Prima differenza al carattere {diff_pos}: '{old_hex[diff_pos]}' → '{new_hex[diff_pos]}'")
+    else:
+        print(f"    → I due valori sono identici (nessuna differenza rilevata)")
 
     # Passo 4: Ricostruisci l'albero di Merkle con i dati modificati
     print("\n[4] RICOSTRUZIONE ALBERO DOPO TAMPERING")

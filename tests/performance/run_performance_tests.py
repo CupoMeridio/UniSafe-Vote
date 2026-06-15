@@ -15,12 +15,13 @@ def run_baseline_test():
     subprocess.run([
         sys.executable, "-m", "locust",
         "-f", os.path.join("tests", "performance", "locustfile.py"),
-        "--host", "http://localhost",
+        "--host", "https://localhost",
         "--headless",
         "-u", "10",  # 10 utenti legittimi
         "-r", "2",   # 2 nuovi utenti al secondo
         "-t", "1m",  # 1 minuto di test per velocità
-        "--csv", os.path.join("tests", "output", "baseline_test")
+        "--csv", os.path.join("tests", "output", "baseline_test"),
+        "--insecure",  # Accetta certificati TLS self-signed
     ], cwd=project_root)
 
 
@@ -31,12 +32,13 @@ def run_dos_test():
     subprocess.run([
         sys.executable, "-m", "locust",
         "-f", os.path.join("tests", "performance", "locustfile.py"),
-        "--host", "http://localhost",
+        "--host", "https://localhost",
         "--headless",
         "-u", "500",  # 500 utenti malintenzionati
         "-r", "50",  # 50 nuovi utenti al secondo
         "-t", "1m",  # 1 minuto di durata
-        "--csv", os.path.join("tests", "output", "dos_test")
+        "--csv", os.path.join("tests", "output", "dos_test"),
+        "--insecure",  # Accetta certificati TLS self-signed
     ], cwd=project_root)
 
 

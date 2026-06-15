@@ -29,9 +29,12 @@ import platform
 
 SA_PROCESS: Optional[subprocess.Popen] = None  # Riferimento al processo del server SA (Sistema di Autenticazione)
 AE_PROCESS: Optional[subprocess.Popen] = None  # Riferimento al processo del server AE (Autorità Elettorale)
-SA_URL = "http://localhost:5001"  # URL di base per connettersi al server SA
-AE_URL = "http://localhost:5002"  # URL di base per connettersi al server AE
+SA_URL = "https://localhost:5001"  # URL di base per connettersi al server SA
+AE_URL = "https://localhost:5002"  # URL di base per connettersi al server AE
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))  # Percorso assoluto della cartella del progetto
+
+SA_CERT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tls", "sa_cert.pem")
+AE_CERT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tls", "ae_cert.pem")
 
 ANSI_RESET = "\033[0m"
 ANSI_BRIGHT = "\033[1m"
@@ -103,6 +106,16 @@ def clear_screen() -> None:
         os.system('clear')
 
 
+def _verify_for(url: str) -> str | bool:
+    """Restituisce il parametro verify corretto per una chiamata requests.
+    Usa il certificato self-signed come CA bundle se disponibile."""
+    if url.startswith(SA_URL):
+        return SA_CERT if os.path.exists(SA_CERT) else True
+    if url.startswith(AE_URL):
+        return AE_CERT if os.path.exists(AE_CERT) else True
+    return True
+
+
 def check_server_running(url: str) -> bool:
     """
     Verifica se un server è in esecuzione controllando l'endpoint `/status`.
@@ -114,7 +127,7 @@ def check_server_running(url: str) -> bool:
         bool: True se il server risponde con status 200, False altrimenti
     """
     try:
-        response = requests.get(url + '/status', timeout=0.5)
+        response = requests.get(url + '/status', timeout=0.5, verify=_verify_for(url))
         return response.status_code == 200
     except:
         return False
@@ -227,7 +240,7 @@ def get_ae_status() -> dict:
     Recupera lo stato corrente dell'AE, se il server è raggiungibile.
     """
     try:
-        response = requests.get(AE_URL + "/status", timeout=0.5)
+        response = requests.get(AE_URL + "/status", timeout=0.5, verify=_verify_for(AE_URL))
         if response.status_code == 200:
             return response.json()
     except Exception:
@@ -342,12 +355,17 @@ Questa operazione:
 2. Crea il Bulletin Board (registro pubblico append-only)
 3. Definisce i candidati e i parametri dell'elezione
 4. Genera le impronte trusted AE in data/pins.json
-5. Permette di SCEGLIERE tra:
+5. Genera i certificati TLS self-signed per SA e AE (HTTPS)
+6. Permette di SCEGLIERE tra:
    - Sistema preconfigurato (liste stock + utenti già registrati)
    - Solo liste di voto (registrazione utenti abilitata)
     """)
     input("Premi Invio per continuare...")
     subprocess.run([sys.executable, "src/init_election.py"], cwd=PROJECT_DIR)
+
+    # Genera i certificati TLS self-signed dopo l'init (sovrascrive se già esistono)
+    print("\nGenerazione certificati TLS self-signed...")
+    subprocess.run([sys.executable, "src/generate_tls_certs.py"], cwd=PROJECT_DIR)
 
 
 def reset_election() -> None:
@@ -363,6 +381,7 @@ def reset_election() -> None:
     receipts_dir = os.path.join(PROJECT_DIR, "data", "receipts")
     ae_state_path = os.path.join(PROJECT_DIR, "data", "ae_state.json")
     pins_path = os.path.join(PROJECT_DIR, "data", "pins.json")
+    tls_dir = os.path.join(PROJECT_DIR, "data", "tls")
 
     if not has_election_configuration():
         print("Nessuna configurazione di elezione trovata da rimuovere.")
@@ -371,8 +390,8 @@ def reset_election() -> None:
     print_header("RESET CONFIGURAZIONE ELEZIONE")
     print_explanation("""
 Questa operazione elimina i file di configurazione dell'elezione, le chiavi RSA,
-lo stato privato dell'Autorità Elettorale, i pin trusted AE e le ricevute JSON
-dei voti delle elezioni passate.
+lo stato privato dell'Autorità Elettorale, i pin trusted AE, i certificati TLS
+e le ricevute JSON dei voti delle elezioni passate.
 Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente nuove.
     """)
     confirm = input("Confermi la rimozione della configurazione dell'elezione? (s/n): ").strip().lower()
@@ -398,6 +417,13 @@ Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente
         for filename in os.listdir(receipts_dir):
             file_path = os.path.join(receipts_dir, filename)
             if os.path.isfile(file_path) and filename.lower().endswith(".json"):
+                os.remove(file_path)
+
+    # Rimuovi i certificati TLS generati per questa elezione
+    if os.path.isdir(tls_dir):
+        for filename in os.listdir(tls_dir):
+            file_path = os.path.join(tls_dir, filename)
+            if os.path.isfile(file_path) and filename.endswith(".pem"):
                 os.remove(file_path)
 
     print("Configurazione elezione rimossa. È ora possibile inizializzare una nuova elezione.")
@@ -471,10 +497,10 @@ Quando le urne vengono chiuse:
     try:
         # Chiamata al SA per pubblicare i token emessi (Riconciliazione)
         if check_server_running(SA_URL):
-            requests.post(SA_URL + '/reconcile', timeout=10)
+            requests.post(SA_URL + '/reconcile', timeout=10, verify=_verify_for(SA_URL))
 
         # Invio di una richiesta POST all'endpoint /close dell'AE per chiudere le urne
-        response = requests.post(AE_URL + '/close', timeout=10)
+        response = requests.post(AE_URL + '/close', timeout=10, verify=_verify_for(AE_URL))
  
         # Se il server risponde con codice 200, la chiusura e lo scrutinio sono andati a buon fine
         if response.status_code == 200:
@@ -909,7 +935,7 @@ def stop_processes() -> None:
     # Invia richiesta di shutdown via HTTP agli endpoint /shutdown (per macOS/Linux/Windows)
     for url in (SA_URL, AE_URL):
         try:
-            requests.post(url + '/shutdown', timeout=0.5)
+            requests.post(url + '/shutdown', timeout=0.5, verify=_verify_for(url))
         except Exception:
             # Ignora errori di connessione (es. server già spento o non in esecuzione)
             pass
