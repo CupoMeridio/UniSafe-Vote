@@ -51,10 +51,12 @@ def compute_public_key_fingerprint(pem_str: str) -> str:
 # ---------------------------------------------------------------------------
 
 VOTERS = [
-    {"id": "v001", "email": "mario.rossi@studenti.unisa.it",
-     "username": "mario.rossi",   "password": "password123"},
-    {"id": "v002", "email": "luigi.bianchi@unisa.it",
-     "username": "luigi.bianchi", "password": "password456"},
+    {"id": "v001", "email": "v.postiglione7@studenti.unisa.it",
+     "username": "vitto.posti",  "password": "password123"},
+    {"id": "v002", "email": "mattia.sanzari@unisa.it",
+     "username": "matty.sanz",   "password": "password456"},
+    {"id": "v003", "email": "c.deluca92@studenti.unisa.it",
+     "username": "carlo.deluca", "password": "pass_cDL92"},
 ]
 CANDIDATES = ["Lista A", "Lista B", "Lista C"]
 

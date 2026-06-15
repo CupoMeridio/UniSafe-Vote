@@ -98,16 +98,16 @@ SERVER_STARTUP_SEC = 15
 
 # Utenti onesti: autenticati prima dell'attacco, votano durante la fase 2.
 HONEST_USERS = [
-    {"id": "v001", "email": "mario.rossi@studenti.unisa.it",
-     "username": "mario.rossi",  "password": "password123"},
-    {"id": "v002", "email": "luigi.bianchi@unisa.it",
-     "username": "luigi.bianchi", "password": "password456"},
-    {"id": "v003", "email": "anna.verdi@studenti.unisa.it",
-     "username": "anna.verdi",    "password": "password789"},
-    {"id": "v004", "email": "carla.neri@studenti.unisa.it",
-     "username": "carla.neri",    "password": "passwordabc"},
-    {"id": "v005", "email": "marco.blu@unisa.it",
-     "username": "marco.blu",     "password": "passworddef"},
+    {"id": "v001", "email": "v.postiglione7@studenti.unisa.it",
+     "username": "vitto.posti",  "password": "password123"},
+    {"id": "v002", "email": "mattia.sanzari@unisa.it",
+     "username": "matty.sanz",   "password": "password456"},
+    {"id": "v003", "email": "c.deluca92@studenti.unisa.it",
+     "username": "carlo.deluca", "password": "pass_cDL92"},
+    {"id": "v004", "email": "s.esposito@studenti.unisa.it",
+     "username": "sara.espo",    "password": "pass_sE99"},
+    {"id": "v005", "email": "luca.ferrante@unisa.it",
+     "username": "luca.ferr",    "password": "pass_lF01"},
 ]
 CANDIDATES = ["Lista A", "Lista B", "Lista C"]
 

@@ -96,9 +96,9 @@ def main():
             raise Exception("Timeout nell'avvio dei server")
             
         # 1. Autenticazione elettore
-        print("Autenticazione mario.rossi...")
+        print("Autenticazione vitto.posti...")
         r = requests.post("https://localhost:5001/authenticate", json={
-            "username": "mario.rossi",
+            "username": "vitto.posti",
             "password": "password123"
         }, verify=verify_for("https://localhost:5001"))
         r.raise_for_status()

@@ -134,11 +134,16 @@ L'inizializzazione genera anche i certificati TLS self-signed usati dai client l
 Credenziali preconfigurate nella modalità demo:
 
 ```text
-mario.rossi / password123
-luigi.bianchi / password456
-giulia.verdi / password789
-francesca.neri / password012
-paolo.gialli / password345
+vitto.posti   / password123
+matty.sanz    / password456
+carlo.deluca  / pass_cDL92
+sara.espo     / pass_sE99
+luca.ferr     / pass_lF01
+ale.damico    / pass_aD03
+rob.mancini   / pass_rM97
+fede.rugg     / pass_fR12
+marco.salz    / pass_mS00
+ire.silv      / pass_iS95
 ```
 
 ## Test di Sicurezza

@@ -47,7 +47,7 @@ def main():
         auth_url = "https://localhost:5001/authenticate"
         for i in range(15):
             print(f"[*] Request # {i+1} to /authenticate...")
-            r = requests.post(auth_url, json={"username": "mario.rossi", "password": "password123"}, verify=sa_verify())
+            r = requests.post(auth_url, json={"username": "vitto.posti", "password": "password123"}, verify=sa_verify())
             print(f"    Status code: {r.status_code}")
             if r.status_code == 429:
                 print("\n✅ Rate limit activated as expected!")

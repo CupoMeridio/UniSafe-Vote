@@ -77,8 +77,10 @@ class LegitimateUser(HttpUser):
             
         # 2. Utenti presenti nel voters.json
         test_users = [
-            ("mario.rossi", "password123"),
-            ("luigi.bianchi", "password456")
+            ("vitto.posti",  "password123"),
+            ("matty.sanz",   "password456"),
+            ("carlo.deluca", "pass_cDL92"),
+            ("sara.espo",    "pass_sE99"),
         ]
         
         self.username, password = random.choice(test_users)

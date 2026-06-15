@@ -265,7 +265,7 @@ def test_network_latency_and_flow():
             # 1. Autenticazione
             start_auth = time.perf_counter()
             auth_resp = requests.post(f"{SA_URL}/authenticate", json={
-                "username": "mario.rossi",
+                "username": "vitto.posti",
                 "password": "password123"
             }, timeout=5, verify=_verify_for(SA_URL))
             auth_time = (time.perf_counter() - start_auth)*1000

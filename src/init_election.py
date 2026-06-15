@@ -43,11 +43,16 @@ def compute_public_key_fingerprint(pem_str: str) -> str:
 def get_preconfigured_voters() -> List[Dict[str, str]]:
     """Restituisce la lista preconfigurata di elettori"""
     return [
-        {"id": "v001", "email": "mario.rossi@studenti.unisa.it", "username": "mario.rossi", "password": "password123"},
-        {"id": "v002", "email": "luigi.bianchi@unisa.it", "username": "luigi.bianchi", "password": "password456"},
-        {"id": "v003", "email": "giulia.verdi@studenti.unisa.it", "username": "giulia.verdi", "password": "password789"},
-        {"id": "v004", "email": "francesca.neri@unisa.it", "username": "francesca.neri", "password": "password012"},
-        {"id": "v005", "email": "paolo.gialli@studenti.unisa.it", "username": "paolo.gialli", "password": "password345"}
+        {"id": "v001", "email": "v.postiglione7@studenti.unisa.it",   "username": "vitto.posti",    "password": "password123"},
+        {"id": "v002", "email": "mattia.sanzari@unisa.it",             "username": "matty.sanz",     "password": "password456"},
+        {"id": "v003", "email": "c.deluca92@studenti.unisa.it",        "username": "carlo.deluca",   "password": "pass_cDL92"},
+        {"id": "v004", "email": "s.esposito@studenti.unisa.it",        "username": "sara.espo",      "password": "pass_sE99"},
+        {"id": "v005", "email": "luca.ferrante@unisa.it",              "username": "luca.ferr",      "password": "pass_lF01"},
+        {"id": "v006", "email": "a.damico3@studenti.unisa.it",         "username": "ale.damico",     "password": "pass_aD03"},
+        {"id": "v007", "email": "roberta.mancini@unisa.it",            "username": "rob.mancini",    "password": "pass_rM97"},
+        {"id": "v008", "email": "f.ruggiero12@studenti.unisa.it",      "username": "fede.rugg",      "password": "pass_fR12"},
+        {"id": "v009", "email": "marco.salzano@studenti.unisa.it",     "username": "marco.salz",     "password": "pass_mS00"},
+        {"id": "v010", "email": "irene.silvestri@unisa.it",            "username": "ire.silv",       "password": "pass_iS95"},
     ]
 
 
