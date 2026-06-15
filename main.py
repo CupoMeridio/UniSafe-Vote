@@ -760,6 +760,27 @@ Verifica due proprietà della politica use-it-or-lose-it sui token:
 Il test avvia e termina SA e AE automaticamente.
             """,
         },
+        "9": {
+            "name": "Elettore Malevolo — Seed Corrotto (DoS Observer)",
+            "file": "tests/security/malicious_voter_dos_test.py",
+            "description": """
+Dimostra una vulnerabilità in cui un elettore malevolo, pur autenticato
+regolarmente, invia un enc_seed che non corrisponde al seed reale usato
+per cifrare il voto.
+
+L'AE accetta il voto senza poter verificare la correttezza del seed
+(non ha ancora la chiave privata). A urne chiuse, durante lo scrutinio,
+decifra il seed fittizio: il voto viene comunque conteggiato, ma la
+coppia (enc_vote, seed) pubblicata nel blocco scrutinio non supera la
+ricifratura di verifica.
+
+L'Observer rileva l'incongruenza e marca l'intera elezione come non
+verificabile — un singolo elettore malevolo compromette la verifica
+universale per tutti.
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
     }
 
     while True:
@@ -785,12 +806,13 @@ Il test avvia e termina SA e AE automaticamente.
         print(menu_option("6", TESTS["6"]["name"], available=True))
         print(menu_option("7", TESTS["7"]["name"], available=True))
         print(menu_option("8", TESTS["8"]["name"], available=True))
+        print(menu_option("9", TESTS["9"]["name"], available=True))
 
         print(f"\n{section_title('NAVIGAZIONE')}")
         print(menu_option("0", "Torna al menu principale", available=True))
         print("="*70)
 
-        choice = input("\nSeleziona un test (0-8): ").strip()
+        choice = input("\nSeleziona un test (0-9): ").strip()
 
         if choice == "0":
             break
