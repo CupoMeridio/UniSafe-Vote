@@ -410,8 +410,13 @@ Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente
     if os.path.isdir(keys_dir):
         for filename in os.listdir(keys_dir):
             file_path = os.path.join(keys_dir, filename)
-            if os.path.isfile(file_path):
+            if os.path.isfile(file_path) and filename != ".gitkeep":
                 os.remove(file_path)
+    else:
+        os.makedirs(keys_dir, exist_ok=True)
+
+    if not os.path.exists(os.path.join(keys_dir, ".gitkeep")):
+        open(os.path.join(keys_dir, ".gitkeep"), "a", encoding="utf-8").close()
 
     if os.path.isdir(receipts_dir):
         for filename in os.listdir(receipts_dir):
@@ -454,6 +459,12 @@ def _silent_reset_after_test() -> None:
             if os.path.isfile(fp) and f != ".gitkeep":
                 os.remove(fp)
                 cleaned = True
+    else:
+        os.makedirs(keys_dir, exist_ok=True)
+
+    if not os.path.exists(os.path.join(keys_dir, ".gitkeep")):
+        open(os.path.join(keys_dir, ".gitkeep"), "a", encoding="utf-8").close()
+
     if os.path.isdir(receipts_dir):
         for f in os.listdir(receipts_dir):
             fp = os.path.join(receipts_dir, f)

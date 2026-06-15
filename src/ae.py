@@ -32,12 +32,13 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from crypto.keys import load_private_key, load_public_key, deserialize_public_key, load_and_decrypt_private_key, save_encrypted_private_key
-from crypto.rsa_oaep import decrypt
+from crypto.rsa_oaep import decrypt, encrypt
 from crypto.rsa_pss import sign, verify
 from crypto.merkle import MerkleTree
 
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # Limita le richieste a 1 MB per prevenire DoS Memory Exhaustion
 
 # Stato interno del server (in memoria)
 used_tokens: Set[str] = set()  # Set di nonce di token già usati (privato AE)
@@ -447,18 +448,36 @@ def close():
 
             # Decifra il seed (randomness OAEP usata per cifrare il voto)
             enc_seed_bytes = bytes.fromhex(enc_seed_hex)
-            seed_bytes = decrypt(ae_encrypt_private, enc_seed_bytes)
+            try:
+                seed_bytes = decrypt(ae_encrypt_private, enc_seed_bytes)
+            except Exception:
+                seed_bytes = b""
 
             # Decifra il voto (contiene il solo indice della lista, 1 byte)
             enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-            vote_plain = decrypt(ae_encrypt_private, enc_vote_bytes)
+            try:
+                vote_plain = decrypt(ae_encrypt_private, enc_vote_bytes)
+            except Exception:
+                vote_plain = b""
 
             # Determina il candidato; schede fuori dominio -> nulle (non scartate)
+            is_valid = False
             if len(vote_plain) == 1 and 0 <= vote_plain[0] < len(candidates):
+                # VERIFICA DI COERENZA CRITTOGRAFICA (Prevenzione DoS da elettore malevolo)
+                if len(seed_bytes) == 32:
+                    try:
+                        ae_encrypt_public = ae_encrypt_private.public_key()
+                        recomputed = encrypt(ae_encrypt_public, vote_plain, seed=seed_bytes)
+                        if recomputed == enc_vote_bytes:
+                            is_valid = True
+                    except Exception:
+                        pass
+            
+            if is_valid:
                 candidate = candidates[vote_plain[0]]
             else:
                 candidate = NULL_LABEL
-                print(f"[AE] Scheda nulla rilevata per enc_vote: {enc_vote_hex}")
+                print(f"[AE] Scheda nulla rilevata (invalidità o incongruenza crittografica) per enc_vote: {enc_vote_hex}")
 
             vote_counts[candidate] += 1
             # Pubblica la tripla (scheda cifrata, voto in chiaro, seed) per ogni

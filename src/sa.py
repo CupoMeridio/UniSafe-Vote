@@ -34,7 +34,7 @@ from crypto.password import hash_password, verify_password
 
 
 app = Flask(__name__)
-
+app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # Limita le richieste a 1 MB per prevenire DoS Memory Exhaustion
 # Rimossa la gestione complessa di SHUTDOWN_TOKEN per semplicità locale
 
 # Stato interno del server (in memoria)
