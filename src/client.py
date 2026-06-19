@@ -111,22 +111,46 @@ class Client:
 
     def load_bulletin_board(self) -> None:
         """
-        Carica il Bulletin Board da file locale e verifica le chiavi AE tramite pinning.
+        Carica il Bulletin Board da file locale, verifica la firma del blocco init
+        e controlla le chiavi AE tramite pinning.
 
-        Le chiavi pubbliche vengono usate solo se le loro impronte coincidono con
-        quelle presenti in data/pins.json, file separato dal Bulletin Board.
+        Le chiavi pubbliche vengono usate solo se la firma del blocco init è valida
+        e le loro impronte coincidono con quelle presenti in data/pins.json, file
+        separato dal Bulletin Board.
         """
         self.trusted_pins = self.load_pins()
 
         with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
             self.bb = json.load(f)
-        self.init_data = self.bb[0]["data"]  # Dati di inizializzazione
+
+        if not self.bb or self.bb[0].get("type") != "init":
+            raise SecurityError("Bulletin Board non valido: blocco init mancante.")
+
+        init_block = self.bb[0]
+        self.init_data = init_block["data"]  # Dati di inizializzazione
         self.candidates = self.init_data["candidates"]  # Lista candidati
+
+        # Verifica che il blocco init sia stato firmato dall'AE.
+        ae_sign_pem = self.init_data["ae_sign_public"]
+        init_signature_hex = init_block.get("signature")
+        if not isinstance(init_signature_hex, str):
+            raise SecurityError("Firma del blocco init mancante o non valida.")
+
+        try:
+            init_signature = bytes.fromhex(init_signature_hex)
+        except ValueError:
+            raise SecurityError("Firma del blocco init non valida.") from None
+
+        ae_sign_public = deserialize_public_key(ae_sign_pem)
+        init_data_json = json.dumps(self.init_data, sort_keys=True).encode('utf-8')
+        if not verify(ae_sign_public, init_data_json, init_signature):
+            raise SecurityError(
+                "Firma del blocco init non valida. Possibile alterazione del Bulletin Board."
+            )
 
         # Certificate Pinning: verifica le impronte delle chiavi AE contro il
         # canale trusted separato (data/pins.json), non contro il BB stesso.
         ae_encrypt_pem = self.init_data["ae_encrypt_public"]
-        ae_sign_pem = self.init_data["ae_sign_public"]
 
         received_encrypt_fingerprint = compute_public_key_fingerprint(ae_encrypt_pem)
         received_sign_fingerprint = compute_public_key_fingerprint(ae_sign_pem)
@@ -144,7 +168,7 @@ class Client:
 
         # Ora le chiavi sono state validate contro il canale trusted separato.
         self.ae_encrypt_public = deserialize_public_key(ae_encrypt_pem)
-        self.ae_sign_public = deserialize_public_key(ae_sign_pem)
+        self.ae_sign_public = ae_sign_public
 
     def _sa_verify(self) -> str | bool:
         """Restituisce il parametro verify per requests verso il SA.
@@ -482,12 +506,14 @@ class Client:
         """
         Verifica che il voto dell'utente sia stato incluso e non modificato nello scrutinio.
 
-        Effettua cinque controlli completi (WP2/3 Fase 5 - Verifica individuale):
-        1. Verifica che la firma della ricevuta sia valida
-        2. Verifica che il voto sia incluso nel Merkle Tree tramite la Proof
-        3. Individua il voto nel blocco 'scrutinio'
-        4. CRITTOGRAFICO: Riesegue RSA-OAEP (con seed pubblicato) per confrontare con enc_vote originale
-        5. Mostra il risultato finale
+        Effettua sette controlli completi (WP2/3 Fase 5 - Verifica individuale):
+        1. Verifica che il blocco init sia firmato e che i pin AE siano validi
+        2. Verifica che la firma della ricevuta sia valida
+        3. Verifica che il voto sia incluso nel Merkle Tree tramite la Proof
+        4. Verifica che il blocco 'scrutinio' sia firmato dall'AE
+        5. Individua il voto nel blocco 'scrutinio'
+        6. CRITTOGRAFICO: Riesegue RSA-OAEP (con seed pubblicato) per confrontare con enc_vote originale
+        7. Mostra il risultato finale
         """
         if self.username:
             receipt_path = f"data/receipts/{self.username}.json"
@@ -547,15 +573,32 @@ class Client:
                 print("\nVerifica Merkle Proof fallita!")
                 return
 
-            # 5. Ottieni blocco 'scrutinio'
-            scrutinio_data = None
+            # 5. Ottieni e verifica il blocco 'scrutinio'
+            scrutinio_block = None
             for block in self.bb:
                 if block['type'] == 'scrutinio':
-                    scrutinio_data = block['data']
+                    scrutinio_block = block
                     break
 
-            if not scrutinio_data:
+            if not scrutinio_block:
                 print("\nVoto incluso nel Merkle Tree, ma scrutinio non ancora pubblicato.")
+                return
+
+            scrutinio_data = scrutinio_block.get("data")
+            scrutinio_signature_hex = scrutinio_block.get("signature")
+            if not isinstance(scrutinio_signature_hex, str):
+                print("\nVerifica firma scrutinio fallita: firma mancante o non valida.")
+                return
+
+            try:
+                scrutinio_signature = bytes.fromhex(scrutinio_signature_hex)
+            except ValueError:
+                print("\nVerifica firma scrutinio fallita: firma non valida.")
+                return
+
+            scrutinio_data_json = json.dumps(scrutinio_data, sort_keys=True).encode('utf-8')
+            if not verify(self.ae_sign_public, scrutinio_data_json, scrutinio_signature):
+                print("\nVerifica firma scrutinio fallita!")
                 return
 
             scrutinated = scrutinio_data.get("voti_verificati", [])
@@ -602,9 +645,10 @@ class Client:
             print("\n✅ Tutte le verifiche sono riuscite!")
             print("   1. Firma ricevuta valida")
             print("   2. Merkle Proof valida (voto incluso nel tree)")
-            print("   3. Voto presente nel blocco 'scrutinio'")
+            print("   3. Firma scrutinio valida")
+            print("   4. Voto presente nel blocco 'scrutinio'")
             if voto_chiaro_str != "Scheda nulla":
-                print("   4. CRITTOGRAFICO: Ciphertext ricostruito corrisponde a quello originale")
+                print("   5. CRITTOGRAFICO: Ciphertext ricostruito corrisponde a quello originale")
             print("\nVoto correttamente conteggiato e non manipolato!")
             print(f"   Voto in chiaro pubblicato: {matching.get('voto_chiaro')}")
 

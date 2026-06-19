@@ -114,7 +114,11 @@ def main() -> None:
 
     # Salva le chiavi in data/keys/
     save_keypair(sa_sign_private, sa_sign_public, "sa_sign")
-    save_keypair(ae_encrypt_private, ae_encrypt_public, "ae_encrypt")
+    # Per ae_encrypt pubblichiamo solo la chiave pubblica: la privata viene
+    # salvata cifrata più avanti, così l'AE non la trova già disponibile in chiaro.
+    os.makedirs("data/keys", exist_ok=True)
+    with open("data/keys/ae_encrypt_public.pem", "w", encoding="utf-8") as f:
+        f.write(serialize_public_key(ae_encrypt_public))
     save_keypair(ae_sign_private, ae_sign_public, "ae_sign")
     print("  Chiavi salvate in data/keys/")
 

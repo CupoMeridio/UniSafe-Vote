@@ -52,9 +52,11 @@ def main():
     ae_encrypt_private, ae_encrypt_public = generate_rsa_keypair()
     ae_sign_private, ae_sign_public = generate_rsa_keypair()
     save_keypair(sa_sign_private, sa_sign_public, "sa_sign")
-    # ae_encrypt: salviamo SOLO la chiave pubblica in PEM (serve ai client per cifrare);
-    # la chiave privata viene salvata cifrata con AES-GCM (IKM = firma blocco init).
-    save_keypair(ae_encrypt_private, ae_encrypt_public, "ae_encrypt")  # salva entrambe per ora
+    # ae_encrypt: pubblichiamo solo la chiave pubblica; la chiave privata
+    # resta disponibile solo nel file cifrato creato più avanti.
+    os.makedirs("data/keys", exist_ok=True)
+    with open("data/keys/ae_encrypt_public.pem", "w", encoding="utf-8") as f:
+        f.write(serialize_public_key(ae_encrypt_public))
     save_keypair(ae_sign_private, ae_sign_public, "ae_sign")
 
     # 2. Configura elezione

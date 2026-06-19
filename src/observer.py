@@ -256,8 +256,12 @@ def main() -> None:
         else:
             total_tokens = rec_sa_block["data"]["total_tokens"]
             total_votes = rec_ae_block["data"]["total_votes"]
+            received_vote_blocks = len(vote_blocks)
             
-            if total_votes <= total_tokens:
+            if total_votes != received_vote_blocks:
+                print(f"FAIL (Voti dichiarati {total_votes} != Blocchi voto {received_vote_blocks})")
+                all_passed = False
+            elif total_votes <= total_tokens:
                 print(f"OK ({total_votes} voti su {total_tokens} token emessi)")
             else:
                 print(f"FAIL (Voti ricevuti {total_votes} > Token emessi {total_tokens})")
