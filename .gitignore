@@ -27,6 +27,28 @@ venv/
 env/
 .venv/
 
+# LaTeX build outputs
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.bbl
+*.blg
+*.dvi
+*.xdv
+*.lof
+*.lot
+*.nav
+*.snm
+*.vrb
+# Ignora tutto il contenuto di docs tranne il PDF del report principale
+docs/*
+!docs/main.pdf
+build/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -35,3 +57,4 @@ Thumbs.db
 .env
 *.db
 .vscode/
+.idea/

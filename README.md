@@ -152,12 +152,14 @@ Il progetto include test di sicurezza in `tests/security/`, eseguibili dal panne
 
 - Attacco dizionario / analisi di frequenza su RSA-OAEP.
 - Attacco MitM con sostituzione delle chiavi pubbliche AE.
-- Manomissione del Bulletin Board.
+- Manomissione del Bulletin Board (Ledger Tampering).
+- Vincolo crittografico ed escrow della chiave privata dell'AE.
 - DoS con PoW invalida.
 - PoW adattiva e recovery della difficoltà.
 - Resilienza DoS durante la votazione.
 - Double voting / token replay.
 - Token hoarding e token scaduto.
+- Elettore malevolo / seed corrotto (DoS dell'Observer).
 
 ## Avvio Manuale dei Server
 

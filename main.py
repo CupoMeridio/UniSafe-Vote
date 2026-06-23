@@ -676,6 +676,22 @@ Non richiede server avviati — è un test offline sul Merkle Tree.
             """,
         },
         "4": {
+            "name": "Vincolo Crittografico ed Escrow della Chiave Privata",
+            "file": "tests/security/key_escrow_test.py",
+            "description": """
+Verifica la protezione della chiave privata di decifratura dell'AE
+e la correttezza della transizione di escrow (WP3 - 3.3).
+
+Il test simula lo sblocco della chiave tramite la firma dell'Init Block
+per il voto ed il successivo passaggio irreversibile (re-cifratura)
+alla firma della Merkle Root finale a urne chiuse, accertando che
+tentativi di decifratura prematura o non autorizzata vengano bloccati
+tramite controlli di integrità AEAD (AES-GCM).
+
+Non richiede server avviati — è un test crittografico offline.
+            """,
+        },
+        "5": {
             "name": "Attacco DoS / Flood con PoW invalida",
             "file": "tests/security/dos_attack_test.py",
             "description": """
@@ -689,7 +705,7 @@ quasi istantaneamente. Almeno il 90% delle richieste deve essere rifiutato.
 Il test avvia e termina l'AE automaticamente.
             """,
         },
-        "5": {
+        "6": {
             "name": "PoW Adattiva — Aumento e Recovery della Difficoltà",
             "file": "tests/security/pow_adaptive_test.py",
             "description": """
@@ -707,7 +723,7 @@ Verifica il meccanismo di PoW adattiva dell'AE in quattro fasi:
 Il test avvia e termina l'AE automaticamente.
             """,
         },
-        "6": {
+        "7": {
             "name": "Resilienza DoS durante la votazione",
             "file": "tests/security/dos_resilience_test.py",
             "description": """
@@ -724,7 +740,7 @@ Test in tre fasi che verifica il comportamento del sistema sotto attacco:
 Il test avvia e termina SA e AE automaticamente.
             """,
         },
-        "7": {
+        "8": {
             "name": "Double Voting / Token Replay",
             "file": "tests/security/double_voting_attack.py",
             "description": """
@@ -739,7 +755,7 @@ dopo la prima accettazione, impedendo riutilizzi successivi.
 Il test avvia e termina SA e AE automaticamente.
             """,
         },
-        "8": {
+        "9": {
             "name": "Token Hoarding & Token Scaduto",
             "file": "tests/security/token_hoarding_test.py",
             "description": """
@@ -760,7 +776,7 @@ Verifica due proprietà della politica use-it-or-lose-it sui token:
 Il test avvia e termina SA e AE automaticamente.
             """,
         },
-        "9": {
+        "10": {
             "name": "Elettore Malevolo — Seed Corrotto (Mitigazione DoS Observer)",
             "file": "tests/security/malicious_voter_dos_test.py",
             "description": """
@@ -796,20 +812,21 @@ Il test avvia e termina SA e AE automaticamente.
         print(menu_option("1", TESTS["1"]["name"], available=True))
         print(menu_option("2", TESTS["2"]["name"], available=True))
         print(menu_option("3", TESTS["3"]["name"], available=True))
+        print(menu_option("4", TESTS["4"]["name"], available=True))
 
         print(f"\n{section_title('TEST DI ATTACCO (server avviati automaticamente)')}")
-        print(menu_option("4", TESTS["4"]["name"], available=True))
         print(menu_option("5", TESTS["5"]["name"], available=True))
         print(menu_option("6", TESTS["6"]["name"], available=True))
         print(menu_option("7", TESTS["7"]["name"], available=True))
         print(menu_option("8", TESTS["8"]["name"], available=True))
         print(menu_option("9", TESTS["9"]["name"], available=True))
+        print(menu_option("10", TESTS["10"]["name"], available=True))
 
         print(f"\n{section_title('NAVIGAZIONE')}")
         print(menu_option("0", "Torna al menu principale", available=True))
         print("="*70)
 
-        choice = input("\nSeleziona un test (0-9): ").strip()
+        choice = input("\nSeleziona un test (0-10): ").strip()
 
         if choice == "0":
             break
