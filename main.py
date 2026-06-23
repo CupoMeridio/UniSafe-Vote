@@ -761,22 +761,19 @@ Il test avvia e termina SA e AE automaticamente.
             """,
         },
         "9": {
-            "name": "Elettore Malevolo — Seed Corrotto (DoS Observer)",
+            "name": "Elettore Malevolo — Seed Corrotto (Mitigazione DoS Observer)",
             "file": "tests/security/malicious_voter_dos_test.py",
             "description": """
-Dimostra una vulnerabilità in cui un elettore malevolo, pur autenticato
-regolarmente, invia un enc_seed che non corrisponde al seed reale usato
-per cifrare il voto.
+Simula un elettore malevolo che, pur autenticato regolarmente, invia
+un enc_seed non coerente con il seed usato per cifrare il voto.
 
-L'AE accetta il voto senza poter verificare la correttezza del seed
-(non ha ancora la chiave privata). A urne chiuse, durante lo scrutinio,
-decifra il seed fittizio: il voto viene comunque conteggiato, ma la
-coppia (enc_vote, seed) pubblicata nel blocco scrutinio non supera la
-ricifratura di verifica.
+L'AE accetta il voto in fase di deposito (non può verificare il seed
+senza chiave privata). A urne chiuse, durante lo scrutinio, la verifica
+di coerenza crittografica rileva l'incongruenza e classifica la scheda
+come nulla invece di attribuirla a un candidato.
 
-L'Observer rileva l'incongruenza e marca l'intera elezione come non
-verificabile — un singolo elettore malevolo compromette la verifica
-universale per tutti.
+L'Observer completa quindi la verifica universale senza bloccare l'intera
+elezione: la mitigazione impedisce il DoS da singolo elettore malevolo.
 
 Il test avvia e termina SA e AE automaticamente.
             """,

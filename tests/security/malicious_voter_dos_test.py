@@ -193,7 +193,7 @@ def solve_pow(enc_vote_hex: str, difficulty: int = 4) -> str:
 
 def main():
     print("=" * 80)
-    print("  TEST VULNERABILITA' DOS DA ELETTORE MALEVOLO")
+    print("  TEST MITIGAZIONE DOS DA ELETTORE MALEVOLO (SEED CORROTTO)")
     print("=" * 80)
     try:
         setup()
@@ -255,22 +255,32 @@ def main():
         assert scrutinio_block is not None
         voti_verificati = scrutinio_block["data"]["voti_verificati"]
         print(f"    Voti scrutinati: {len(voti_verificati)}")
-        print(f"    Il voto malevolo è stato conteggiato per: {voti_verificati[0]['voto_chiaro']}")
+        voto_chiaro = voti_verificati[0]["voto_chiaro"]
+        print(f"    Il voto malevolo è stato conteggiato per: {voto_chiaro}")
+        assert voto_chiaro == "Scheda nulla", (
+            "L'AE avrebbe dovuto classificare la scheda come nulla per incongruenza crittografica."
+        )
 
         print("\n[6] Esecuzione dell'Observer (Verifica Universale)...")
-        # Eseguiamo l'observer e catturiamo l'output
-        result = subprocess.run([sys.executable, os.path.join(SRC_DIR, "observer.py")], 
+        result = subprocess.run([sys.executable, os.path.join(SRC_DIR, "observer.py")],
                               cwd=PROJECT_ROOT, capture_output=True, text=True, input="\n")
-        
+
         print("-" * 40)
         print("OUTPUT OBSERVER:")
         print(result.stdout)
         print("-" * 40)
 
-        if "Ricifratura non corrispondente" in result.stdout and "ALCUNE VERIFICHE PUBBLICHE HANNO FALLITO" in result.stdout:
-            print("\n[SUCCESS] Vulnerabilità dimostrata: L'Observer ha rilevato un'incongruenza e ha fatto fallire l'INTERA elezione per tutti gli utenti, pur essendo colpa di un singolo elettore malevolo!")
+        observer_ok = "TUTTE LE VERIFICHE PUBBLICHE SONO RIUSCITE" in result.stdout
+        if observer_ok:
+            print("\n[SUCCESS] Mitigazione attiva: l'AE ha accettato il voto in fase di "
+                  "deposito (non può verificare il seed senza chiave privata), ma durante "
+                  "lo scrutinio ha rilevato l'incongruenza seed/voto e classificato la scheda "
+                  "come nulla. L'Observer completa la verifica universale senza bloccare "
+                  "l'intera elezione.")
         else:
-            print("\n[FAIL] Il test non ha funzionato come previsto.")
+            print("\n[FAIL] L'Observer non ha superato la verifica universale: "
+                  "un singolo elettore malevolo potrebbe compromettere l'elezione per tutti.")
+            sys.exit(1)
 
     finally:
         teardown()
