@@ -531,14 +531,14 @@ def print_server_banner() -> None:
     print("Ruolo: ricevere le schede cifrate, verificare token e Proof of Work,")
     print("registrare i voti nel Bulletin Board e, a urne chiuse, eseguire lo")
     print("scrutinio e pubblicare le prove.")
-    print("\nIn questo terminale potrai visualizzare:")
+    print("\nIn questo terminale vengono visualizzati:")
     print("- il caricamento dei dati iniziali;")
     print("- l'avvio del server Flask;")
     print("- le richieste ricevute su /status, /vote, /close, /shutdown;")
     print("- eventuali schede nulle rilevate durante lo scrutinio;")
     print("- eventuali errori o messaggi diagnostici dell'AE.")
-    print("\nNon serve interagire con questo terminale: chiudilo solo quando")
-    print("hai terminato l'elezione o il test.")
+    print("\nNon è richiesta alcuna interazione con questo terminale: la chiusura")
+    print("è consentita al termine dell'elezione o del test.")
     print("=" * 70 + "\n")
 
 
@@ -556,7 +556,7 @@ if __name__ == "__main__":
         print("[AE] TLS abilitato — in ascolto su https://localhost:5002")
     else:
         ssl_ctx = None
-        print("[AE] Certificati TLS non trovati — avvio in HTTP (esegui generate_tls_certs.py)")
+        print("[AE] Certificati TLS non trovati — avvio in HTTP (generare i certificati con generate_tls_certs.py)")
 
     # Avvia il server Flask sulla porta 5002, debug disabilitato
     app.run(port=5002, debug=False, ssl_context=ssl_ctx)

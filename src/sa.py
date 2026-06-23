@@ -204,7 +204,7 @@ def register():
 
     Risposta (201 Created):
     {
-        "message": "Registrazione avvenuta con successo!"
+        "message": "Registrazione completata con successo."
     }
 
     Risposte di errore (400, 409, 429):
@@ -219,7 +219,7 @@ def register():
     client_ip = get_client_ip()
     if not check_rate_limit(client_ip):
         print(f"[SA] {datetime.now().isoformat()} - Rate limit exceeded for IP {client_ip} (register)")
-        return jsonify({"error": "Troppe richieste. Riprova più tardi."}), 429
+        return jsonify({"error": "Troppe richieste. È necessario riprovare più tardi."}), 429
 
     try:
         req_data = request.get_json()
@@ -230,7 +230,7 @@ def register():
         # 1. Validazione del dominio email
         if not email or not is_valid_unisa_email(email):
             print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: email non valida {email}")
-            return jsonify({"error": "Email non valida. Usa un'email @studenti.unisa.it o @unisa.it"}), 400
+            return jsonify({"error": "Email non valida. È richiesto un indirizzo @studenti.unisa.it o @unisa.it"}), 400
 
         # 2. Verifica che tutti i campi siano presenti
         if not username or not password:
@@ -266,7 +266,7 @@ def register():
         save_voters_list()
 
         print(f"[SA] {datetime.now().isoformat()} - Nuovo elettore registrato: {username} ({email})")
-        return jsonify({"message": "Registrazione avvenuta con successo!"}), 201
+        return jsonify({"message": "Registrazione completata con successo."}), 201
 
     except (ValueError, KeyError, TypeError, AttributeError) as e:
         print(f"[SA] Errore di validazione (400): {str(e)}")
@@ -305,7 +305,7 @@ def authenticate():
     client_ip = get_client_ip()
     if not check_rate_limit(client_ip):
         print(f"[SA] {datetime.now().isoformat()} - Rate limit exceeded for IP {client_ip} (authenticate)")
-        return jsonify({"error": "Troppe richieste. Riprova più tardi."}), 429
+        return jsonify({"error": "Troppe richieste. È necessario riprovare più tardi."}), 429
 
     try:
         req_data = request.get_json()
@@ -408,13 +408,13 @@ def print_server_banner() -> None:
     print("Questo terminale ospita il server SA sulla porta 5001.")
     print("Ruolo: registrare gli elettori, autenticarli e rilasciare/recuperare")
     print("il token firmato usato successivamente per votare presso l'AE.")
-    print("\nIn questo terminale potrai visualizzare:")
+    print("\nIn questo terminale vengono visualizzati:")
     print("- il caricamento dei dati iniziali;")
     print("- l'avvio del server Flask;")
     print("- le richieste ricevute su /status, /register, /authenticate, /shutdown;")
     print("- eventuali errori o messaggi diagnostici del SA.")
-    print("\nNon serve interagire con questo terminale: chiudilo solo quando")
-    print("hai terminato l'elezione o il test.")
+    print("\nNon è richiesta alcuna interazione con questo terminale: la chiusura")
+    print("è consentita al termine dell'elezione o del test.")
     print("=" * 70 + "\n")
 
 
@@ -432,7 +432,7 @@ if __name__ == "__main__":
         print("[SA] TLS abilitato — in ascolto su https://localhost:5001")
     else:
         ssl_ctx = None
-        print("[SA] Certificati TLS non trovati — avvio in HTTP (esegui generate_tls_certs.py)")
+        print("[SA] Certificati TLS non trovati — avvio in HTTP (generare i certificati con generate_tls_certs.py)")
 
     # Avvia il server Flask sulla porta 5001, debug disabilitato per sicurezza
     app.run(port=5001, debug=False, ssl_context=ssl_ctx)
