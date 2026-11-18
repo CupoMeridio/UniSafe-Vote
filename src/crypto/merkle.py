@@ -28,6 +28,24 @@ Complessità:
 import hashlib
 from typing import List, Dict, Literal, Optional, Tuple
 
+# Separazione di dominio (come in RFC 6962, Certificate Transparency): l'hash di
+# una foglia e quello di un nodo interno usano prefissi diversi. Senza questa
+# distinzione un nodo interno (hash di due figli concatenati) potrebbe essere
+# presentato come se fosse una foglia, ottenendo una proof valida per un dato
+# mai inserito nel registro (attacco di seconda preimmagine sull'albero).
+LEAF_PREFIX = b"\x00"
+NODE_PREFIX = b"\x01"
+
+
+def leaf_hash(data_bytes: bytes) -> bytes:
+    """Hash di una foglia: SHA-256(0x00 || dati)."""
+    return hashlib.sha256(LEAF_PREFIX + data_bytes).digest()
+
+
+def node_hash(left: bytes, right: bytes) -> bytes:
+    """Hash di un nodo interno: SHA-256(0x01 || figlio sinistro || figlio destro)."""
+    return hashlib.sha256(NODE_PREFIX + left + right).digest()
+
 
 # ---------------------------------------------------------------------------
 # Struttura interna: un albero perfetto nel forest
@@ -112,14 +130,8 @@ class MerkleTree:
     def __init__(self):
         """Inizializza un nuovo Merkle Tree vuoto."""
         self.leaves: List[bytes] = []         # tutti gli hash delle foglie, in ordine
-        self._forest: List[_PerfectTree] = [] # lista di alberi perfetti (dal più piccolo)
-        self._leaf_to_tree: List[Tuple[int, int]] = []
-        # _leaf_to_tree[i] = (indice nel forest al momento dell'inserimento, indice locale)
-        # Nota: il forest cambia nel tempo per le fusioni, quindi memorizziamo
-        # le informazioni necessarie alla proof in modo diverso (vedi _proof_metadata).
-        self._proof_metadata: List[Tuple[int, int]] = []
-        # _proof_metadata[i] = (tree_size al momento dell'inserimento, leaf_index_locale)
-        # Questo permette di ricostruire la proof anche dopo le fusioni.
+        # Alberi perfetti ordinati dal più grande (foglie più vecchie) al più piccolo.
+        self._forest: List[_PerfectTree] = []
 
     # ------------------------------------------------------------------
     # Metodi pubblici
@@ -137,35 +149,21 @@ class MerkleTree:
         Returns:
             int: indice globale della foglia appena aggiunta (inizia da 0)
         """
-        leaf_hash = self._hash(data_bytes)
+        new_leaf = leaf_hash(data_bytes)
         global_index = len(self.leaves)
-        self.leaves.append(leaf_hash)
+        self.leaves.append(new_leaf)
 
-        # Crea un albero perfetto con la singola nuova foglia
-        new_tree = _PerfectTree(levels=[[leaf_hash], [leaf_hash]])
-        # levels[0] = root (= la foglia stessa), levels[1] = [foglia]
-        # Per coerenza con get_proof_path, usiamo:
-        # levels[-1] = foglie, levels[0] = root
-        # Per un albero di altezza 0 (1 foglia), root = foglia stessa.
-        new_tree = _PerfectTree(levels=[[leaf_hash]])
-        # Caso speciale: albero di 1 foglia ha un solo livello.
-
-        # Metadato per la proof: dimensione iniziale=1, indice locale=0
-        local_index = 0
+        # Albero perfetto con la sola nuova foglia: un unico livello, in cui la
+        # radice coincide con la foglia (levels[0] = root, levels[-1] = foglie).
+        new_tree = _PerfectTree(levels=[[new_leaf]])
 
         # Fusione: finché ci sono due alberi della stessa dimensione, fondili
         # (analogo al carry nella somma binaria)
         while self._forest and self._forest[-1].size == new_tree.size:
             left_tree = self._forest.pop()
             new_tree = self._merge(left_tree, new_tree)
-            # L'indice locale della nostra foglia era nell'albero di destra,
-            # quindi nel nuovo albero fuso si trova nella metà destra:
-            local_index = left_tree.size + local_index
 
         self._forest.append(new_tree)
-        # Salva i metadati per get_proof: dimensione dell'albero in cui
-        # la foglia è ora contenuta, e il suo indice locale in quell'albero.
-        self._proof_metadata.append((new_tree.size, local_index))
 
         return global_index
 
@@ -186,8 +184,7 @@ class MerkleTree:
         # con un albero singolo costruito nello stesso ordine.
         current = self._forest[-1].root
         for tree in reversed(self._forest[:-1]):
-            combined = tree.root + current
-            current = self._hash(combined)
+            current = node_hash(tree.root, current)
 
         return current.hex()
 
@@ -211,8 +208,6 @@ class MerkleTree:
         if leaf_index < 0 or leaf_index >= len(self.leaves):
             raise IndexError(f"Indice foglia {leaf_index} fuori range")
 
-        tree_size, local_index = self._proof_metadata[leaf_index]
-
         # Trova l'albero nel forest che contiene questa foglia.
         # Poiché il forest può essere cambiato dopo l'inserimento (per fusioni
         # successive), dobbiamo trovare l'albero che ora contiene la foglia.
@@ -234,10 +229,6 @@ class MerkleTree:
     # Metodi privati
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _hash(data: bytes) -> bytes:
-        return hashlib.sha256(data).digest()
-
     def _merge(self, left: _PerfectTree, right: _PerfectTree) -> _PerfectTree:
         """
         Fonde due alberi perfetti della stessa dimensione in uno doppio.
@@ -248,7 +239,7 @@ class MerkleTree:
         """
         assert left.size == right.size, "Solo alberi della stessa dimensione possono essere fusi"
 
-        new_root = self._hash(left.root + right.root)
+        new_root = node_hash(left.root, right.root)
         new_levels: List[List[bytes]] = []
 
         # Livello 0 (radice del nuovo albero)
@@ -270,21 +261,9 @@ class MerkleTree:
         Returns:
             (albero, indice_globale_della_prima_foglia, indice_locale_nell_albero)
         """
-        # Gli alberi nel forest sono ordinati dal più grande al più piccolo
-        # (o dal più piccolo al più grande, a seconda dell'implementazione).
-        # Il forest copre le foglie in ordine: prima le foglie dell'albero
-        # più grande (più a sinistra), poi le successive, ecc.
-        # ATTENZIONE: in questa implementazione il forest è ordinato dal più
-        # grande al più piccolo (il primo albero è quello con più foglie).
-        # Questo segue la rappresentazione binaria: bit più significativo prima.
-
-        # Ricostruiamo i range di ogni albero nel forest
-        # Il forest è ordinato come viene costruito dall'algoritmo:
-        # in generale, gli alberi nel forest non sono in un ordine fisso,
-        # ma in questa implementazione sono in ordine dal più grande al
-        # più piccolo (bit più significativi prima).
-        # Dobbiamo trovare l'albero che contiene global_leaf_index.
-
+        # Il forest è ordinato dal più grande al più piccolo (bit più
+        # significativo prima) e gli alberi coprono le foglie in ordine: si
+        # scorrono gli intervalli [start, start + size) fino a quello giusto.
         start = 0
         for tree in self._forest:
             end = start + tree.size
@@ -334,7 +313,7 @@ class MerkleTree:
             if right_hash is None:
                 right_hash = trees[i].root
             else:
-                right_hash = self._hash(trees[i].root + right_hash)
+                right_hash = node_hash(trees[i].root, right_hash)
 
         if right_hash is not None:
             proof_steps.append({
@@ -354,7 +333,7 @@ class MerkleTree:
 
 
 # ---------------------------------------------------------------------------
-# Verifica della proof (invariata rispetto all'implementazione originale)
+# Verifica della proof
 # ---------------------------------------------------------------------------
 
 def verify_proof(
@@ -370,7 +349,7 @@ def verify_proof(
     - Dall'Observer per verificare tutti i voti
 
     Args:
-        leaf_hash: hash della foglia da verificare (bytes)
+        leaf_hash: hash della foglia da verificare, calcolato con leaf_hash()
         proof:     Merkle Proof generata da get_proof()
         root_hex:  Merkle Root pubblica (stringa esadecimale)
 
@@ -382,9 +361,8 @@ def verify_proof(
     for step in proof:
         sibling_hash = bytes.fromhex(step["hash"])
         if step["position"] == "left":
-            combined = sibling_hash + current_hash
+            current_hash = node_hash(sibling_hash, current_hash)
         else:
-            combined = current_hash + sibling_hash
-        current_hash = hashlib.sha256(combined).digest()
+            current_hash = node_hash(current_hash, sibling_hash)
 
     return current_hash.hex() == root_hex

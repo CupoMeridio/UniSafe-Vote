@@ -37,6 +37,7 @@ from crypto.rsa_oaep import raw_decrypt, oaep_decode, is_valid_ciphertext, modul
 from crypto.rsa_pss import sign, verify
 from crypto.merkle import MerkleTree
 from admin_auth import get_or_create_admin_token, require_admin
+from bb_chain import link_to_previous
 
 
 app = Flask(__name__)
@@ -197,7 +198,10 @@ def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", 
     with open(bulletin_board_path, "r", encoding="utf-8") as f:
         bb = json.load(f)
 
-    # Prepara i dati e calcola la firma
+    # Collega il blocco al precedente (prev_hash dentro i dati firmati) e firma.
+    # block_data viene modificato in place: chi lo usa dopo (es. la foglia del
+    # Merkle Tree per un voto) vede esattamente i dati pubblicati.
+    link_to_previous(bb, block_data)
     block_data_json = json.dumps(block_data, sort_keys=True).encode('utf-8')
     signature = sign(ae_sign_private, block_data_json)
 
@@ -373,11 +377,11 @@ def vote():
                 "timestamp": datetime.now(UTC).isoformat()
             }
 
+            # Salva il voto sul Bulletin Board (aggiunge prev_hash al record),
+            # poi inserisce nel Merkle Tree esattamente il record pubblicato.
+            append_to_bulletin_board("vote", vote_record)
             record_bytes = json.dumps(vote_record, sort_keys=True).encode('utf-8')
             leaf_index = merkle_tree.add_leaf(record_bytes)
-
-            # Salva il voto sul Bulletin Board
-            append_to_bulletin_board("vote", vote_record)
 
             # Marca il token come usato per evitare riutilizzi. Il nonce è un
             # identificatore opaco e non viene pubblicato sul Bulletin Board.

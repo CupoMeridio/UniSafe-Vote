@@ -235,6 +235,30 @@ def main():
                 print(f"    {line.strip()}")
         print(f"  {'[PASS]' if phase4_pass else '[FAIL]'} Fase 4")
 
+        # Rimozione di un blocco: l'AE cancella dal registro la riconciliazione
+        # del SA (firmata dal SA, quindi non falsificabile dall'AE). Senza catena
+        # di hash l'Observer si limitava a segnalare il blocco come mancante e
+        # dichiarava comunque l'elezione valida; con prev_hash la sequenza rotta
+        # deve essere rilevata.
+        with open(base.BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
+            intact_bb = json.load(f)
+        removed_bb = [b for b in intact_bb if b["type"] != "reconciliation_sa"]
+        with open(base.BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
+            json.dump(removed_bb, f, indent=2, ensure_ascii=False)
+        obs_removed = subprocess.run([sys.executable, os.path.join(SRC_DIR, "observer.py")],
+                                     cwd=PROJECT_ROOT, input="\n", capture_output=True, text=True,
+                                     encoding="utf-8", errors="replace")
+        with open(base.BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
+            json.dump(intact_bb, f, indent=2, ensure_ascii=False)
+        removal_detected = "ALCUNE VERIFICHE PUBBLICHE HANNO FALLITO" in obs_removed.stdout
+        chain_line = next((l.strip() for l in obs_removed.stdout.splitlines() if "Catena interrotta" in l), "")
+        print(f"\n  Blocco reconciliation_sa rimosso dal registro → Observer: "
+              f"{'FAIL (rilevato)' if removal_detected else 'OK (NON rilevato)'}")
+        if chain_line:
+            print(f"    {chain_line}")
+        print(f"  {'[PASS]' if removal_detected else '[FAIL]'} Rimozione di un blocco rilevata dalla catena di hash")
+        phase4_pass = phase4_pass and removal_detected
+
         # FASE 5 ------------------------------------------------------------
         print("\n" + "-" * 80)
         print(f"FASE 5 — AE corrotta riscrive la scheda {TAMPERED_LEAF} e ri-firma la Merkle Root")
@@ -291,6 +315,7 @@ def main():
                 "close_with_one_share_rejected": one_share_rejected,
                 "phase3_individual_verification": verification,
                 "phase4_observer_ok": phase4_pass,
+                "block_removal_detected_by_hash_chain": removal_detected,
                 "phase5_tampering": {"tamper": tamper, "results": tamper_results, "passed": phase5_pass},
             },
         )

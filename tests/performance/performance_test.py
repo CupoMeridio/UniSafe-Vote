@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 from crypto.keys import generate_rsa_keypair, serialize_public_key
 from crypto.rsa_oaep import encrypt, decrypt
 from crypto.rsa_pss import sign, verify
-from crypto.merkle import MerkleTree, verify_proof
+from crypto.merkle import MerkleTree, verify_proof, leaf_hash as merkle_leaf_hash
 
 # Configurazione
 SA_URL = "https://localhost:5001"
@@ -189,7 +189,7 @@ def test_merkle_performance():
         
         # 3. Verifica proof
         verify_times = []
-        leaf_hash = hashlib.sha256(leaves[num_leaves//2]).digest()
+        leaf_hash = merkle_leaf_hash(leaves[num_leaves//2])
         for _ in range(NUM_ITERATIONS):
             start = time.perf_counter()
             verify_proof(leaf_hash, proof, root)

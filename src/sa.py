@@ -33,6 +33,7 @@ from crypto.keys import load_private_key
 from crypto.rsa_pss import sign
 from crypto.password import hash_password, verify_password
 from admin_auth import get_or_create_admin_token, require_admin
+from bb_chain import link_to_previous
 
 
 app = Flask(__name__)
@@ -248,6 +249,7 @@ def append_to_bulletin_board(block_type: str, block_data: dict) -> dict:
     with open("data/bulletin_board.json", "r", encoding="utf-8") as f:
         bb = json.load(f)
 
+    link_to_previous(bb, block_data)  # prev_hash dentro i dati firmati
     block_data_json = json.dumps(block_data, sort_keys=True).encode('utf-8')
     signature = sign(sa_sign_private, block_data_json)
 

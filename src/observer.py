@@ -13,6 +13,8 @@ Le verifiche effettuate sono:
 5. Verifica pubblica della decifratura di OGNI scheda (EM^e mod n == c),
    schede nulle comprese, e del conteggio aggregato
 6. Verifica delle Merkle Proof per ogni singolo voto
+7. Riconciliazione tra token emessi e schede
+8. Catena di hash (prev_hash) e firma di ogni blocco del Bulletin Board
 
 Tutto questo è possibile grazie al fatto che il Bulletin Board è un
 registro append-only, pubblico e firmato digitalmente.
@@ -30,7 +32,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from crypto.keys import deserialize_public_key
 from crypto.rsa_pss import verify
 from crypto.rsa_oaep import encrypt, verify_raw_decryption, oaep_decode, is_valid_ciphertext, modulus_length
-from crypto.merkle import MerkleTree, verify_proof
+from crypto.merkle import MerkleTree, verify_proof, leaf_hash as merkle_leaf_hash
+from bb_chain import find_chain_break, block_hash
 
 
 def main() -> None:
@@ -246,7 +249,7 @@ def main() -> None:
         for i, vote_block in enumerate(vote_blocks):
             # Genera proof dall'albero ricostruito
             record_bytes = json.dumps(vote_block["data"], sort_keys=True).encode('utf-8')
-            leaf_hash = hashlib.sha256(record_bytes).digest()
+            leaf_hash = merkle_leaf_hash(record_bytes)
             proof = reconstructed_tree.get_proof(i)
 
             if not verify_proof(leaf_hash, proof, merkle_root):
@@ -292,6 +295,34 @@ def main() -> None:
     else:
         print("Saltato (Blocchi di riconciliazione mancanti)")
 
+
+    # 8. Catena di hash e firma di OGNI blocco. Le verifiche precedenti
+    #    controllano solo alcuni blocchi: qui si verifica che ogni blocco sia
+    #    firmato dall'autorità che lo ha emesso (il SA per la propria
+    #    riconciliazione, l'AE per tutti gli altri) e che la sequenza non sia
+    #    stata alterata (nessun blocco rimosso, inserito o riordinato).
+    print("\n8. Verifica catena di hash e firme di tutti i blocchi... ", end="")
+    chain_break = find_chain_break(bb)
+    bad_signatures = []
+    for i, block in enumerate(bb):
+        signer = sa_sign_public if block["type"] == "reconciliation_sa" else ae_sign_public
+        try:
+            sig = bytes.fromhex(block["signature"])
+        except (KeyError, ValueError):
+            bad_signatures.append(i)
+            continue
+        if not verify(signer, json.dumps(block["data"], sort_keys=True).encode('utf-8'), sig):
+            bad_signatures.append(i)
+    if chain_break is None and not bad_signatures:
+        print(f"OK ({len(bb)} blocchi collegati, firme valide; ultimo hash {block_hash(bb[-1])[:16]}...)")
+    else:
+        print("FAIL")
+        all_passed = False
+        if chain_break is not None:
+            print(f"   Catena interrotta al blocco {chain_break} ({bb[chain_break]['type']}): "
+                  f"prev_hash non corrisponde al blocco precedente.")
+        if bad_signatures:
+            print(f"   Firme non valide nei blocchi: {bad_signatures}")
 
     print("\n=== RISULTATO FINALE ===")
     if all_passed:

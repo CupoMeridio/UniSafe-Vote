@@ -31,7 +31,7 @@ from cryptography.hazmat.primitives import serialization
 from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt, verify_raw_decryption, oaep_decode, modulus_length
 from crypto.rsa_pss import verify
-from crypto.merkle import MerkleTree, verify_proof
+from crypto.merkle import MerkleTree, verify_proof, leaf_hash as merkle_leaf_hash
 SA_URL: str = "https://localhost:5001"  # URL del Sistema di Autenticazione
 AE_URL: str = "https://localhost:5002"  # URL dell'Autorità Elettorale
 BULLETIN_BOARD_PATH: str = "data/bulletin_board.json"
@@ -566,7 +566,7 @@ class Client:
 
             vote_record = vote_blocks[leaf_index]['data']
             record_bytes = json.dumps(vote_record, sort_keys=True).encode('utf-8')
-            leaf_hash = hashlib.sha256(record_bytes).digest()
+            leaf_hash = merkle_leaf_hash(record_bytes)
 
             # 4. Verifica Merkle. La proof nella ricevuta è relativa all'albero
             #    AL MOMENTO DEL VOTO (i voti successivi cambiano il percorso),
