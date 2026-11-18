@@ -31,7 +31,7 @@ sys.path.insert(0, SRC_DIR)
 sys.path.insert(0, TESTS_SEC_DIR)
 
 from crypto.keys import (generate_rsa_keypair, save_keypair, serialize_public_key,
-                          deserialize_public_key, save_encrypted_private_key,
+                          deserialize_public_key,
                           load_public_key, load_private_key)
 from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import sign
@@ -42,6 +42,7 @@ from cryptography.hazmat.primitives import serialization
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
+from common import create_test_election, close_payload, clean_election_state
 
 BULLETIN_BOARD_PATH = os.path.join(DATA_DIR, "bulletin_board.json")
 VOTERS_PATH         = os.path.join(DATA_DIR, "voters.json")
@@ -82,65 +83,10 @@ def setup():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(KEYS_DIR, exist_ok=True)
     ensure_tls_certs()
-    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
-        p = os.path.join(DATA_DIR, fname)
-        if os.path.exists(p):
-            os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f != ".gitkeep":
-            os.remove(os.path.join(KEYS_DIR, f))
-
-    sa_sign_priv,  sa_sign_pub  = generate_rsa_keypair()
-    ae_enc_priv,   ae_enc_pub   = generate_rsa_keypair()
-    ae_sign_priv,  ae_sign_pub  = generate_rsa_keypair()
-
-    save_keypair(sa_sign_priv, sa_sign_pub,  "sa_sign")
-    save_keypair(ae_enc_priv,  ae_enc_pub,   "ae_encrypt")
-    save_keypair(ae_sign_priv, ae_sign_pub,  "ae_sign")
-
-    opening = datetime.now(UTC).isoformat()
-    closing = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
-
-    init_data = {
-        "election_id":       "dos_attack_test",
-        "candidates":        CANDIDATES,
-        "opening_time":      opening,
-        "closing_time":      closing,
-        "sa_sign_public":    serialize_public_key(sa_sign_pub),
-        "ae_encrypt_public": serialize_public_key(ae_enc_pub),
-        "ae_sign_public":    serialize_public_key(ae_sign_pub),
-    }
-    init_json      = json.dumps(init_data, sort_keys=True).encode("utf-8")
-    init_signature = sign(ae_sign_priv, init_json)
-
-    bb = [{
-        "type":      "init",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "data":      init_data,
-        "signature": init_signature.hex(),
-    }]
-    with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
-        json.dump(bb, f, indent=2)
-
-    pins = {
-        "ae_encrypt_public": "sha256:" + compute_public_key_fingerprint(init_data["ae_encrypt_public"]),
-        "ae_sign_public":    "sha256:" + compute_public_key_fingerprint(init_data["ae_sign_public"]),
-    }
-    with open(os.path.join(DATA_DIR, "pins.json"), "w", encoding="utf-8") as f:
-        json.dump(pins, f, indent=2)
-
-    save_encrypted_private_key(ae_enc_priv, "ae_encrypt", init_signature)
-
-    voters_data = []
-    for v in VOTERS:
-        vc = v.copy()
-        vc["password"] = hash_password(vc["password"])
-        voters_data.append(vc)
-    with open(VOTERS_PATH, "w", encoding="utf-8") as f:
-        json.dump(voters_data, f, indent=2)
-
-    with open(os.path.join(DATA_DIR, "ae_state.json"), "w", encoding="utf-8") as f:
-        json.dump({"used_tokens": []}, f, indent=2)
+    # Elezione di test creata dal modulo condiviso: stesso schema di
+    # init_election.py, chiave di decifratura protetta solo dall'escrow
+    # Shamir (nessuna copia in chiaro su disco).
+    init_data = create_test_election("dos_attack_test", VOTERS, CANDIDATES)
 
     sa_process = subprocess.Popen(
         [sys.executable, os.path.join(SRC_DIR, "sa.py")],
@@ -176,9 +122,7 @@ def teardown():
         p = os.path.join(DATA_DIR, fname)
         if os.path.exists(p):
             os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f != ".gitkeep":
-            os.remove(os.path.join(KEYS_DIR, f))
+    clean_election_state()  # rimuove anche le quote in data/keys/trustees/
 
 def solve_pow(enc_vote_hex: str, difficulty: int = 4) -> str:
     enc_vote_bytes = bytes.fromhex(enc_vote_hex)
@@ -256,7 +200,7 @@ def main():
 
         print("\n[5] Chiusura delle urne e Scrutinio...")
         requests.post(f"{SA_URL}/reconcile", headers=admin_headers(), verify=sa_verify())
-        r_close = requests.post(f"{AE_URL}/close", headers=admin_headers(), verify=ae_verify())
+        r_close = requests.post(f"{AE_URL}/close", headers=admin_headers(), json=close_payload(), verify=ae_verify())
         assert r_close.status_code == 200
 
         with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:

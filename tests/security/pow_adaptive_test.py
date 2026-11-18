@@ -58,7 +58,7 @@ sys.path.insert(0, TESTS_SEC_DIR)
 from test_reporter import save_report
 
 from crypto.keys import (generate_rsa_keypair, save_keypair, serialize_public_key,
-                          deserialize_public_key, save_encrypted_private_key)
+                          deserialize_public_key)
 from crypto.rsa_pss import sign
 from crypto.password import hash_password
 from cryptography.hazmat.primitives import serialization
@@ -69,6 +69,7 @@ from cryptography.hazmat.primitives import serialization
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 from tls_config import AE_URL, ae_verify, ensure_tls_certs, admin_headers
+from common import create_test_election, close_payload, clean_election_state
 
 POW_MIN_DIFFICULTY  = 4
 POW_RATE_THRESHOLD  = 5
@@ -135,66 +136,10 @@ def setup():
 
     ensure_tls_certs()
 
-    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
-        p = os.path.join(DATA_DIR, fname)
-        if os.path.exists(p):
-            os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f == ".gitkeep":
-            continue
-        os.remove(os.path.join(KEYS_DIR, f))
-
-    sa_sign_priv,  sa_sign_pub  = generate_rsa_keypair()
-    ae_enc_priv,   ae_enc_pub   = generate_rsa_keypair()
-    ae_sign_priv,  ae_sign_pub  = generate_rsa_keypair()
-
-    save_keypair(sa_sign_priv, sa_sign_pub,  "sa_sign")
-    save_keypair(ae_enc_priv,  ae_enc_pub,   "ae_encrypt")
-    save_keypair(ae_sign_priv, ae_sign_pub,  "ae_sign")
-
-    opening = datetime.now(UTC).isoformat()
-    closing = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
-
-    init_data = {
-        "election_id":       "pow_adaptive_test",
-        "candidates":        CANDIDATES,
-        "opening_time":      opening,
-        "closing_time":      closing,
-        "sa_sign_public":    serialize_public_key(sa_sign_pub),
-        "ae_encrypt_public": serialize_public_key(ae_enc_pub),
-        "ae_sign_public":    serialize_public_key(ae_sign_pub),
-    }
-    init_json      = json.dumps(init_data, sort_keys=True).encode("utf-8")
-    init_signature = sign(ae_sign_priv, init_json)
-
-    bb = [{
-        "type":      "init",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "data":      init_data,
-        "signature": init_signature.hex(),
-    }]
-    with open(os.path.join(DATA_DIR, "bulletin_board.json"), "w", encoding="utf-8") as f:
-        json.dump(bb, f, indent=2)
-
-    pins = {
-        "ae_encrypt_public": _compute_fingerprint(init_data["ae_encrypt_public"]),
-        "ae_sign_public":    _compute_fingerprint(init_data["ae_sign_public"]),
-    }
-    with open(os.path.join(DATA_DIR, "pins.json"), "w", encoding="utf-8") as f:
-        json.dump(pins, f, indent=2)
-
-    save_encrypted_private_key(ae_enc_priv, "ae_encrypt", init_signature)
-
-    voters_data = []
-    for v in VOTERS:
-        vc = v.copy()
-        vc["password"] = hash_password(vc["password"])
-        voters_data.append(vc)
-    with open(os.path.join(DATA_DIR, "voters.json"), "w", encoding="utf-8") as f:
-        json.dump(voters_data, f, indent=2)
-
-    with open(os.path.join(DATA_DIR, "ae_state.json"), "w", encoding="utf-8") as f:
-        json.dump({"used_tokens": []}, f, indent=2)
+    # Elezione di test creata dal modulo condiviso: stesso schema di
+    # init_election.py, chiave di decifratura protetta solo dall'escrow
+    # Shamir (nessuna copia in chiaro su disco).
+    init_data = create_test_election("pow_adaptive_test", VOTERS, CANDIDATES)
 
     ae_process = subprocess.Popen(
         [sys.executable, os.path.join(SRC_DIR, "ae.py")],
@@ -226,9 +171,7 @@ def teardown():
         p = os.path.join(DATA_DIR, fname)
         if os.path.exists(p):
             os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f != ".gitkeep":
-            os.remove(os.path.join(KEYS_DIR, f))
+    clean_election_state()  # rimuove anche le quote in data/keys/trustees/
     print("[TEARDOWN] File di stato rimossi.")
 
 

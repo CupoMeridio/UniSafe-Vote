@@ -26,6 +26,7 @@ import time
 from typing import Optional
 import requests
 import platform
+import shutil
 
 SA_PROCESS: Optional[subprocess.Popen] = None  # Riferimento al processo del server SA (Sistema di Autenticazione)
 AE_PROCESS: Optional[subprocess.Popen] = None  # Riferimento al processo del server AE (Autorità Elettorale)
@@ -130,6 +131,19 @@ def _admin_headers() -> dict:
     except FileNotFoundError:
         return {}
     return {"X-Admin-Token": token} if token else {}
+
+
+def _load_trustee_shares() -> list:
+    """Legge le quote degli scrutatori da data/keys/trustees/ (simulazione PoC)."""
+    trustees_dir = os.path.join(PROJECT_DIR, "data", "keys", "trustees")
+    if not os.path.isdir(trustees_dir):
+        return []
+    shares = []
+    for filename in sorted(os.listdir(trustees_dir)):
+        if filename.endswith(".json"):
+            with open(os.path.join(trustees_dir, filename), "r", encoding="utf-8") as f:
+                shares.append(json.load(f))
+    return shares
 
 
 def check_server_running(url: str) -> bool:
@@ -426,7 +440,9 @@ Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente
     if os.path.isdir(keys_dir):
         for filename in os.listdir(keys_dir):
             file_path = os.path.join(keys_dir, filename)
-            if os.path.isfile(file_path) and filename != ".gitkeep":
+            if os.path.isdir(file_path):  # es. quote degli scrutatori (trustees/)
+                shutil.rmtree(file_path)
+            elif os.path.isfile(file_path) and filename != ".gitkeep":
                 os.remove(file_path)
     else:
         os.makedirs(keys_dir, exist_ok=True)
@@ -472,7 +488,10 @@ def _silent_reset_after_test() -> None:
     if os.path.isdir(keys_dir):
         for f in os.listdir(keys_dir):
             fp = os.path.join(keys_dir, f)
-            if os.path.isfile(fp) and f != ".gitkeep":
+            if os.path.isdir(fp):  # es. quote degli scrutatori (trustees/)
+                shutil.rmtree(fp)
+                cleaned = True
+            elif os.path.isfile(fp) and f != ".gitkeep":
                 os.remove(fp)
                 cleaned = True
     else:
@@ -561,8 +580,20 @@ Quando le urne vengono chiuse:
         if check_server_running(SA_URL):
             requests.post(SA_URL + '/reconcile', headers=_admin_headers(), timeout=10, verify=_verify_for(SA_URL))
 
+        # Consegna delle quote degli scrutatori (simulazione PoC): la chiave di
+        # decifratura dell'AE è protetta da Shamir Secret Sharing e l'AE da sola
+        # non può ricostruirla. In un sistema reale ogni scrutatore custodisce
+        # la propria quota e la consegna solo a urne chiuse.
+        shares = _load_trustee_shares()
+        threshold = shares[0]["threshold"] if shares else 0
+        print(f"\nQuote degli scrutatori disponibili: {len(shares)} (soglia: {threshold})")
+        for share in shares[:threshold]:
+            print(f"   Scrutatore {share['trustee']} consegna la propria quota")
+
         # Invio di una richiesta POST all'endpoint /close dell'AE per chiudere le urne
-        response = requests.post(AE_URL + '/close', headers=_admin_headers(), timeout=10, verify=_verify_for(AE_URL))
+        response = requests.post(AE_URL + '/close', headers=_admin_headers(),
+                                 json={"trustee_shares": shares[:threshold]},
+                                 timeout=30, verify=_verify_for(AE_URL))
  
         # Se il server risponde con codice 200, la chiusura e lo scrutinio sono andati a buon fine
         if response.status_code == 200:
@@ -692,17 +723,19 @@ Non richiede server avviati — è un test offline sul Merkle Tree.
             """,
         },
         "4": {
-            "name": "Vincolo Crittografico ed Escrow della Chiave Privata",
+            "name": "Escrow a Soglia della Chiave Privata (Shamir 2-su-3)",
             "file": "tests/security/key_escrow_test.py",
             "description": """
-Verifica la protezione della chiave privata di decifratura dell'AE
-e la correttezza della transizione di escrow (WP3 - 3.3).
+Verifica la protezione della chiave privata di decifratura dell'AE (WP3 - 3.3).
 
-Il test simula lo sblocco della chiave tramite la firma dell'Init Block
-per il voto ed il successivo passaggio irreversibile (re-cifratura)
-alla firma della Merkle Root finale a urne chiuse, accertando che
-tentativi di decifratura prematura o non autorizzata vengano bloccati
-tramite controlli di integrità AEAD (AES-GCM).
+La chiave è cifrata con AES-256-GCM sotto una chiave AES casuale, divisa
+con Shamir Secret Sharing in 3 quote per 3 scrutatori: ne servono 2.
+Gli impegni sulle quote sono pubblicati nel blocco init firmato.
+
+Il test verifica che nessuna informazione pubblica e nessuna singola
+quota sblocchi la chiave, che qualunque coppia di scrutatori la
+ricostruisca, e che quote manomesse, file cifrato alterato o riuso per
+un'altra elezione vengano bloccati dall'autenticazione AES-GCM.
 
 Non richiede server avviati — è un test crittografico offline.
             """,

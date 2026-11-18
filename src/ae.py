@@ -32,7 +32,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from crypto.keys import load_private_key, load_public_key, deserialize_public_key, load_and_decrypt_private_key, save_encrypted_private_key
+from crypto.keys import load_private_key, load_public_key, deserialize_public_key, recover_private_key, share_commitment
 from crypto.rsa_oaep import raw_decrypt, oaep_decode, is_valid_ciphertext, modulus_length
 from crypto.rsa_pss import sign, verify
 from crypto.merkle import MerkleTree
@@ -178,8 +178,7 @@ def load_initial_data() -> None:
 
 def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", "scrutinio",
                                                    "reconciliation_ae", "reconciliation_sa"],
-                             block_data: Dict,
-                             precomputed_signature: bytes = None) -> Dict:
+                             block_data: Dict) -> Dict:
     """
     Appende un nuovo blocco firmato al Bulletin Board.
 
@@ -190,8 +189,6 @@ def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", 
     Args:
         block_type (str): Tipo di blocco
         block_data (dict): Dati da includere nel blocco
-        precomputed_signature (bytes, optional): Se fornita, non viene ricalcolata
-            la firma (utile quando la firma stessa viene usata come IKM crittografico).
 
     Returns:
         dict: Il nuovo blocco creato (con firma e timestamp)
@@ -200,9 +197,9 @@ def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", 
     with open(bulletin_board_path, "r", encoding="utf-8") as f:
         bb = json.load(f)
 
-    # Prepara i dati e calcola la firma (o usa quella precomputed)
+    # Prepara i dati e calcola la firma
     block_data_json = json.dumps(block_data, sort_keys=True).encode('utf-8')
-    signature = precomputed_signature if precomputed_signature is not None else sign(ae_sign_private, block_data_json)
+    signature = sign(ae_sign_private, block_data_json)
 
     # Crea il nuovo blocco
     new_block = {
@@ -432,13 +429,18 @@ def close():
     """
     Endpoint per la chiusura delle urne e l'inizio dello scrutinio.
 
-    Una volta chiuse le urne:
-    1. Viene pubblicata la Merkle Root finale sul Bulletin Board
-    2. Viene caricata la chiave privata di decifratura
-    3. Vengono decifrati tutti i voti
-    4. Viene verificata la corrispondenza dei seed
-    5. Vengono calcolati i risultati aggregati
-    6. Viene pubblicato tutto sul Bulletin Board
+    Richiesta (JSON): {"trustee_shares": [quota, quota, ...]}
+    Le quote degli scrutatori (Shamir) servono a ricostruire la chiave privata
+    di decifratura: l'AE da sola non può decifrare le schede.
+
+    Sequenza:
+    1. Si verificano le quote contro gli impegni pubblicati nel blocco init e
+       si ricostruisce la chiave privata. Con meno quote valide della soglia la
+       richiesta è rifiutata e le urne restano aperte.
+    2. Si chiudono le urne e si pubblicano riconciliazione e Merkle Root finale
+    3. Si decifrano le schede, pubblicando per ognuna la decifratura
+       verificabile (EM), e si calcolano i risultati aggregati
+    4. Si pubblica lo scrutinio sul Bulletin Board
 
     Returns:
         JSON con lo stato e i risultati aggregati
@@ -457,39 +459,44 @@ def _close_locked():
     if not urn_open:
         return jsonify({"error": "Urne già chiuse"}), 400
 
+    # 1. Quote degli scrutatori. Ogni quota deve corrispondere a uno degli
+    #    impegni (hash) pubblicati nel blocco init firmato: quote manomesse o
+    #    di un'altra elezione vengono scartate. Servono almeno `threshold`
+    #    quote di scrutatori distinti.
+    with open(bulletin_board_path, "r", encoding="utf-8") as f:
+        init_data = json.load(f)[0]["data"]
+    escrow = init_data.get("escrow") or {}
+    commitments = set(escrow.get("share_commitments", []))
+    threshold = escrow.get("threshold", 0)
+
+    req_data = request.get_json(silent=True) or {}
+    received = req_data.get("trustee_shares") or []
+    valid_shares = {}
+    for share in received if isinstance(received, list) else []:
+        if isinstance(share, dict) and share_commitment(share) in commitments:
+            valid_shares[share.get("x")] = share  # una quota per scrutatore
+    if not threshold or len(valid_shares) < threshold:
+        print(f"[AE] {datetime.now().isoformat()} - Chiusura rifiutata: "
+              f"{len(valid_shares)} quote valide su {threshold} necessarie")
+        return jsonify({"error": f"Servono almeno {threshold} quote valide di scrutatori distinti "
+                                 f"(ricevute valide: {len(valid_shares)})"}), 400
+    try:
+        ae_encrypt_private = recover_private_key(list(valid_shares.values()), init_data["election_id"])
+    except Exception:
+        return jsonify({"error": "Ricostruzione della chiave di decifratura fallita"}), 400
+    print(f"[AE] Chiave di decifratura ricostruita con {len(valid_shares)} quote di scrutatori")
+
     urn_open = False
     print(f"[AE] {datetime.now().isoformat()} - Urne chiuse")
 
-    # 0. Pubblica blocco di riconciliazione (totale voti ricevuti)
+    # 2. Pubblica blocco di riconciliazione (totale voti ricevuti) e la
+    #    Merkle Root finale firmata.
     total_votes = len(used_tokens)
     reconciliation_data = {"total_votes": total_votes}
     append_to_bulletin_board("reconciliation_ae", reconciliation_data)
 
-    # 1. Calcola la Merkle Root finale e firmala — questa firma diventa l'IKM
-    #    per decifrare la chiave privata dell'AE (vincolo crittografico WP3-3.3).
     merkle_root = merkle_tree.get_root()
-    root_data = {"merkle_root": merkle_root}
-    root_data_json = json.dumps(root_data, sort_keys=True).encode('utf-8')
-    merkle_root_signature = sign(ae_sign_private, root_data_json)
-    append_to_bulletin_board("merkle_root", root_data, precomputed_signature=merkle_root_signature)
-
-    # 2. Decifra la chiave privata di decifratura usando la firma della Merkle Root
-    #    come Input Key Material (HKDF-SHA256 → AES-256-GCM).
-    #    Questa operazione fallisce se la firma non corrisponde a quella usata
-    #    durante il salvataggio: in caso di esecuzione anticipata (urne ancora
-    #    aperte) la root non è quella definitiva e la decifratura è impossibile.
-    try:
-        ae_encrypt_private = load_and_decrypt_private_key("ae_encrypt", merkle_root_signature)
-    except Exception:
-        # Prima esecuzione di /close: il file .enc è stato creato con IKM=init_signature.
-        # Leggiamo la firma del blocco init dal Bulletin Board, la usiamo per decifrare
-        # il file .enc iniziale, poi lo ri-cifriamo con l'IKM definitivo (Merkle Root).
-        with open(bulletin_board_path, "r", encoding="utf-8") as _f:
-            _bb = json.load(_f)
-        init_signature_bytes = bytes.fromhex(_bb[0]["signature"])
-        ae_encrypt_private = load_and_decrypt_private_key("ae_encrypt", init_signature_bytes)
-        save_encrypted_private_key(ae_encrypt_private, "ae_encrypt", merkle_root_signature)
-        print("[AE] Chiave privata AE ri-cifrata con IKM definitivo (Merkle Root firmata)")
+    append_to_bulletin_board("merkle_root", {"merkle_root": merkle_root})
 
     # 3. Esegui lo scrutinio
     with open(bulletin_board_path, "r", encoding="utf-8") as f:

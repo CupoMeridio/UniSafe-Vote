@@ -44,6 +44,7 @@ sys.path.insert(0, TESTS_SEC_DIR)
 import double_voting_attack as base
 from test_reporter import save_report
 from tls_config import AE_URL, SA_URL, ae_verify, sa_verify, admin_headers
+from common import close_payload
 
 from client import Client
 from crypto.keys import load_private_key, deserialize_public_key
@@ -192,8 +193,18 @@ def main():
         print("\n" + "-" * 80)
         print("FASE 3 — Chiusura urne e verifica individuale di TUTTE le ricevute")
         print("-" * 80)
+        # La chiave di decifratura è protetta da Shamir 2-su-3: con una sola
+        # quota l'AE deve rifiutare la chiusura e lasciare le urne aperte.
+        early = requests.post(f"{AE_URL}/close", headers=admin_headers(), json=close_payload(1),
+                              timeout=30, verify=ae_verify())
+        still_open = requests.get(f"{AE_URL}/status", timeout=5, verify=ae_verify()).json()["urn_open"]
+        one_share_rejected = early.status_code == 400 and still_open
+        print(f"  Chiusura con 1 sola quota di scrutatore: HTTP {early.status_code} — "
+              f"{early.json().get('error')}  (urne ancora aperte: {still_open})")
+        print(f"  {'[PASS]' if one_share_rejected else '[FAIL]'} Una quota non basta per decifrare\n")
+
         requests.post(f"{SA_URL}/reconcile", headers=admin_headers(), timeout=10, verify=sa_verify()).raise_for_status()
-        close = requests.post(f"{AE_URL}/close", headers=admin_headers(), timeout=60, verify=ae_verify())
+        close = requests.post(f"{AE_URL}/close", headers=admin_headers(), json=close_payload(), timeout=60, verify=ae_verify())
         close.raise_for_status()
         print(f"  Scrutinio: {close.json()['result']}")
         with open(base.BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
@@ -207,7 +218,7 @@ def main():
             r = receipts[voter["username"]]
             print(f"    {voter['username']:<13} leaf {r['leaf_index']}  tree_size {r['tree_size']}  "
                   f"→ {'✓ verificata' if ok else '✗ FALLITA: ' + msg}")
-        phase3_pass = all(verification.values())
+        phase3_pass = all(verification.values()) and one_share_rejected
         print(f"\n  Ricevute verificate: {sum(verification.values())}/{len(voters)}")
         print(f"  {'[PASS]' if phase3_pass else '[FAIL]'} Fase 3")
 
@@ -277,6 +288,7 @@ def main():
                              for u, r in receipts.items()},
                 "final_merkle_root": final_root,
                 "phase2_tree_rebuilt_after_restart": rebuilt_ok,
+                "close_with_one_share_rejected": one_share_rejected,
                 "phase3_individual_verification": verification,
                 "phase4_observer_ok": phase4_pass,
                 "phase5_tampering": {"tamper": tamper, "results": tamper_results, "passed": phase5_pass},

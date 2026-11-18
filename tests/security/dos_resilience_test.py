@@ -75,7 +75,7 @@ sys.path.insert(0, TESTS_SEC_DIR)
 from test_reporter import save_report
 
 from crypto.keys import (generate_rsa_keypair, save_keypair, serialize_public_key,
-                          deserialize_public_key, save_encrypted_private_key)
+                          deserialize_public_key)
 from crypto.rsa_pss  import sign
 from crypto.rsa_oaep import encrypt
 from crypto.password import hash_password
@@ -87,6 +87,7 @@ from cryptography.hazmat.primitives import serialization
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
+from common import create_test_election, close_payload, clean_election_state
 DATA_DIR           = os.path.join(PROJECT_ROOT, "data")
 KEYS_DIR           = os.path.join(DATA_DIR, "keys")
 RECEIPTS_DIR       = os.path.join(DATA_DIR, "receipts")
@@ -191,84 +192,10 @@ def setup() -> Tuple[subprocess.Popen, subprocess.Popen, dict]:
     os.makedirs(KEYS_DIR,    exist_ok=True)
     os.makedirs(RECEIPTS_DIR, exist_ok=True)
 
-    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
-        p = os.path.join(DATA_DIR, fname)
-        if os.path.exists(p):
-            os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f == ".gitkeep":
-            continue
-        os.remove(os.path.join(KEYS_DIR, f))
-    # Si eliminano anche le ricevute JSON dei voti precedenti.
-    for f in os.listdir(RECEIPTS_DIR):
-        fp = os.path.join(RECEIPTS_DIR, f)
-        if f.endswith(".json"):
-            os.remove(fp)
-
-    # Si generano tre coppie RSA-2048: firma SA, cifratura AE e firma AE.
-    sa_sign_priv,  sa_sign_pub  = generate_rsa_keypair()
-    ae_enc_priv,   ae_enc_pub   = generate_rsa_keypair()
-    ae_sign_priv,  ae_sign_pub  = generate_rsa_keypair()
-
-    save_keypair(sa_sign_priv, sa_sign_pub,  "sa_sign")
-    save_keypair(ae_enc_priv,  ae_enc_pub,   "ae_encrypt")
-    save_keypair(ae_sign_priv, ae_sign_pub,  "ae_sign")
-
-    # L'elezione apre immediatamente e chiude tra 24 ore.
-    opening = datetime.now(UTC).isoformat()
-    closing = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
-
-    # Si compone il blocco di inizializzazione con i parametri pubblici
-    # dell'elezione e le chiavi pubbliche dei componenti, poi lo si firma.
-    init_data = {
-        "election_id":      "dos_resilience_test",
-        "candidates":       CANDIDATES,
-        "opening_time":     opening,
-        "closing_time":     closing,
-        "sa_sign_public":   serialize_public_key(sa_sign_pub),
-        "ae_encrypt_public": serialize_public_key(ae_enc_pub),
-        "ae_sign_public":   serialize_public_key(ae_sign_pub),
-    }
-    init_json      = json.dumps(init_data, sort_keys=True).encode("utf-8")
-    init_signature = sign(ae_sign_priv, init_json)
-
-    bb = [{
-        "type":      "init",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "data":      init_data,
-        "signature": init_signature.hex(),
-    }]
-    with open(os.path.join(DATA_DIR, "bulletin_board.json"), "w", encoding="utf-8") as f:
-        json.dump(bb, f, indent=2)
-
-    # Si calcolano le impronte SHA-256 delle chiavi AE e si salvano in pins.json
-    # per simulare il canale di distribuzione trusted (certificate pinning).
-    pins = {
-        "ae_encrypt_public": compute_fingerprint(init_data["ae_encrypt_public"]),
-        "ae_sign_public":    compute_fingerprint(init_data["ae_sign_public"]),
-    }
-    with open(os.path.join(DATA_DIR, "pins.json"), "w", encoding="utf-8") as f:
-        json.dump(pins, f, indent=2)
-
-    # La chiave privata di cifratura AE viene salvata cifrata con AES-GCM
-    # usando la firma del blocco init come IKM (vincolo crittografico WP3 §3.3).
-    save_encrypted_private_key(ae_enc_priv, "ae_encrypt", init_signature)
-
-    # Le password vengono salvate come hash Argon2, mai in chiaro.
-    voters_data = []
-    for u in HONEST_USERS:
-        voters_data.append({
-            "id":       u["id"],
-            "email":    u["email"],
-            "username": u["username"],
-            "password": hash_password(u["password"]),
-        })
-    with open(os.path.join(DATA_DIR, "voters.json"), "w", encoding="utf-8") as f:
-        json.dump(voters_data, f, indent=2)
-
-    # Si inizializza lo stato privato dell'AE con la lista dei token usati vuota.
-    with open(os.path.join(DATA_DIR, "ae_state.json"), "w", encoding="utf-8") as f:
-        json.dump({"used_tokens": []}, f, indent=2)
+    # Elezione di test creata dal modulo condiviso: stesso schema di
+    # init_election.py, chiave di decifratura protetta solo dall'escrow
+    # Shamir (nessuna copia in chiaro su disco).
+    init_data = create_test_election("dos_resilience_test", HONEST_USERS, CANDIDATES)
 
     print("  Chiavi generate e file di configurazione scritti.")
 
@@ -323,9 +250,7 @@ def teardown(sa_proc: subprocess.Popen, ae_proc: subprocess.Popen) -> None:
         p = os.path.join(DATA_DIR, fname)
         if os.path.exists(p):
             os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f != ".gitkeep":
-            os.remove(os.path.join(KEYS_DIR, f))
+    clean_election_state()  # rimuove anche le quote in data/keys/trustees/
     for f in os.listdir(RECEIPTS_DIR):
         if f.endswith(".json"):
             os.remove(os.path.join(RECEIPTS_DIR, f))

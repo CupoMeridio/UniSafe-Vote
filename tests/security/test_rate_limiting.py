@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 
 from test_reporter import save_report
 from tls_config import SA_URL, sa_verify, ensure_tls_certs, admin_headers
+from common import clean_election_state
 
 AUTH_URL = f"{SA_URL}/authenticate"
 # Per la misura dei tempi si usa l'IP: su Windows "localhost" viene risolto prima
@@ -54,9 +55,7 @@ def clean_state() -> None:
         if os.path.exists(p):
             os.remove(p)
     if os.path.isdir(KEYS_DIR):
-        for f in os.listdir(KEYS_DIR):
-            if f != ".gitkeep":
-                os.remove(os.path.join(KEYS_DIR, f))
+        clean_election_state()  # rimuove anche le quote in data/keys/trustees/
 
 
 def start_sa() -> subprocess.Popen:

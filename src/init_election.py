@@ -25,7 +25,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from cryptography.hazmat.primitives import serialization
-from crypto.keys import generate_rsa_keypair, save_keypair, serialize_public_key, deserialize_public_key, save_encrypted_private_key
+from crypto.keys import generate_rsa_keypair, save_keypair, serialize_public_key, deserialize_public_key, escrow_private_key, escrow_public_info
 from crypto.rsa_pss import sign
 from crypto.password import hash_password
 
@@ -154,6 +154,14 @@ def main() -> None:
     opening_time = datetime.now(UTC).isoformat()
     closing_time = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
 
+
+    # Escrow a soglia della chiave privata di decifratura (Shamir 2-su-3): la
+    # chiave viene cifrata con una chiave AES casuale, divisa in 3 quote per
+    # gli scrutatori; ne servono 2 per lo scrutinio. Gli impegni sulle quote
+    # finiscono nel blocco init firmato, così le quote non sono sostituibili.
+    trustee_shares = escrow_private_key(ae_encrypt_private, election_id, trustees=3, threshold=2)
+    del ae_encrypt_private
+
     init_data = {
         "election_id": election_id,
         "candidates": candidates,
@@ -161,7 +169,8 @@ def main() -> None:
         "closing_time": closing_time,
         "sa_sign_public": serialize_public_key(sa_sign_public),
         "ae_encrypt_public": serialize_public_key(ae_encrypt_public),
-        "ae_sign_public": serialize_public_key(ae_sign_public)
+        "ae_sign_public": serialize_public_key(ae_sign_public),
+        "escrow": escrow_public_info(trustee_shares)
     }
 
     # Firma il blocco init con ae_sign_private
@@ -191,13 +200,9 @@ def main() -> None:
     with open("data/pins.json", "w", encoding="utf-8") as f:
         json.dump(pins, f, indent=2, ensure_ascii=False)
     print("  Impronte AE salvate in data/pins.json")
-
-    # Vincolo crittografico sull'escrow della chiave privata AE (WP3 - 3.3):
-    # La chiave viene cifrata con AES-GCM; la chiave simmetrica è derivata
-    # (HKDF-SHA256) dalla firma del blocco init. L'AE sovrascriverà il file
-    # con il nuovo IKM (firma della Merkle Root finale) al momento del /close.
-    save_encrypted_private_key(ae_encrypt_private, "ae_encrypt", init_signature)
-    print("  Chiave privata AE cifrata e protetta in data/keys/ae_encrypt_private.enc")
+    print("  Chiave privata AE cifrata in data/keys/ae_encrypt_private.enc con una chiave AES casuale")
+    print("  Chiave AES divisa in 3 quote (Shamir, soglia 2) per gli scrutatori: data/keys/trustees/")
+    print("  Impegni sulle quote pubblicati nel blocco init del Bulletin Board")
 
     # I token NON vengono pre-generati in inizializzazione: ciascun token è
     # rilasciato dal SA solo al momento dell'autenticazione dell'elettore
