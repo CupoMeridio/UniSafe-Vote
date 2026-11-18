@@ -373,11 +373,18 @@ class InvalidFlood:
         self.running   = False
         self._threads: List[threading.Thread] = []
         self.sent      = 0
-        self.rejected  = 0
+        self.rejected  = 0      # HTTP 400: PoW invalida (scartata subito)
+        self.rejected_401 = 0   # HTTP 401: PoW valida PER CASO, poi firma token invalida
+        self.accepted  = 0      # HTTP 200: non deve MAI accadere
+        self.errors    = 0      # timeout / errori di rete (nessuna risposta)
         self._lock     = threading.Lock()
 
     def _worker(self) -> None:
         while self.running:
+            # Nonce fisso ma enc_vote casuale: SHA-256(enc_vote || nonce) è
+            # uniforme, quindi la PoW risulta valida per caso con probabilità
+            # 2^-difficoltà (6,25% a 4 bit). Quelle richieste superano la PoW
+            # e vengono respinte con 401 alla verifica della firma del token.
             payload = {
                 "enc_vote":        os.urandom(256).hex(),
                 "enc_seed":        os.urandom(256).hex(),
@@ -391,9 +398,14 @@ class InvalidFlood:
                     self.sent += 1
                     if r.status_code == 400:
                         self.rejected += 1
+                    elif r.status_code == 401:
+                        self.rejected_401 += 1
+                    elif r.status_code == 200:
+                        self.accepted += 1
             except Exception:
                 with self._lock:
                     self.sent += 1
+                    self.errors += 1
 
     def start(self) -> None:
         self.running = True
@@ -525,6 +537,26 @@ def main() -> None:
         print(f"  Flood spazzatura avviato ({FLOOD_INVALID_THREADS} thread).")
         print(f"  Flood valido avviato     ({FLOOD_VALID_THREADS} thread, risolve la PoW).")
 
+        # Campionamento continuo della difficoltà PoW per tutta la durata
+        # dell'attacco. Leggerla solo alla fine sarebbe fragile: se il voto
+        # degli onesti dura più della finestra di osservazione dell'AE (10 s),
+        # le richieste del flood escono dalla finestra e la difficoltà risulta
+        # già tornata al minimo (falso FAIL non riproducibile).
+        difficulty_samples: List[int] = []
+        sampling = threading.Event()
+        sampling.set()
+
+        def sample_difficulty() -> None:
+            while sampling.is_set():
+                try:
+                    difficulty_samples.append(get_pow_difficulty())
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+        sampler = threading.Thread(target=sample_difficulty, daemon=True)
+        sampler.start()
+
         # Attesa iniziale per dare al flood valido il tempo di accumulare
         # richieste nella finestra prima che gli utenti onesti inizino a votare.
         time.sleep(4)
@@ -547,20 +579,26 @@ def main() -> None:
         for t in vote_threads:
             t.join(timeout=120)
 
-        # Ferma entrambi i flood.
+        # Ferma entrambi i flood e il campionamento.
         invalid_flood.stop()
         valid_flood.stop()
+        difficulty_samples.append(get_pow_difficulty())
+        sampling.clear()
+        sampler.join(timeout=5)
 
-        # Legge la difficoltà DOPO il flood: a questo punto tutte le richieste
-        # valide sono già state registrate nella finestra di osservazione.
-        diff_during = get_pow_difficulty()
+        # Difficoltà massima osservata durante l'attacco.
+        diff_during = max(difficulty_samples)
+        print(f"  Campioni di difficoltà durante l'attacco: {len(difficulty_samples)}  "
+              f"(min {min(difficulty_samples)}, max {diff_during} bit)")
 
         print(f"\n  Flood fermati. Statistiche attacco:")
         print(f"  Difficoltà PoW durante/dopo l'attacco misto: {diff_during} bit")
         print(f"    [SPAZZATURA] Richieste inviate: {invalid_flood.sent}  |  "
               f"Rifiutate 400: {invalid_flood.rejected}"
               + (f"  ({invalid_flood.rejected/invalid_flood.sent*100:.1f}%)"
-                 if invalid_flood.sent else ""))
+                 if invalid_flood.sent else "")
+              + f"  |  401 (PoW valida per caso): {invalid_flood.rejected_401}"
+              + f"  |  Accettate: {invalid_flood.accepted}  |  Senza risposta: {invalid_flood.errors}")
         print(f"    [VALIDO]     Richieste inviate: {valid_flood.sent}  |  "
               f"Rifiutate 401: {valid_flood.rejected_401}  |  "
               f"Rifiutate 400 (race): {valid_flood.rejected_400}")
@@ -610,8 +648,13 @@ def main() -> None:
         p1             = auth_success == len(HONEST_USERS)
         p2_pow         = diff_during > diff_before          # flood valido ha alzato la difficoltà
         p2_votes       = votes_ok == len(HONEST_USERS)      # tutti gli onesti hanno votato
-        p2_inv_blocked = (invalid_flood.sent > 0 and
-                          invalid_flood.rejected / invalid_flood.sent >= 0.95)  # 95%+ spazzatura bloccata
+        # Spazzatura: nessuna richiesta deve essere accettata e quasi tutte le
+        # risposte devono arrivare già dal controllo PoW (400). La soglia tiene
+        # conto delle PoW valide per caso (2^-4 = 6,25% a difficoltà minima):
+        # il tasso di 400 atteso è circa 93,75%, la soglia è fissata all'85%.
+        answered = invalid_flood.sent - invalid_flood.errors
+        p2_inv_blocked = (answered > 0 and invalid_flood.accepted == 0 and
+                          invalid_flood.rejected / answered >= 0.85)
         p2_val_blocked = (valid_flood.sent > 0 and
                           (valid_flood.rejected_401 + valid_flood.rejected_400) /
                           valid_flood.sent >= 0.80)  # 80%+ ha risolto la PoW (401 + race 400)
@@ -625,8 +668,8 @@ def main() -> None:
               f"({diff_before} → {diff_during} bit)")
         print(f"  {mark(p2_votes)}  Fase 2 — utenti onesti votano con attacco attivo "
               f"({votes_ok}/{len(HONEST_USERS)})")
-        print(f"  {mark(p2_inv_blocked)}  Fase 2 — spazzatura bloccata (400) "
-              f"({invalid_flood.rejected}/{invalid_flood.sent}  ≥95% atteso)")
+        print(f"  {mark(p2_inv_blocked)}  Fase 2 — spazzatura bloccata: nessuna accettata, 400 su risposte "
+              f"({invalid_flood.rejected}/{answered}  ≥85% atteso; 401 per caso: {invalid_flood.rejected_401})")
         print(f"  {mark(p2_val_blocked)}  Fase 2 — flood valido ha risolto la PoW (401+400race) "
               f"({valid_flood.rejected_401 + valid_flood.rejected_400}/{valid_flood.sent}  ≥80% atteso)")
         print(f"  {mark(p3)}  Fase 3 — difficoltà tornata al minimo "
@@ -660,6 +703,9 @@ def main() -> None:
                 "flood_invalid": {
                     "sent":         invalid_flood.sent,
                     "rejected_400": invalid_flood.rejected,
+                    "rejected_401_pow_valid_by_chance": invalid_flood.rejected_401,
+                    "accepted": invalid_flood.accepted,
+                    "no_response": invalid_flood.errors,
                     "rejection_rate_pct": round(
                         invalid_flood.rejected / invalid_flood.sent * 100, 1
                     ) if invalid_flood.sent else 0,
@@ -689,7 +735,7 @@ def main() -> None:
                     "p1_all_authenticated":             p1,
                     "p2_pow_increased":                 p2_pow,
                     "p2_all_honest_voted":              p2_votes,
-                    "p2_invalid_blocked_95pct":         p2_inv_blocked,
+                    "p2_invalid_blocked":               p2_inv_blocked,
                     "p2_valid_pow_resolved_80pct":      p2_val_blocked,
                     "p3_difficulty_recovered":          p3,
                 },

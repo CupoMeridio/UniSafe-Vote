@@ -471,9 +471,12 @@ def _silent_reset_after_test() -> None:
     Reset silenzioso eseguito automaticamente dopo ogni test di sicurezza.
 
     I test sono autocontenuti e fanno il proprio teardown, ma possono lasciare
-    residui in data/ se interrotti prematuramente. Questo cleanup garantisce
-    che il sistema torni in uno stato neutro prima di tornare al menu principale,
-    senza sovrascrivere un'elezione reale già inizializzata dall'utente.
+    residui in data/ se interrotti prematuramente. Questo cleanup riporta il
+    sistema in uno stato neutro prima di tornare al menu principale.
+
+    ATTENZIONE: rimuove qualunque elezione presente in data/. Per questo
+    run_security_tests chiede una conferma esplicita prima di avviare un test
+    quando esiste già un'elezione inizializzata.
     """
     data_dir     = os.path.join(PROJECT_DIR, "data")
     keys_dir     = os.path.join(data_dir, "keys")
@@ -762,10 +765,11 @@ Verifica il meccanismo di PoW adattiva dell'AE in quattro fasi:
 
   Fase 1 — Baseline: la difficoltà a sistema a riposo deve essere
            al valore minimo (4 bit).
-  Fase 2 — Flood: si inviano 60 richieste con PoW invalida per saturare
-           la finestra di osservazione dell'AE.
-  Fase 3 — Sotto carico: la difficoltà deve essere aumentata rispetto
-           al baseline, proporzionalmente al numero di richieste in eccesso.
+  Fase 2a — Flood spazzatura: richieste con PoW invalida, rifiutate con
+           HTTP 400. La difficoltà NON deve aumentare: le PoW invalide
+           non contano, così l'attaccante non penalizza gli onesti a costo zero.
+  Fase 2b/3 — Flood valido: richieste con PoW risolta davvero. La
+           difficoltà deve aumentare, proporzionalmente alle richieste in eccesso.
   Fase 4 — Recovery: dopo la scadenza della finestra (10 secondi), la
            difficoltà deve tornare al valore minimo.
 
@@ -899,6 +903,19 @@ Verifica le difese del Sistema di Autenticazione contro il brute force:
 Il test avvia e riavvia il SA automaticamente tra una fase e l'altra.
             """,
         },
+        "14": {
+            "name": "Flusso Completo dell'Elezione (end-to-end)",
+            "file": "tests/test_flow.py",
+            "description": """
+Percorre l'intero ciclo di vita di un'elezione con i server reali:
+inizializzazione, autenticazione e verifica dei pin AE, voto con
+Proof of Work, ricevuta firmata, riconciliazione, consegna delle quote
+degli scrutatori e scrutinio, verifica individuale della ricevuta con
+il client reale e verifica universale con l'Observer.
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
     }
 
     while True:
@@ -929,12 +946,13 @@ Il test avvia e riavvia il SA automaticamente tra una fase e l'altra.
         print(menu_option("11", TESTS["11"]["name"], available=True))
         print(menu_option("12", TESTS["12"]["name"], available=True))
         print(menu_option("13", TESTS["13"]["name"], available=True))
+        print(menu_option("14", TESTS["14"]["name"], available=True))
 
         print(f"\n{section_title('NAVIGAZIONE')}")
         print(menu_option("0", "Torna al menu principale", available=True))
         print("="*70)
 
-        choice = input("\nSeleziona un test (0-13): ").strip()
+        choice = input("\nSeleziona un test (0-14): ").strip()
 
         if choice == "0":
             break
@@ -956,6 +974,19 @@ Il test avvia e riavvia il SA automaticamente tra una fase e l'altra.
         print("Il test verrà eseguito in un nuovo terminale.")
         print("Attendi la chiusura del terminale di test prima di procedere.")
         print("-"*70)
+
+        # I test creano la propria elezione in data/ e la rimuovono alla fine:
+        # un'elezione già inizializzata verrebbe sovrascritta e persa.
+        if is_election_initialized() or check_server_running(SA_URL) or check_server_running(AE_URL):
+            print(colored("\nATTENZIONE: è presente un'elezione inizializzata o un server avviato.", ANSI_BRIGHT))
+            print("Il test sovrascrive data/ (Bulletin Board, elettori, chiavi, quote degli")
+            print("scrutatori, ricevute) e la ripulisce al termine: l'elezione corrente andrà persa.")
+            print("Chiudi SA e AE prima di procedere, altrimenti il test non potrà avviare i propri server.")
+            conferma = input("Scrivere CONFERMO per procedere comunque: ").strip()
+            if conferma != "CONFERMO":
+                print("Test annullato.")
+                input("\nPremi Invio per tornare al menu dei test...")
+                continue
 
         risposta = input("\nAvviare il test? (s/n): ").strip().lower()
         if risposta != "s":

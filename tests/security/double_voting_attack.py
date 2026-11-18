@@ -238,7 +238,7 @@ def get_pow_difficulty():
 def get_valid_token():
     """Ottieni un token valido autenticandosi al SA usando la password in chiaro."""
     # La password in chiaro viene presa dalla costante VOTERS, non da voters.json
-    # che contiene già l'hash Argon2 salvato dal setup.
+    # che contiene già l'hash PBKDF2 salvato dal setup.
     voter_plain = VOTERS[0]
     print(f"  Autenticazione elettore: {voter_plain['username']}")
     response = requests.post(
