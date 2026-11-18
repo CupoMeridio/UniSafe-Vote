@@ -43,7 +43,7 @@ sys.path.insert(0, TESTS_SEC_DIR)
 # con SA e AE come sottoprocessi); si aggiungono elettori per avere più voti.
 import double_voting_attack as base
 from test_reporter import save_report
-from tls_config import AE_URL, SA_URL, ae_verify, sa_verify
+from tls_config import AE_URL, SA_URL, ae_verify, sa_verify, admin_headers
 
 from client import Client
 from crypto.keys import load_private_key, deserialize_public_key
@@ -105,7 +105,7 @@ def verify_receipt(voter: dict) -> tuple:
 def restart_ae() -> None:
     """Spegne l'AE e la riavvia come nuovo processo, a urne aperte."""
     try:
-        requests.post(f"{AE_URL}/shutdown", timeout=2, verify=ae_verify())
+        requests.post(f"{AE_URL}/shutdown", headers=admin_headers(), timeout=2, verify=ae_verify())
     except Exception:
         pass
     if base.ae_process:
@@ -192,8 +192,8 @@ def main():
         print("\n" + "-" * 80)
         print("FASE 3 — Chiusura urne e verifica individuale di TUTTE le ricevute")
         print("-" * 80)
-        requests.post(f"{SA_URL}/reconcile", timeout=10, verify=sa_verify()).raise_for_status()
-        close = requests.post(f"{AE_URL}/close", timeout=60, verify=ae_verify())
+        requests.post(f"{SA_URL}/reconcile", headers=admin_headers(), timeout=10, verify=sa_verify()).raise_for_status()
+        close = requests.post(f"{AE_URL}/close", headers=admin_headers(), timeout=60, verify=ae_verify())
         close.raise_for_status()
         print(f"  Scrutinio: {close.json()['result']}")
         with open(base.BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:

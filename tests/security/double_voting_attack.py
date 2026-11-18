@@ -59,7 +59,7 @@ def compute_public_key_fingerprint(pem_str: str) -> str:
 # ---------------------------------------------------------------------------
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
-from tls_config import AE_URL, SA_URL, ae_verify, sa_verify, ensure_tls_certs
+from tls_config import AE_URL, SA_URL, ae_verify, sa_verify, ensure_tls_certs, admin_headers
 
 BULLETIN_BOARD_PATH = os.path.join(DATA_DIR, "bulletin_board.json")
 
@@ -212,7 +212,7 @@ def teardown():
         # Si tenta prima lo shutdown HTTP controllato; se il server non risponde,
         # si termina il processo con terminate() e infine con kill().
         try:
-            requests.post(f"{url}/shutdown", timeout=1,
+            requests.post(f"{url}/shutdown", headers=admin_headers(), timeout=1,
                           verify=(ae_verify() if "5002" in url else sa_verify()))
         except Exception:
             pass

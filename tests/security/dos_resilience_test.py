@@ -86,7 +86,7 @@ from cryptography.hazmat.primitives import serialization
 # ---------------------------------------------------------------------------
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
-from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs
+from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
 DATA_DIR           = os.path.join(PROJECT_ROOT, "data")
 KEYS_DIR           = os.path.join(DATA_DIR, "keys")
 RECEIPTS_DIR       = os.path.join(DATA_DIR, "receipts")
@@ -310,7 +310,7 @@ def teardown(sa_proc: subprocess.Popen, ae_proc: subprocess.Popen) -> None:
         # Si tenta prima lo shutdown HTTP controllato; se non risponde,
         # si termina il processo con wait() e infine con kill().
         try:
-            requests.post(f"{url}/shutdown", timeout=1, verify=(ae_verify() if "5002" in url else sa_verify()))
+            requests.post(f"{url}/shutdown", headers=admin_headers(), timeout=1, verify=(ae_verify() if "5002" in url else sa_verify()))
         except Exception:
             pass
         try:

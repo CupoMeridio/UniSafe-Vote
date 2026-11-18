@@ -116,6 +116,22 @@ def _verify_for(url: str) -> str | bool:
     return True
 
 
+def _admin_headers() -> dict:
+    """
+    Header per le operazioni amministrative (/close, /reconcile, /shutdown).
+
+    SA e AE generano il token in data/keys/admin_token al primo avvio; il
+    pannello di controllo, che gira sulla stessa macchina, lo legge dal file.
+    """
+    token_path = os.path.join(PROJECT_DIR, "data", "keys", "admin_token")
+    try:
+        with open(token_path, "r", encoding="utf-8") as f:
+            token = f.read().strip()
+    except FileNotFoundError:
+        return {}
+    return {"X-Admin-Token": token} if token else {}
+
+
 def check_server_running(url: str) -> bool:
     """
     Verifica se un server è in esecuzione controllando l'endpoint `/status`.
@@ -543,10 +559,10 @@ Quando le urne vengono chiuse:
     try:
         # Chiamata al SA per pubblicare i token emessi (Riconciliazione)
         if check_server_running(SA_URL):
-            requests.post(SA_URL + '/reconcile', timeout=10, verify=_verify_for(SA_URL))
+            requests.post(SA_URL + '/reconcile', headers=_admin_headers(), timeout=10, verify=_verify_for(SA_URL))
 
         # Invio di una richiesta POST all'endpoint /close dell'AE per chiudere le urne
-        response = requests.post(AE_URL + '/close', timeout=10, verify=_verify_for(AE_URL))
+        response = requests.post(AE_URL + '/close', headers=_admin_headers(), timeout=10, verify=_verify_for(AE_URL))
  
         # Se il server risponde con codice 200, la chiusura e lo scrutinio sono andati a buon fine
         if response.status_code == 200:
@@ -831,6 +847,24 @@ Verifica end-to-end delle ricevute di voto con il codice reale del client.
 Il test avvia e termina SA e AE automaticamente.
             """,
         },
+        "13": {
+            "name": "Difese del SA: Brute Force, IP Falsificati, Endpoint Admin",
+            "file": "tests/security/test_rate_limiting.py",
+            "description": """
+Verifica le difese del Sistema di Autenticazione contro il brute force:
+
+  Fase 1: oltre 10 richieste al minuto dallo stesso IP → HTTP 429.
+  Fase 2: falsificare l'IP con l'header X-Forwarded-For non aggira il
+          limite (l'header è ignorato fuori dalla modalità test di carico).
+  Fase 3: dopo 5 password errate l'account viene bloccato, anche se poi
+          arriva la password corretta (ferma il brute force distribuito).
+  Fase 4: un login con username inesistente impiega quanto uno con
+          username esistente: i tempi non rivelano gli account registrati.
+  Fase 5: /reconcile e /shutdown rispondono 403 senza token amministrativo.
+
+Il test avvia e riavvia il SA automaticamente tra una fase e l'altra.
+            """,
+        },
     }
 
     while True:
@@ -860,12 +894,13 @@ Il test avvia e termina SA e AE automaticamente.
         print(menu_option("10", TESTS["10"]["name"], available=True))
         print(menu_option("11", TESTS["11"]["name"], available=True))
         print(menu_option("12", TESTS["12"]["name"], available=True))
+        print(menu_option("13", TESTS["13"]["name"], available=True))
 
         print(f"\n{section_title('NAVIGAZIONE')}")
         print(menu_option("0", "Torna al menu principale", available=True))
         print("="*70)
 
-        choice = input("\nSeleziona un test (0-12): ").strip()
+        choice = input("\nSeleziona un test (0-13): ").strip()
 
         if choice == "0":
             break
@@ -1064,7 +1099,7 @@ def stop_processes() -> None:
     # Invia richiesta di shutdown via HTTP agli endpoint /shutdown (per macOS/Linux/Windows)
     for url in (SA_URL, AE_URL):
         try:
-            requests.post(url + '/shutdown', timeout=0.5, verify=_verify_for(url))
+            requests.post(url + '/shutdown', headers=_admin_headers(), timeout=0.5, verify=_verify_for(url))
         except Exception:
             # Ignora errori di connessione (es. server già spento o non in esecuzione)
             pass

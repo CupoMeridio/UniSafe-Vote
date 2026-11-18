@@ -37,7 +37,7 @@ import hashlib
 # Numero totale di richieste di attacco da inviare e thread concorrenti.
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
-from tls_config import AE_URL, ae_verify, ensure_tls_certs
+from tls_config import AE_URL, ae_verify, ensure_tls_certs, admin_headers
 
 AE_VOTE_URL = f"{AE_URL}/vote"
 NUM_REQUESTS = 500
@@ -193,7 +193,7 @@ def teardown():
     # Si tenta prima lo shutdown controllato via HTTP; se fallisce, si termina
     # il processo con terminate() e, come ultima risorsa, con kill().
     try:
-        requests.post(f"{AE_URL}/shutdown", timeout=1, verify=ae_verify())
+        requests.post(f"{AE_URL}/shutdown", headers=admin_headers(), timeout=1, verify=ae_verify())
     except Exception:
         pass
     if ae_process:

@@ -32,11 +32,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from crypto.keys import load_private_key
 from crypto.rsa_pss import sign
 from crypto.password import hash_password, verify_password
+from admin_auth import get_or_create_admin_token, require_admin
 
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # Limita le richieste a 1 MB per prevenire DoS Memory Exhaustion
-# Rimossa la gestione complessa di SHUTDOWN_TOKEN per semplicità locale
+# Le operazioni amministrative (/reconcile, /shutdown) richiedono il token
+# amministrativo (header X-Admin-Token, vedi admin_auth.py).
 
 # Stato interno del server (in memoria)
 issued_tokens: Set[str] = set()  # ID elettori a cui è già stato rilasciato un token
@@ -50,6 +52,29 @@ RATE_LIMIT_WINDOW_SECONDS = 60  # 1 minute window
 RATE_LIMIT_MAX_REQUESTS = 10     # Max 10 requests per window per IP
 # Stores request timestamps per IP: { "127.0.0.1": deque([timestamps]) }
 rate_limit_store: Dict[str, deque] = {}
+RATE_LIMIT_MAX_TRACKED_IPS = 10000  # Oltre questa soglia si eliminano gli IP inattivi
+
+# Header X-Forwarded-For: è impostato dal client e quindi falsificabile. Viene
+# considerato SOLO se il server è avviato con UNISAFE_TRUST_PROXY_HEADERS=1
+# (es. per i test di carico con Locust, che simulano IP diversi). In ogni altro
+# caso si usa l'indirizzo reale della connessione: un attaccante non può più
+# aggirare il rate limit cambiando l'header a ogni richiesta.
+TRUST_PROXY_HEADERS = os.environ.get("UNISAFE_TRUST_PROXY_HEADERS") == "1"
+
+# Protezione per account contro il brute force distribuito: il rate limit per
+# IP non ferma un attaccante che prova password diverse sullo stesso account
+# da molti IP. Dopo LOCKOUT_THRESHOLD tentativi falliti consecutivi l'account
+# viene bloccato per un tempo che raddoppia a ogni ulteriore fallimento.
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_BASE_SECONDS = 30
+LOCKOUT_MAX_SECONDS = 15 * 60
+# { username: {"failures": int, "locked_until": datetime | None} }
+failed_logins: Dict[str, Dict] = {}
+failed_logins_lock = threading.Lock()
+
+# Hash fittizio usato quando lo username non esiste: si esegue comunque PBKDF2,
+# così il tempo di risposta non rivela quali username sono registrati.
+DUMMY_PASSWORD_HASH = hash_password(os.urandom(16).hex())
 
 # Il server Flask è multi-thread: questo lock rende atomiche le sezioni che
 # leggono e modificano lo stato condiviso (lista elettori, token emessi,
@@ -157,19 +182,56 @@ def check_rate_limit(ip_address: str) -> bool:
             return False
         # Add current timestamp and allow
         timestamps.append(now)
+
+        # Evita che il dizionario cresca senza limiti (es. molti IP diversi):
+        # oltre la soglia si eliminano gli IP senza richieste nella finestra.
+        if len(rate_limit_store) > RATE_LIMIT_MAX_TRACKED_IPS:
+            for ip in [ip for ip, ts in rate_limit_store.items()
+                       if not ts or (now - ts[-1]).total_seconds() > RATE_LIMIT_WINDOW_SECONDS]:
+                del rate_limit_store[ip]
         return True
+
+
+def account_locked_for(username: str) -> int:
+    """Restituisce i secondi di blocco residui dell'account (0 se non bloccato)."""
+    with failed_logins_lock:
+        entry = failed_logins.get(username)
+        if not entry or not entry["locked_until"]:
+            return 0
+        remaining = (entry["locked_until"] - datetime.now(UTC)).total_seconds()
+        return max(0, int(remaining) + 1) if remaining > 0 else 0
+
+
+def register_failed_login(username: str) -> None:
+    """Conta un tentativo fallito e, oltre la soglia, blocca l'account con backoff esponenziale."""
+    with failed_logins_lock:
+        entry = failed_logins.setdefault(username, {"failures": 0, "locked_until": None})
+        entry["failures"] += 1
+        excess = entry["failures"] - LOCKOUT_THRESHOLD
+        if excess >= 0:
+            seconds = min(LOCKOUT_BASE_SECONDS * (2 ** excess), LOCKOUT_MAX_SECONDS)
+            entry["locked_until"] = datetime.now(UTC) + timedelta(seconds=seconds)
+
+
+def reset_failed_logins(username: str) -> None:
+    """Azzera i tentativi falliti dopo un'autenticazione riuscita."""
+    with failed_logins_lock:
+        failed_logins.pop(username, None)
 
 
 def get_client_ip() -> str:
     """
-    Recupera l'IP del client. 
-    Legge l'header X-Forwarded-For per supportare i test con Locust,
-    altrimenti usa il vero indirizzo IP remoto.
+    Recupera l'IP del client usato dal rate limit.
+
+    Usa l'indirizzo reale della connessione. L'header X-Forwarded-For è letto
+    solo se TRUST_PROXY_HEADERS è attivo (test di carico con Locust): altrimenti
+    un attaccante potrebbe dichiarare un IP diverso a ogni richiesta.
     """
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        # Prende il primo IP se ce ne sono multipli separati da virgola
-        return forwarded_for.split(',')[0].strip()
+    if TRUST_PROXY_HEADERS:
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        if forwarded_for:
+            # Prende il primo IP se ce ne sono multipli separati da virgola
+            return forwarded_for.split(',')[0].strip()
     return request.remote_addr
 
 
@@ -224,8 +286,6 @@ def register():
     """
     global voters_list
     # Check rate limit FIRST
-    #client_ip = request.remote_addr 
-    #Modificato per non far fallire i test di prova con id virtualizzato
     client_ip = get_client_ip()
     if not check_rate_limit(client_ip):
         print(f"[SA] {datetime.now().isoformat()} - Rate limit exceeded for IP {client_ip} (register)")
@@ -318,8 +378,6 @@ def authenticate():
     """
     global issued_tokens
     # Check rate limit FIRST
-    #client_ip = request.remote_addr 
-    #Modificato per non far fallire i test di prova con id virtualizzato
     client_ip = get_client_ip()
     if not check_rate_limit(client_ip):
         print(f"[SA] {datetime.now().isoformat()} - Rate limit exceeded for IP {client_ip} (authenticate)")
@@ -330,16 +388,33 @@ def authenticate():
         username = req_data.get("username")
         password = req_data.get("password")
 
-        # 1. Verifica che le credenziali siano valide
-        voter = None
-        for v in voters_list:
-            if v["username"] == username and verify_password(v["password"], password):
-                voter = v
-                break
+        if not isinstance(username, str) or not isinstance(password, str):
+            return jsonify({"error": "Formato richiesta non valido (Bad Request)"}), 400
+
+        # 0. Account bloccato per troppi tentativi falliti: la password non
+        #    viene nemmeno verificata, così il brute force non avanza.
+        locked_seconds = account_locked_for(username)
+        if locked_seconds:
+            print(f"[SA] {datetime.now().isoformat()} - Account bloccato ({locked_seconds}s residui): {username}")
+            return jsonify({"error": "Troppi tentativi falliti: account temporaneamente bloccato.",
+                            "retry_after_seconds": locked_seconds}), 429
+
+        # 1. Verifica che le credenziali siano valide. PBKDF2 viene eseguito
+        #    anche se lo username non esiste (hash fittizio): il tempo di
+        #    risposta è lo stesso e non rivela quali username sono registrati.
+        candidate = next((v for v in voters_list if v["username"] == username), None)
+        stored_hash = candidate["password"] if candidate else DUMMY_PASSWORD_HASH
+        password_ok = verify_password(stored_hash, password)
+        voter = candidate if (candidate and password_ok) else None
 
         if not voter:
+            # Il contatore vale anche per username inesistenti: il blocco si
+            # comporta allo stesso modo e non permette di enumerare gli account.
+            register_failed_login(username)
             print(f"[SA] {datetime.now().isoformat()} - Autenticazione fallita per username: {username}")
             return jsonify({"error": "Credenziali non valide"}), 401
+
+        reset_failed_logins(username)
 
         # 2. Controllo di unicità e rilascio del token (WP2 Fase 2).
         # Se all'elettore non è ancora stato rilasciato alcun token, ne viene
@@ -387,16 +462,18 @@ def status():
     Endpoint di stato semplice per verificare che il server sia in esecuzione.
 
     Returns:
-        JSON con il numero di token emessi e la lista degli ID degli elettori serviti.
+        JSON con il numero di token emessi (senza l'elenco degli elettori).
     """
+    # Si espone solo il conteggio: l'elenco degli ID a cui è stato rilasciato
+    # un token rivelerebbe a chiunque chi ha partecipato all'elezione.
     return jsonify({
         "status": "online",
-        "issued_tokens": len(issued_tokens),
-        "voters_served": list(issued_tokens)
+        "issued_tokens": len(issued_tokens)
     }), 200
 
 
 @app.route('/reconcile', methods=['POST'])
+@require_admin
 def reconcile():
     """
     Endpoint per la riconciliazione: il SA pubblica sul Bulletin Board il numero totale
@@ -417,6 +494,7 @@ def reconcile():
 
 
 @app.route('/shutdown', methods=['POST'])
+@require_admin
 def shutdown():
     """Termina il server SA in modo controllato."""
     import threading
@@ -446,6 +524,9 @@ if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     print_server_banner()
     load_initial_data()
+    get_or_create_admin_token()
+    if TRUST_PROXY_HEADERS:
+        print("[SA] ATTENZIONE: X-Forwarded-For considerato attendibile (modalità test di carico)")
 
     # Certificati TLS self-signed per HTTPS
     tls_cert = os.path.join("data", "tls", "sa_cert.pem")

@@ -36,6 +36,7 @@ from crypto.keys import load_private_key, load_public_key, deserialize_public_ke
 from crypto.rsa_oaep import decrypt, encrypt
 from crypto.rsa_pss import sign, verify
 from crypto.merkle import MerkleTree
+from admin_auth import get_or_create_admin_token, require_admin
 
 
 app = Flask(__name__)
@@ -418,6 +419,7 @@ def vote():
 
 
 @app.route('/close', methods=['POST'])
+@require_admin
 def close():
     """
     Endpoint per la chiusura delle urne e l'inizio dello scrutinio.
@@ -569,6 +571,7 @@ def status():
 
 
 @app.route('/shutdown', methods=['POST'])
+@require_admin
 def shutdown():
     """Termina il server AE in modo controllato (adatto all'uso locale)."""
     import threading
@@ -600,6 +603,7 @@ if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     print_server_banner()
     load_initial_data()
+    get_or_create_admin_token()
 
     # Certificati TLS self-signed per HTTPS
     tls_cert = os.path.join("data", "tls", "ae_cert.pem")

@@ -25,7 +25,7 @@ def verify_for(url: str) -> str | bool:
         return AE_CERT if os.path.exists(AE_CERT) else True
     return True
 
-from tls_config import ensure_tls_certs
+from tls_config import ensure_tls_certs, admin_headers
 from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
 from client import compute_public_key_fingerprint
@@ -139,8 +139,8 @@ def main():
         
         # 4. Chiusura elezione e scrutinio
         print("Chiusura dell'elezione e riconciliazione...")
-        requests.post("https://localhost:5001/reconcile", verify=verify_for("https://localhost:5001")).raise_for_status()
-        r = requests.post("https://localhost:5002/close", verify=verify_for("https://localhost:5002"))
+        requests.post("https://localhost:5001/reconcile", headers=admin_headers(), verify=verify_for("https://localhost:5001")).raise_for_status()
+        r = requests.post("https://localhost:5002/close", headers=admin_headers(), verify=verify_for("https://localhost:5002"))
         r.raise_for_status()
         close_res = r.json()
         print("Scrutinio completato:", close_res["result"])
@@ -163,11 +163,11 @@ def main():
     finally:
         print("Spegnimento dei server...")
         try:
-            requests.post("https://localhost:5001/shutdown", timeout=2, verify=verify_for("https://localhost:5001"))
+            requests.post("https://localhost:5001/shutdown", headers=admin_headers(), timeout=2, verify=verify_for("https://localhost:5001"))
         except:
             pass
         try:
-            requests.post("https://localhost:5002/shutdown", timeout=2, verify=verify_for("https://localhost:5002"))
+            requests.post("https://localhost:5002/shutdown", headers=admin_headers(), timeout=2, verify=verify_for("https://localhost:5002"))
         except:
             pass
             

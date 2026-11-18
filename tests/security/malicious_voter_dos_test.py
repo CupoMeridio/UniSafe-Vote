@@ -30,7 +30,7 @@ from cryptography.hazmat.primitives import serialization
 
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
-from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs
+from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
 
 BULLETIN_BOARD_PATH = os.path.join(DATA_DIR, "bulletin_board.json")
 VOTERS_PATH         = os.path.join(DATA_DIR, "voters.json")
@@ -152,7 +152,7 @@ def teardown():
     print("\n[TEARDOWN] Chiusura server...")
     for url, proc, name in [(SA_URL, sa_process, "SA"), (AE_URL, ae_process, "AE")]:
         try:
-            requests.post(f"{url}/shutdown", timeout=1,
+            requests.post(f"{url}/shutdown", headers=admin_headers(), timeout=1,
                           verify=(ae_verify() if "5002" in url else sa_verify()))
         except Exception:
             pass
@@ -244,8 +244,8 @@ def main():
         print("    L'AE ha accettato il voto con seed fittizio senza errori.")
 
         print("\n[5] Chiusura delle urne e Scrutinio...")
-        requests.post(f"{SA_URL}/reconcile", verify=sa_verify())
-        r_close = requests.post(f"{AE_URL}/close", verify=ae_verify())
+        requests.post(f"{SA_URL}/reconcile", headers=admin_headers(), verify=sa_verify())
+        r_close = requests.post(f"{AE_URL}/close", headers=admin_headers(), verify=ae_verify())
         assert r_close.status_code == 200
 
         with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
