@@ -22,6 +22,7 @@ import os
 import json
 import hashlib
 import time
+import threading
 from collections import deque
 from datetime import datetime, UTC
 from typing import Optional, Dict, Set, Literal, Deque
@@ -44,6 +45,13 @@ app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # Limita le richieste a 1 MB
 used_tokens: Set[str] = set()  # Set di nonce di token già usati (privato AE)
 merkle_tree = MerkleTree()  # Albero di Merkle per i voti
 urn_open: bool = True  # Stato delle urne (True = aperte, False = chiuse)
+# Il server Flask gestisce le richieste in thread paralleli: questo lock rende
+# atomiche le sezioni critiche (controllo/uso del token, Merkle Tree, scrittura
+# del Bulletin Board e dello stato AE, chiusura delle urne). Senza di esso due
+# richieste concorrenti con lo stesso token potrebbero superare entrambe il
+# controllo di unicità (race condition check-then-act → doppio voto).
+state_lock = threading.Lock()
+pow_lock = threading.Lock()  # Protegge la deque dei timestamp della PoW adattiva
 ae_encrypt_private: Optional[RSAPrivateKey] = None  # Chiave privata per decifrare i voti (caricata solo a urne chiuse)
 ae_sign_private: Optional[RSAPrivateKey] = None  # Chiave privata per firmare blocchi e ricevute
 ae_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica per verificare le firme
@@ -75,11 +83,12 @@ def current_pow_difficulty() -> int:
         int: Numero di bit a zero richiesti dalla PoW.
     """
     now = time.monotonic()
-    # Rimuovi i timestamp più vecchi della finestra
-    while request_timestamps and now - request_timestamps[0] > POW_WINDOW_SECONDS:
-        request_timestamps.popleft()
+    with pow_lock:
+        # Rimuovi i timestamp più vecchi della finestra
+        while request_timestamps and now - request_timestamps[0] > POW_WINDOW_SECONDS:
+            request_timestamps.popleft()
 
-    recent = len(request_timestamps)
+        recent = len(request_timestamps)
     if recent <= POW_RATE_THRESHOLD:
         return POW_MIN_DIFFICULTY
 
@@ -123,7 +132,7 @@ def load_initial_data() -> None:
     - Chiave pubblica del SA (per verificare i token)
     """
     global ae_encrypt_private, ae_sign_private, ae_sign_public, sa_sign_public
-    global opening_time, closing_time
+    global opening_time, closing_time, merkle_tree, urn_open
     print("[AE] Caricamento dati iniziali...")
 
     # Carica la coppia di chiavi per la firma dell'AE
@@ -142,6 +151,24 @@ def load_initial_data() -> None:
     # un eventuale riavvio del server, senza pubblicare identificatori nel
     # Bulletin Board.
     load_ae_state()
+
+    # Ricostruisce il Merkle Tree dai blocchi voto già presenti nel Bulletin
+    # Board. Senza questo passaggio, dopo un riavvio l'albero ripartirebbe
+    # vuoto: la Merkle Root finale escluderebbe i voti precedenti e la
+    # verifica universale fallirebbe.
+    merkle_tree = MerkleTree()
+    for block in bb:
+        if block.get("type") == "vote":
+            record_bytes = json.dumps(block["data"], sort_keys=True).encode('utf-8')
+            merkle_tree.add_leaf(record_bytes)
+    if merkle_tree.leaves:
+        print(f"[AE] Merkle Tree ricostruito dal Bulletin Board: {len(merkle_tree.leaves)} voti")
+
+    # Se la Merkle Root finale è già stata pubblicata, le urne sono chiuse:
+    # un riavvio non deve riaprirle.
+    if any(block.get("type") == "merkle_root" for block in bb):
+        urn_open = False
+        print("[AE] Merkle Root finale già pubblicata: urne chiuse")
 
     print("[AE] Pronto sulla porta 5002")
 
@@ -284,7 +311,8 @@ def vote():
             return jsonify({"error": "Proof of Work invalida"}), 400
 
         # PoW valida: registra la richiesta per l'adattamento della difficoltà
-        request_timestamps.append(time.monotonic())
+        with pow_lock:
+            request_timestamps.append(time.monotonic())
 
         # 2. Verifica la firma del token con la chiave pubblica del SA
         token_bytes = token.encode('utf-8')
@@ -315,38 +343,61 @@ def vote():
         # ancora usato corrisponde a un elettore che non ha ancora votato. L'AE
         # non conosce alcun identificatore dell'elettore, preservando l'anonimato.
         token_identifier = token_obj['nonce']
-        if token_identifier in used_tokens:
-            print(f"[AE] {datetime.now().isoformat()} - Token già usato")
-            return jsonify({"error": "Token già usato"}), 409
 
-        # 5. Tutte le verifiche sono andate a buon fine:
-        # aggiungi il voto al Merkle Tree e al Bulletin Board.
-        # Il Bulletin Board resta pseudoanonimo: non pubblica il nonce del token,
-        # che rimane solo nello stato privato AE.
-        vote_record = {
-            "enc_vote": enc_vote,
-            "enc_seed": enc_seed,
-            "timestamp": datetime.now(UTC).isoformat()
-        }
+        # Sezione critica: controllo di unicità del token, inserimento nel
+        # Merkle Tree, scrittura del Bulletin Board e marcatura del token devono
+        # avvenire in modo atomico rispetto alle altre richieste e a /close.
+        with state_lock:
+            # Ricontrolla lo stato delle urne: /close potrebbe essere stato
+            # eseguito mentre questa richiesta verificava PoW e firma.
+            if not urn_open:
+                return jsonify({"error": "Urne chiuse"}), 403
 
-        record_bytes = json.dumps(vote_record, sort_keys=True).encode('utf-8')
-        leaf_index = merkle_tree.add_leaf(record_bytes)
+            if token_identifier in used_tokens:
+                print(f"[AE] {datetime.now().isoformat()} - Token già usato")
+                return jsonify({"error": "Token già usato"}), 409
 
-        # Salva il voto sul Bulletin Board
-        append_to_bulletin_board("vote", vote_record)
+            # 5. Tutte le verifiche sono andate a buon fine:
+            # aggiungi il voto al Merkle Tree e al Bulletin Board.
+            # Il Bulletin Board resta pseudoanonimo: non pubblica il nonce del token,
+            # che rimane solo nello stato privato AE.
+            vote_record = {
+                "enc_vote": enc_vote,
+                "enc_seed": enc_seed,
+                "timestamp": datetime.now(UTC).isoformat()
+            }
 
-        # Marca il token come usato per evitare riutilizzi. Il nonce è un
-        # identificatore opaco e non viene pubblicato sul Bulletin Board.
-        used_tokens.add(token_identifier)
-        save_ae_state()
+            record_bytes = json.dumps(vote_record, sort_keys=True).encode('utf-8')
+            leaf_index = merkle_tree.add_leaf(record_bytes)
 
-        # Genera la ricevuta per l'elettore, con la Merkle Proof
-        merkle_proof = merkle_tree.get_proof(leaf_index)
+            # Salva il voto sul Bulletin Board
+            append_to_bulletin_board("vote", vote_record)
+
+            # Marca il token come usato per evitare riutilizzi. Il nonce è un
+            # identificatore opaco e non viene pubblicato sul Bulletin Board.
+            used_tokens.add(token_identifier)
+            save_ae_state()
+
+            # Fotografia dell'albero al momento del voto: proof, numero di
+            # foglie e root corrispondente. La proof è valida rispetto a QUESTA
+            # root, non alla root finale (che include i voti successivi).
+            merkle_proof = merkle_tree.get_proof(leaf_index)
+            tree_size = len(merkle_tree.leaves)
+            merkle_root_at_vote = merkle_tree.get_root()
+
+        # Genera la ricevuta per l'elettore. Includere (tree_size,
+        # merkle_root_at_vote) nella ricevuta firmata permette all'elettore, a
+        # urne chiuse, di verificare che i primi tree_size voti del Bulletin
+        # Board producano ancora la stessa root (il registro non è stato
+        # riscritto dopo il suo voto) e che il suo voto sia incluso nella root
+        # finale.
         timestamp_str = datetime.now(UTC).isoformat()
         receipt_data = {
             "leaf_index": leaf_index,
             "enc_vote": enc_vote,
             "merkle_proof": merkle_proof,
+            "tree_size": tree_size,
+            "merkle_root_at_vote": merkle_root_at_vote,
             "timestamp": timestamp_str
         }
 
@@ -356,13 +407,7 @@ def vote():
 
         print(f"[AE] {datetime.now().isoformat()} - Voto accettato, leaf index: {leaf_index}")
 
-        return jsonify({
-            "leaf_index": leaf_index,
-            "enc_vote": enc_vote,
-            "merkle_proof": merkle_proof,
-            "timestamp": timestamp_str,
-            "ae_signature": receipt_signature.hex()
-        }), 200
+        return jsonify({**receipt_data, "ae_signature": receipt_signature.hex()}), 200
 
     except (ValueError, KeyError, TypeError, AttributeError) as e:
         print(f"[AE] Errore di validazione (400): {str(e)}")
@@ -388,6 +433,15 @@ def close():
     Returns:
         JSON con lo stato e i risultati aggregati
     """
+    # L'intera chiusura è eseguita sotto lock: nessun voto può essere aggiunto
+    # tra il calcolo della Merkle Root finale e lo scrutinio, e due chiamate
+    # concorrenti a /close non possono avviare due scrutini.
+    with state_lock:
+        return _close_locked()
+
+
+def _close_locked():
+    """Implementazione di /close; va chiamata solo tenendo state_lock."""
     global urn_open, ae_encrypt_private
     # Verifica che le urne non siano già chiuse
     if not urn_open:

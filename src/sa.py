@@ -25,6 +25,7 @@ from collections import deque
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from flask import Flask, request, jsonify
 import sys
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -49,6 +50,14 @@ RATE_LIMIT_WINDOW_SECONDS = 60  # 1 minute window
 RATE_LIMIT_MAX_REQUESTS = 10     # Max 10 requests per window per IP
 # Stores request timestamps per IP: { "127.0.0.1": deque([timestamps]) }
 rate_limit_store: Dict[str, deque] = {}
+
+# Il server Flask è multi-thread: questo lock rende atomiche le sezioni che
+# leggono e modificano lo stato condiviso (lista elettori, token emessi,
+# file voters.json, rate limit). Senza di esso due autenticazioni concorrenti
+# dello stesso elettore potrebbero ottenere due token distinti (doppio voto)
+# e due registrazioni concorrenti potrebbero creare utenti duplicati.
+state_lock = threading.Lock()
+rate_limit_lock = threading.Lock()
 
 
 def load_initial_data() -> None:
@@ -135,19 +144,20 @@ def check_rate_limit(ip_address: str) -> bool:
     Returns True if request is allowed, False otherwise.
     """
     now = datetime.now(UTC)
-    # Clean up old timestamps first
-    if ip_address not in rate_limit_store:
-        rate_limit_store[ip_address] = deque()
-    timestamps = rate_limit_store[ip_address]
-    # Remove timestamps older than window
-    while timestamps and (now - timestamps[0]).total_seconds() > RATE_LIMIT_WINDOW_SECONDS:
-        timestamps.popleft()
-    # Check if we're still over limit
-    if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
-        return False
-    # Add current timestamp and allow
-    timestamps.append(now)
-    return True
+    with rate_limit_lock:
+        # Clean up old timestamps first
+        if ip_address not in rate_limit_store:
+            rate_limit_store[ip_address] = deque()
+        timestamps = rate_limit_store[ip_address]
+        # Remove timestamps older than window
+        while timestamps and (now - timestamps[0]).total_seconds() > RATE_LIMIT_WINDOW_SECONDS:
+            timestamps.popleft()
+        # Check if we're still over limit
+        if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
+            return False
+        # Add current timestamp and allow
+        timestamps.append(now)
+        return True
 
 
 def get_client_ip() -> str:
@@ -237,33 +247,41 @@ def register():
             print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: campi mancanti")
             return jsonify({"error": "Username e password sono obbligatori"}), 400
 
-        # 3. Verifica che l'username non sia già in uso
-        for v in voters_list:
-            if v["username"] == username:
-                print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: username {username} già esistente")
-                return jsonify({"error": "Username già in uso"}), 409
+        # L'hash PBKDF2 (costoso) è calcolato fuori dal lock, per non
+        # serializzare le registrazioni concorrenti.
+        password_hash = hash_password(password)
 
-        # 4. Verifica che l'email non sia già registrata
-        for v in voters_list:
-            if "email" in v and v["email"] == email:
-                print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: email {email} già registrata")
-                return jsonify({"error": "Email già registrata"}), 409
+        # Sezione critica: controlli di unicità, assegnazione dell'ID
+        # progressivo e salvataggio devono essere atomici, altrimenti due
+        # registrazioni concorrenti potrebbero superare entrambe i controlli.
+        with state_lock:
+            # 3. Verifica che l'username non sia già in uso
+            for v in voters_list:
+                if v["username"] == username:
+                    print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: username {username} già esistente")
+                    return jsonify({"error": "Username già in uso"}), 409
 
-        # 5. Crea il nuovo elettore con un ID progressivo. Il token NON viene
-        #    generato qui: sarà rilasciato solo al momento dell'autenticazione
-        #    (WP2 Fase 2), così che la sua finestra di validità decorra dal
-        #    rilascio effettivo.
-        new_id = f"v{len(voters_list) + 1:03d}"
-        new_voter = {
-            "id": new_id,
-            "email": email,
-            "username": username,
-            "password": hash_password(password)
-        }
-        voters_list.append(new_voter)
+            # 4. Verifica che l'email non sia già registrata
+            for v in voters_list:
+                if "email" in v and v["email"] == email:
+                    print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: email {email} già registrata")
+                    return jsonify({"error": "Email già registrata"}), 409
 
-        # 6. Salva la lista aggiornata sul file
-        save_voters_list()
+            # 5. Crea il nuovo elettore con un ID progressivo. Il token NON viene
+            #    generato qui: sarà rilasciato solo al momento dell'autenticazione
+            #    (WP2 Fase 2), così che la sua finestra di validità decorra dal
+            #    rilascio effettivo.
+            new_id = f"v{len(voters_list) + 1:03d}"
+            new_voter = {
+                "id": new_id,
+                "email": email,
+                "username": username,
+                "password": password_hash
+            }
+            voters_list.append(new_voter)
+
+            # 6. Salva la lista aggiornata sul file
+            save_voters_list()
 
         print(f"[SA] {datetime.now().isoformat()} - Nuovo elettore registrato: {username} ({email})")
         return jsonify({"message": "Registrazione completata con successo."}), 201
@@ -331,12 +349,17 @@ def authenticate():
         # di recuperare la propria credenziale per la verifica della ricevuta.
         # Un token scaduto NON viene rinnovato: sarà rifiutato dall'AE, come
         # previsto dalla mitigazione sulla validità temporale del WP2.
-        token = voter.get("token")
-        if not isinstance(token, dict):
-            token = create_token_for_voter()
-            voter["token"] = token
-            issued_tokens.add(voter["id"])
-            save_voters_list()
+        # Sezione critica: il controllo "token già rilasciato?" e il rilascio
+        # devono essere atomici. Senza lock, due autenticazioni concorrenti
+        # dello stesso elettore vedrebbero entrambe token assente e
+        # otterrebbero due token distinti, entrambi validi presso l'AE.
+        with state_lock:
+            token = voter.get("token")
+            if not isinstance(token, dict):
+                token = create_token_for_voter()
+                voter["token"] = token
+                issued_tokens.add(voter["id"])
+                save_voters_list()
 
         # 3. Firma il token con la chiave privata del SA
         token_json_str = json.dumps(token, sort_keys=True)
@@ -380,11 +403,12 @@ def reconcile():
     di token emessi, firmando digitalmente questo conteggio.
     """
     try:
-        total_tokens = len(issued_tokens)
-        block_data = {
-            "total_tokens": total_tokens
-        }
-        append_to_bulletin_board("reconciliation_sa", block_data)
+        with state_lock:
+            total_tokens = len(issued_tokens)
+            block_data = {
+                "total_tokens": total_tokens
+            }
+            append_to_bulletin_board("reconciliation_sa", block_data)
         print(f"[SA] Riconciliazione completata: {total_tokens} token emessi")
         return jsonify({"status": "success", "total_tokens": total_tokens}), 200
     except Exception as e:

@@ -31,7 +31,7 @@ from cryptography.hazmat.primitives import serialization
 from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import verify
-from crypto.merkle import verify_proof
+from crypto.merkle import MerkleTree, verify_proof
 SA_URL: str = "https://localhost:5001"  # URL del Sistema di Autenticazione
 AE_URL: str = "https://localhost:5002"  # URL dell'Autorità Elettorale
 BULLETIN_BOARD_PATH: str = "data/bulletin_board.json"
@@ -540,12 +540,10 @@ class Client:
                 return
 
             # 2. Verifica la firma della ricevuta con la chiave pubblica dell'AE
-            receipt_data_to_verify = {
-                "leaf_index": receipt['leaf_index'],
-                "enc_vote": receipt['enc_vote'],
-                "merkle_proof": receipt['merkle_proof'],
-                "timestamp": receipt['timestamp']
-            }
+            # La firma copre tutti i campi della ricevuta tranne la firma stessa
+            # (compatibile sia con le ricevute nuove, che includono tree_size e
+            # merkle_root_at_vote, sia con quelle del formato precedente).
+            receipt_data_to_verify = {k: v for k, v in receipt.items() if k != 'ae_signature'}
             receipt_json = json.dumps(receipt_data_to_verify, sort_keys=True).encode('utf-8')
             receipt_signature = bytes.fromhex(receipt['ae_signature'])
 
@@ -553,24 +551,54 @@ class Client:
                 print("\nVerifica firma ricevuta fallita!")
                 return
 
-            # 3. Ottieni il record del voto dal Bulletin Board per calcolare la foglia
-            vote_record = None
-            for block in self.bb:
-                if block['type'] == 'vote' and block['data']['enc_vote'] == receipt['enc_vote']:
-                    vote_record = block['data']
-                    break
-
-            if not vote_record:
-                print("\nScheda non trovata nel Bulletin Board!")
+            # 3. Ottieni il record del voto dal Bulletin Board, nella posizione
+            #    indicata dalla ricevuta firmata (leaf_index).
+            vote_blocks = [block for block in self.bb if block['type'] == 'vote']
+            leaf_index = receipt['leaf_index']
+            if not (0 <= leaf_index < len(vote_blocks)) or \
+                    vote_blocks[leaf_index]['data']['enc_vote'] != receipt['enc_vote']:
+                print("\nScheda non trovata nel Bulletin Board alla posizione indicata dalla ricevuta!")
                 return
 
-            # 4. Calcola l'hash della foglia e verifica la Merkle Proof
+            vote_record = vote_blocks[leaf_index]['data']
             record_bytes = json.dumps(vote_record, sort_keys=True).encode('utf-8')
             leaf_hash = hashlib.sha256(record_bytes).digest()
-            proof = receipt['merkle_proof']
 
-            if not verify_proof(leaf_hash, proof, merkle_root):
-                print("\nVerifica Merkle Proof fallita!")
+            # 4. Verifica Merkle. La proof nella ricevuta è relativa all'albero
+            #    AL MOMENTO DEL VOTO (i voti successivi cambiano il percorso),
+            #    quindi va verificata contro merkle_root_at_vote, non contro la
+            #    root finale. Si controlla poi che il registro non sia stato
+            #    riscritto e che il voto sia incluso nella root finale.
+            rebuilt = MerkleTree()
+            prefix_root = None
+            tree_size = receipt.get('tree_size')
+            for i, block in enumerate(vote_blocks):
+                rebuilt.add_leaf(json.dumps(block['data'], sort_keys=True).encode('utf-8'))
+                if tree_size is not None and i + 1 == tree_size:
+                    prefix_root = rebuilt.get_root()
+
+            if 'merkle_root_at_vote' in receipt and tree_size is not None:
+                # 4a. La proof firmata dimostra l'inclusione nella root del momento del voto
+                if not verify_proof(leaf_hash, receipt['merkle_proof'], receipt['merkle_root_at_vote']):
+                    print("\nVerifica Merkle Proof della ricevuta fallita!")
+                    return
+                # 4b. Consistenza: i primi tree_size voti del Bulletin Board
+                #     producono ancora la root firmata nella ricevuta, cioè il
+                #     registro non è stato alterato dopo il voto.
+                if prefix_root != receipt['merkle_root_at_vote']:
+                    print("\nIl Bulletin Board non è coerente con la root registrata al momento del voto!")
+                    return
+            else:
+                print("\nRicevuta nel formato precedente (senza root al momento del voto): "
+                      "si verifica solo l'inclusione nella root finale.")
+
+            # 4c. La ricostruzione dal Bulletin Board produce la root finale
+            #     firmata e il voto è incluso in essa.
+            if rebuilt.get_root() != merkle_root:
+                print("\nLa Merkle Root finale non corrisponde ai voti del Bulletin Board!")
+                return
+            if not verify_proof(leaf_hash, rebuilt.get_proof(leaf_index), merkle_root):
+                print("\nVerifica Merkle Proof contro la root finale fallita!")
                 return
 
             # 5. Ottieni e verifica il blocco 'scrutinio'
