@@ -78,6 +78,7 @@ CANDIDATES = ["Lista A", "Lista B", "Lista C"]
 
 sa_process = None
 ae_process = None
+EXPIRED_VOTER_NONCE = "e" * 32  # nonce del token già scaduto di VOTERS[2] (TEST 4)
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +117,19 @@ def setup():
     # init_election.py, chiave di decifratura protetta solo dall'escrow
     # Shamir (nessuna copia in chiaro su disco).
     init_data = create_test_election("token_hoarding_test", VOTERS, CANDIDATES)
+
+    # Per il TEST 4 l'elettore VOTERS[2] risulta essersi autenticato più di
+    # 30 minuti fa senza votare: il suo token è già scaduto all'avvio del SA.
+    with open(VOTERS_PATH, "r", encoding="utf-8") as f:
+        stored = json.load(f)
+    stored[2]["token"] = {
+        "election_id": "token_hoarding_test",
+        "nonce": EXPIRED_VOTER_NONCE,
+        "issued_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+        "expires_at": (datetime.now(UTC) - timedelta(minutes=30)).isoformat(),
+    }
+    with open(VOTERS_PATH, "w", encoding="utf-8") as f:
+        json.dump(stored, f, indent=2)
 
     # Si avvia il SA e si attende che risponda su /status.
     sa_process = subprocess.Popen(
@@ -389,6 +403,35 @@ def main():
         print("\n  [PASS] TEST 3: voto legittimo accettato e ricevuta firmata dall'AE.")
 
         # ------------------------------------------------------------------ #
+        # TEST 4 — Rinnovo del token scaduto con lo STESSO nonce              #
+        # ------------------------------------------------------------------ #
+        print("\n" + "-" * 80)
+        print("TEST 4 — Token scaduto senza aver votato: rinnovo con lo stesso nonce")
+        print("-" * 80)
+        late_voter = VOTERS[2]
+        print(f"  {late_voter['username']} si era autenticato 1 ora fa (token scaduto da 30 minuti, nonce {EXPIRED_VOTER_NONCE[:12]}...)")
+        r_renew = requests.post(f"{SA_URL}/authenticate",
+                                json={"username": late_voter["username"], "password": late_voter["password"]},
+                                verify=sa_verify())
+        renewed_token = r_renew.json()["token"]
+        renewed_obj = json.loads(renewed_token)
+        same_nonce = renewed_obj["nonce"] == EXPIRED_VOTER_NONCE
+        not_expired = datetime.fromisoformat(renewed_obj["expires_at"]) > datetime.now(UTC)
+        print(f"  Token restituito: nonce {renewed_obj['nonce'][:12]}... (stesso: {same_nonce}), "
+              f"scadenza {renewed_obj['expires_at']} (valido: {not_expired})")
+        r_first = requests.post(f"{AE_URL}/vote", json=create_vote_payload(renewed_token, r_renew.json()["signature"], ae_pubkey),
+                                verify=ae_verify())
+        print(f"  Voto con il token rinnovato:                    HTTP {r_first.status_code}")
+        r_again = requests.post(f"{SA_URL}/authenticate",
+                                json={"username": late_voter["username"], "password": late_voter["password"]},
+                                verify=sa_verify())
+        r_second = requests.post(f"{AE_URL}/vote", json=create_vote_payload(r_again.json()["token"], r_again.json()["signature"], ae_pubkey),
+                                 verify=ae_verify())
+        print(f"  Secondo voto dopo una nuova autenticazione:      HTTP {r_second.status_code} — {r_second.json().get('error')}")
+        test4_pass = same_nonce and not_expired and r_first.status_code == 200 and r_second.status_code == 409
+        print(f"\n  {'[PASS]' if test4_pass else '[FAIL]'} TEST 4: l'elettore ritardatario può votare una sola volta.")
+
+        # ------------------------------------------------------------------ #
         # Riepilogo                                                           #
         # ------------------------------------------------------------------ #
         print("\n" + "=" * 80)
@@ -397,6 +440,8 @@ def main():
         print(f"  TEST 1 — Token Hoarding:     [PASS]  stesso nonce ({token1_obj['nonce'][:16]}...)")
         print(f"  TEST 2 — Token scaduto:      [PASS]  HTTP 401 — {expired_resp.json().get('error')}")
         print(f"  TEST 3 — Voto legittimo:     [PASS]  HTTP 200 — leaf_index {receipt.get('leaf_index')}")
+        print(f"  TEST 4 — Rinnovo token:      [{'PASS' if test4_pass else 'FAIL'}]  stesso nonce, "
+              f"voto {r_first.status_code}, secondo voto {r_second.status_code}")
         print("\n  La politica use-it-or-lose-it è rispettata:")
         print("  · un elettore ottiene al massimo un token per elezione;")
         print("  · il token ha una finestra temporale di 30 minuti;")
@@ -406,7 +451,8 @@ def main():
         save_report(
             test_id="token_hoarding",
             test_name="Token Hoarding & Expired Token Exploitation (Use-it-or-Lose-it Policy)",
-            outcome="PASS",
+            # I test 1-3 interrompono l'esecuzione con assert se falliscono.
+            outcome="PASS" if test4_pass else "FAIL",
             details={
                 "voter": test_voter["username"],
                 "test1_hoarding": {
@@ -430,6 +476,13 @@ def main():
                     "leaf_index":        receipt.get("leaf_index"),
                     "merkle_proof_nodes": len(receipt.get("merkle_proof", [])),
                     "passed":            valid_resp.status_code == 200,
+                },
+                "test4_expired_token_renewal": {
+                    "same_nonce":            same_nonce,
+                    "renewed_not_expired":   not_expired,
+                    "vote_http_status":      r_first.status_code,
+                    "second_vote_http_status": r_second.status_code,
+                    "passed":                test4_pass,
                 },
             },
         )

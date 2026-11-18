@@ -45,6 +45,8 @@ issued_tokens: Set[str] = set()  # ID elettori a cui è già stato rilasciato un
 sa_sign_private: Optional[RSAPrivateKey] = None  # Chiave privata del SA per firmare i token
 voters_list: List[Dict[str, str]] = []  # Lista degli elettori (caricata da voters.json)
 election_id: str = ""  # ID dell'elezione (caricato dal Bulletin Board)
+closing_time: Optional[datetime] = None  # Chiusura delle urne (dal blocco init)
+reconciled: bool = False  # True dopo /reconcile: elezione conclusa, registrazioni chiuse
 TOKEN_VALIDITY_MINUTES: int = 30  # Finestra di validità breve del token
 
 # Rate Limiting configuration
@@ -92,7 +94,7 @@ def load_initial_data() -> None:
     - Lista degli elettori da voters.json
     - ID dell'elezione dal Bulletin Board
     """
-    global sa_sign_private, voters_list, election_id
+    global sa_sign_private, voters_list, election_id, closing_time, reconciled
     print("[SA] Caricamento dati iniziali...")
 
     # Carica la chiave privata del SA
@@ -106,6 +108,8 @@ def load_initial_data() -> None:
     with open("data/bulletin_board.json", "r", encoding="utf-8") as f:
         bb = json.load(f)
         election_id = bb[0]["data"]["election_id"]
+        closing_time = datetime.fromisoformat(bb[0]["data"]["closing_time"])
+        reconciled = any(block.get("type") == "reconciliation_sa" for block in bb)
 
     # Ricostruisce l'elenco degli elettori a cui è già stato rilasciato un token
     # (persistito in voters.json) per far rispettare il controllo di unicità anche
@@ -291,6 +295,12 @@ def register():
         print(f"[SA] {datetime.now().isoformat()} - Rate limit exceeded for IP {client_ip} (register)")
         return jsonify({"error": "Troppe richieste. È necessario riprovare più tardi."}), 429
 
+    # Le registrazioni sono chiuse a elezione conclusa: dopo la chiusura delle
+    # urne o la riconciliazione non avrebbe senso creare nuovi elettori, e un
+    # account creato dopo la riconciliazione altererebbe il conteggio pubblicato.
+    if reconciled or (closing_time is not None and datetime.now(UTC) > closing_time):
+        return jsonify({"error": "Registrazioni chiuse: l'elezione è conclusa"}), 403
+
     try:
         req_data = request.get_json()
         email = req_data.get("email")
@@ -422,8 +432,13 @@ def authenticate():
         # già, viene restituito quello: il SA non rilascia mai una seconda
         # credenziale distinta (un elettore = un token), ma consente all'elettore
         # di recuperare la propria credenziale per la verifica della ricevuta.
-        # Un token scaduto NON viene rinnovato: sarà rifiutato dall'AE, come
-        # previsto dalla mitigazione sulla validità temporale del WP2.
+        # Un token scaduto viene RINNOVATO mantenendo lo STESSO nonce: cambia
+        # solo la finestra di validità. Il nonce è ciò su cui l'AE impone
+        # l'unicità del voto, quindi il rinnovo non crea una seconda
+        # credenziale: se l'elettore aveva già votato, il token rinnovato viene
+        # rifiutato con 409. Così chi si è autenticato senza votare entro la
+        # finestra non resta escluso dall'elezione, e la breve validità del
+        # token continua a limitare l'utilità di un token intercettato.
         # Sezione critica: il controllo "token già rilasciato?" e il rilascio
         # devono essere atomici. Senza lock, due autenticazioni concorrenti
         # dello stesso elettore vedrebbero entrambe token assente e
@@ -435,6 +450,13 @@ def authenticate():
                 voter["token"] = token
                 issued_tokens.add(voter["id"])
                 save_voters_list()
+            elif datetime.now(UTC) > datetime.fromisoformat(token["expires_at"]):
+                renewed = create_token_for_voter()
+                renewed["nonce"] = token["nonce"]  # stesso nonce: nessuna nuova credenziale
+                token = renewed
+                voter["token"] = token
+                save_voters_list()
+                print(f"[SA] {datetime.now().isoformat()} - Token scaduto rinnovato (stesso nonce) per voter_id: {voter['id']}")
 
         # 3. Firma il token con la chiave privata del SA
         token_json_str = json.dumps(token, sort_keys=True)
@@ -486,6 +508,8 @@ def reconcile():
                 "total_tokens": total_tokens
             }
             append_to_bulletin_board("reconciliation_sa", block_data)
+            global reconciled
+            reconciled = True
         print(f"[SA] Riconciliazione completata: {total_tokens} token emessi")
         return jsonify({"status": "success", "total_tokens": total_tokens}), 200
     except Exception as e:

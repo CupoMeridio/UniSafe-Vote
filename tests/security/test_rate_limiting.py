@@ -15,7 +15,8 @@ Fase 4 — Enumerazione degli username tramite i tempi di risposta: un login
          esistente (PBKDF2 eseguito comunque su un hash fittizio).
 Fase 5 — Endpoint amministrativi: /reconcile e /shutdown rispondono HTTP 403
          senza token amministrativo o con un token errato, e funzionano solo
-         con il token corretto (header X-Admin-Token).
+         con il token corretto (header X-Admin-Token). Dopo la riconciliazione
+         l'elezione è conclusa e /register risponde HTTP 403.
 
 Il rate limit e i contatori sono in memoria: il SA viene riavviato tra una fase
 e l'altra, così ogni fase parte da una finestra pulita.
@@ -204,9 +205,17 @@ def main():
             print(f"  {label:<32} HTTP {r.status_code}  (atteso {expected})  {'✓' if ok else '✗'}")
         alive = requests.get(f"{SA_URL}/status", timeout=5, verify=sa_verify()).status_code == 200
         print(f"  SA ancora attivo dopo /shutdown non autorizzato: {'sì' if alive else 'no'}")
-        phase5 = all(c["ok"] for c in admin_results) and alive
+        # Dopo la riconciliazione l'elezione è conclusa: nessuna nuova registrazione.
+        r = requests.post(f"{SA_URL}/register", json={"email": "nuovo.utente@studenti.unisa.it",
+                                                      "username": "nuovo.utente", "password": "Password!2026"},
+                          timeout=10, verify=sa_verify())
+        registration_closed = r.status_code == 403
+        print(f"  /register dopo la riconciliazione       HTTP {r.status_code}  (atteso 403)  "
+              f"{'✓' if registration_closed else '✗'}  {r.json().get('error', '')}")
+        phase5 = all(c["ok"] for c in admin_results) and alive and registration_closed
         print(f"  {'[PASS]' if phase5 else '[FAIL]'} Fase 5")
         results["phase5_admin_endpoints"] = {"checks": admin_results, "alive_after_unauthorized_shutdown": alive,
+                                             "registration_closed_after_reconcile": registration_closed,
                                              "passed": phase5}
 
         passed = phase1 and phase2 and phase3 and phase4 and phase5
