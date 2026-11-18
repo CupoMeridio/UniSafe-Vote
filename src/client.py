@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from cryptography.hazmat.primitives import serialization
 from crypto.keys import deserialize_public_key
-from crypto.rsa_oaep import encrypt
+from crypto.rsa_oaep import encrypt, verify_raw_decryption, oaep_decode, modulus_length
 from crypto.rsa_pss import verify
 from crypto.merkle import MerkleTree, verify_proof
 SA_URL: str = "https://localhost:5001"  # URL del Sistema di Autenticazione
@@ -650,9 +650,32 @@ class Client:
 
             # Converti voto chiaro e seed in bytes
             voto_chiaro_str = matching.get('voto_chiaro')
+
+            # 6a. Decifratura verificabile: l'AE pubblica EM = c^d mod n. Con la
+            #     sola chiave pubblica si controlla che EM^e mod n == c e si
+            #     decodifica EM in modo indipendente: il contenuto ricavato deve
+            #     coincidere con quello dichiarato dall'AE (anche per le nulle).
+            em_hex = matching.get('em')
+            if em_hex is not None:
+                enc_vote_bytes = bytes.fromhex(receipt['enc_vote'])
+                em_bytes = bytes.fromhex(em_hex)
+                if not verify_raw_decryption(self.ae_encrypt_public, enc_vote_bytes, em_bytes):
+                    print("\nERRORE: la decifratura pubblicata (EM) non corrisponde alla tua scheda!")
+                    return False
+                try:
+                    _, plain = oaep_decode(em_bytes, modulus_length(self.ae_encrypt_public))
+                except ValueError:
+                    plain = b""
+                expected = (self.candidates[plain[0]]
+                            if len(plain) == 1 and plain[0] < len(self.candidates) else "Scheda nulla")
+                print(f"Contenuto ricavato dalla decifratura pubblicata (EM): {expected}")
+                if expected != voto_chiaro_str:
+                    print("\nERRORE: l'AE dichiara un contenuto diverso da quello della tua scheda!")
+                    return False
+
             if voto_chiaro_str == "Scheda nulla":
-                print("\nNota: Questa è una scheda nulla, non verifichiamo la corrispondenza crittografica (non abbiamo un indice di candidato valido).")
-                # Ma gli altri controlli sono già passati (Firma ricevuta, Merkle Proof, incluso nel scrutinio)
+                print("\nNota: scheda nulla. Il contenuto è stato verificato tramite EM;"
+                      " non c'è un indice di candidato da ricifrare.")
             else:
                 voto_chiaro_index = int(self.candidates.index(voto_chiaro_str))  # indice (es: 0,1,2)
                 voto_chiaro_bytes = voto_chiaro_index.to_bytes(1, byteorder='big')

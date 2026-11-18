@@ -115,6 +115,24 @@ def _eme_oaep_decode(em: bytes, k: int) -> bytes:
     Returns:
         bytes: Messaggio originale.
     """
+    return oaep_decode(em, k)[1]
+
+
+def oaep_decode(em: bytes, k: int):
+    """
+    Decodifica EME-OAEP restituendo anche il seed di padding.
+
+    Il seed viene ricavato dal blocco codificato stesso (seed = maskedSeed XOR
+    MGF1(maskedDB)): chi conosce EM conosce sia il messaggio sia il seed.
+
+    Returns:
+        tuple: (seed, messaggio)
+
+    Raises:
+        ValueError: se EM non è un blocco OAEP valido.
+    """
+    if len(em) != k:
+        raise ValueError("Errore di decodifica OAEP")
     l_hash = _HASH(b"").digest()
 
     y = em[0]
@@ -137,7 +155,7 @@ def _eme_oaep_decode(em: bytes, k: int) -> bytes:
     if y != 0 or l_hash_prime != l_hash or i >= len(db) or db[i] != 1:
         raise ValueError("Errore di decodifica OAEP")
 
-    return db[i + 1:]
+    return seed, db[i + 1:]
 
 
 def encrypt(public_key: RSAPublicKey, plaintext_bytes: bytes, seed: bytes = None) -> bytes:
@@ -177,6 +195,53 @@ def encrypt(public_key: RSAPublicKey, plaintext_bytes: bytes, seed: bytes = None
     m = _os2ip(em)
     c = pow(m, e, n)
     return _i2osp(c, k)
+
+
+def modulus_length(public_key: RSAPublicKey) -> int:
+    """Lunghezza in byte del modulo RSA (k nella notazione di RFC 8017)."""
+    return (public_key.public_numbers().n.bit_length() + 7) // 8
+
+
+def is_valid_ciphertext(public_key: RSAPublicKey, ciphertext_bytes: bytes) -> bool:
+    """
+    Controlla che un ciphertext sia ben formato: lungo esattamente k byte e,
+    come intero, minore del modulo n (RFC 8017, Sez. 7.1.2, passo 1).
+    """
+    n = public_key.public_numbers().n
+    return len(ciphertext_bytes) == modulus_length(public_key) and _os2ip(ciphertext_bytes) < n
+
+
+def raw_decrypt(private_key: RSAPrivateKey, ciphertext_bytes: bytes) -> bytes:
+    """
+    Primitiva RSADP: restituisce il blocco codificato EM = c^d mod n, PRIMA
+    della decodifica OAEP.
+
+    Pubblicare EM rende la decifratura VERIFICABILE DA CHIUNQUE, senza la
+    chiave privata: basta controllare che EM^e mod n == c (verify_raw_decryption)
+    e decodificare EM con oaep_decode. In questo modo l'AE non può attribuire a
+    una scheda un contenuto diverso da quello reale, né dichiarare nulla una
+    scheda valida.
+    """
+    numbers = private_key.private_numbers()
+    n = private_key.public_key().public_numbers().n
+    k = (n.bit_length() + 7) // 8
+    return _i2osp(pow(_os2ip(ciphertext_bytes), numbers.d, n), k)
+
+
+def verify_raw_decryption(public_key: RSAPublicKey, ciphertext_bytes: bytes, em: bytes) -> bool:
+    """
+    Verifica pubblica di una decifratura: True se EM è davvero c^d mod n,
+    controllando con la sola chiave pubblica che EM^e mod n == c.
+
+    Poiché RSA è una permutazione su Z_n, per ogni c esiste un solo EM che
+    soddisfa l'uguaglianza: l'AE non può pubblicare un EM diverso da quello vero.
+    """
+    numbers = public_key.public_numbers()
+    k = modulus_length(public_key)
+    if len(em) != k or not is_valid_ciphertext(public_key, ciphertext_bytes):
+        return False
+    m = _os2ip(em)
+    return m < numbers.n and pow(m, numbers.e, numbers.n) == _os2ip(ciphertext_bytes)
 
 
 def decrypt(private_key: RSAPrivateKey, ciphertext_bytes: bytes) -> bytes:

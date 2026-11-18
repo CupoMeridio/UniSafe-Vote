@@ -799,13 +799,14 @@ Il test avvia e termina SA e AE automaticamente.
 Simula un elettore malevolo che, pur autenticato regolarmente, invia
 un enc_seed non coerente con il seed usato per cifrare il voto.
 
-L'AE accetta il voto in fase di deposito (non può verificare il seed
-senza chiave privata). A urne chiuse, durante lo scrutinio, la verifica
-di coerenza crittografica rileva l'incongruenza e classifica la scheda
-come nulla invece di attribuirla a un candidato.
+Lo scrutinio ricava il seed dalla decifratura della scheda stessa
+(EM = c^d mod n, pubblicato per ogni scheda), quindi l'enc_seed falso è
+irrilevante: la scheda conta per il suo contenuto reale e l'Observer
+completa la verifica universale senza che l'elezione venga bloccata.
 
-L'Observer completa quindi la verifica universale senza bloccare l'intera
-elezione: la mitigazione impedisce il DoS da singolo elettore malevolo.
+Nella seconda parte un'AE corrotta dichiara nulla quella scheda e
+ri-firma lo scrutinio: poiché EM è pubblico, l'Observer ricostruisce il
+contenuto reale della scheda e rileva la falsificazione.
 
 Il test avvia e termina SA e AE automaticamente.
             """,

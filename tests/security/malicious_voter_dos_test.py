@@ -1,6 +1,16 @@
 """
-Test per dimostrare la vulnerabilità DoS (Denial of Service) dell'Observer
-causata da un elettore malevolo che invia un seed spazzatura.
+Test dell'elettore malevolo che invia un seed incoerente con la propria scheda,
+e dell'AE corrotta che dichiara nulla una scheda valida.
+
+Scenario 1 — L'elettore cifra un voto valido con il seed s, ma invia come
+enc_seed la cifratura di un seed diverso. Lo scrutinio ricava il seed dalla
+decifratura della scheda stessa (EM = c^d mod n, pubblicato), quindi la scheda
+conta per il suo contenuto reale e l'Observer completa la verifica: un singolo
+elettore malevolo non può bloccare né invalidare l'elezione.
+
+Scenario 2 — Un'AE corrotta dichiara nulla quella scheda e ri-firma il blocco
+di scrutinio. Poiché EM è pubblico, l'Observer ricostruisce il contenuto reale
+della scheda e rileva la discrepanza.
 """
 
 import os
@@ -26,6 +36,7 @@ from crypto.keys import (generate_rsa_keypair, save_keypair, serialize_public_ke
 from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import sign
 from crypto.password import hash_password
+from test_reporter import save_report
 from cryptography.hazmat.primitives import serialization
 
 import sys as _sys
@@ -256,14 +267,22 @@ def main():
         voti_verificati = scrutinio_block["data"]["voti_verificati"]
         print(f"    Voti scrutinati: {len(voti_verificati)}")
         voto_chiaro = voti_verificati[0]["voto_chiaro"]
+        seed_pubblicato = voti_verificati[0]["seed"]
         print(f"    Il voto malevolo è stato conteggiato per: {voto_chiaro}")
-        assert voto_chiaro == "Scheda nulla", (
-            "L'AE avrebbe dovuto classificare la scheda come nulla per incongruenza crittografica."
-        )
+        print(f"    Seed pubblicato:  {seed_pubblicato[:32]}...")
+        print(f"    Seed reale:       {seed_reale.hex()[:32]}...")
+        print(f"    Seed falso (enc_seed inviato dall'attaccante): {seed_falso.hex()[:32]}...")
+        # Il seed viene ricavato dalla decifratura della scheda stessa (EM), non
+        # dall'enc_seed dell'elettore: il seed falso è irrilevante e la scheda
+        # conta per il suo contenuto reale (Lista A).
+        phase1_pass = voto_chiaro == "Lista A" and seed_pubblicato == seed_reale.hex()
+        print(f"  {'[PASS]' if phase1_pass else '[FAIL]'} La scheda è conteggiata per il suo contenuto reale"
+              f" e il seed pubblicato è quello vero")
 
         print("\n[6] Esecuzione dell'Observer (Verifica Universale)...")
         result = subprocess.run([sys.executable, os.path.join(SRC_DIR, "observer.py")],
-                              cwd=PROJECT_ROOT, capture_output=True, text=True, input="\n")
+                              cwd=PROJECT_ROOT, capture_output=True, text=True, input="\n",
+                              encoding="utf-8", errors="replace")
 
         print("-" * 40)
         print("OUTPUT OBSERVER:")
@@ -271,15 +290,60 @@ def main():
         print("-" * 40)
 
         observer_ok = "TUTTE LE VERIFICHE PUBBLICHE SONO RIUSCITE" in result.stdout
-        if observer_ok:
-            print("\n[SUCCESS] Mitigazione attiva: l'AE ha accettato il voto in fase di "
-                  "deposito (non può verificare il seed senza chiave privata), ma durante "
-                  "lo scrutinio ha rilevato l'incongruenza seed/voto e classificato la scheda "
-                  "come nulla. L'Observer completa la verifica universale senza bloccare "
-                  "l'intera elezione.")
+        print(f"  {'[PASS]' if observer_ok else '[FAIL]'} L'Observer completa la verifica universale")
+
+        # ------------------------------------------------------------------ #
+        # [7] AE corrotta: dichiara NULLA una scheda valida e ri-firma         #
+        # ------------------------------------------------------------------ #
+        print("\n[7] AE corrotta: dichiara nulla la scheda valida e RI-FIRMA lo scrutinio...")
+        ae_sign_private = load_private_key("ae_sign", base_path=KEYS_DIR)
+        forged = json.loads(json.dumps(scrutinio_block["data"]))
+        forged["voti_verificati"][0]["voto_chiaro"] = "Scheda nulla"
+        forged["risultato_aggregato"]["Lista A"] -= 1
+        forged["risultato_aggregato"]["Scheda nulla"] += 1
+        for b in bb:
+            if b["type"] == "scrutinio":
+                b["data"] = forged
+                b["signature"] = sign(ae_sign_private, json.dumps(forged, sort_keys=True).encode()).hex()
+        with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
+            json.dump(bb, f, indent=2, ensure_ascii=False)
+        print(f"    Risultato falsificato (firma AE valida): {forged['risultato_aggregato']}")
+
+        result_forged = subprocess.run([sys.executable, os.path.join(SRC_DIR, "observer.py")],
+                                       cwd=PROJECT_ROOT, capture_output=True, text=True, input="\n",
+                                       encoding="utf-8", errors="replace")
+        forged_detected = "ALCUNE VERIFICHE PUBBLICHE HANNO FALLITO" in result_forged.stdout
+        for line in result_forged.stdout.splitlines():
+            if line.strip().startswith(("5.", "-")) or "dichiara" in line:
+                print(f"    {line.strip()}")
+        print(f"  {'[PASS]' if forged_detected else '[FAIL]'} L'Observer rileva la scheda annullata ad arte")
+
+        passed = phase1_pass and observer_ok and forged_detected
+        print("\n" + "=" * 80)
+        if passed:
+            print("[SUCCESS] Un enc_seed incoerente non blocca né annulla la scheda: il seed è")
+            print("ricavato dalla decifratura verificabile (EM). Un'AE che dichiara nulla una")
+            print("scheda valida viene smascherata dall'Observer, anche se ri-firma lo scrutinio.")
         else:
-            print("\n[FAIL] L'Observer non ha superato la verifica universale: "
-                  "un singolo elettore malevolo potrebbe compromettere l'elezione per tutti.")
+            print("[FAIL] Il sistema non ha risposto come atteso.")
+        print("=" * 80)
+
+        save_report(
+            test_id="malicious_voter_dos",
+            test_name="Elettore Malevolo (seed corrotto) e AE che annulla schede valide",
+            outcome="PASS" if passed else "FAIL",
+            details={
+                "malicious_ballot": {
+                    "declared_content": voto_chiaro,
+                    "published_seed_is_real": seed_pubblicato == seed_reale.hex(),
+                    "counted_for_real_content": phase1_pass,
+                },
+                "observer_ok_with_malicious_voter": observer_ok,
+                "forged_null_ballot_detected": forged_detected,
+                "protection_mechanism": "Decifratura verificabile: EM = c^d mod n pubblicato per ogni scheda",
+            },
+        )
+        if not passed:
             sys.exit(1)
 
     finally:

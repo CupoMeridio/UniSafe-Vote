@@ -33,7 +33,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from crypto.keys import load_private_key, load_public_key, deserialize_public_key, load_and_decrypt_private_key, save_encrypted_private_key
-from crypto.rsa_oaep import decrypt, encrypt
+from crypto.rsa_oaep import raw_decrypt, oaep_decode, is_valid_ciphertext, modulus_length
 from crypto.rsa_pss import sign, verify
 from crypto.merkle import MerkleTree
 from admin_auth import get_or_create_admin_token, require_admin
@@ -57,6 +57,7 @@ ae_encrypt_private: Optional[RSAPrivateKey] = None  # Chiave privata per decifra
 ae_sign_private: Optional[RSAPrivateKey] = None  # Chiave privata per firmare blocchi e ricevute
 ae_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica per verificare le firme
 sa_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica del SA per verificare i token
+ae_encrypt_public: Optional[RSAPublicKey] = None  # Chiave pubblica di cifratura (per validare le schede)
 bulletin_board_path: str = "data/bulletin_board.json"  # Percorso del Bulletin Board
 ae_state_path: str = "data/ae_state.json"  # Percorso dello stato privato AE
 opening_time: Optional[datetime] = None  # Istante di apertura delle urne (da init)
@@ -132,7 +133,7 @@ def load_initial_data() -> None:
     - Chiavi di firma dell'AE
     - Chiave pubblica del SA (per verificare i token)
     """
-    global ae_encrypt_private, ae_sign_private, ae_sign_public, sa_sign_public
+    global ae_encrypt_private, ae_sign_private, ae_sign_public, sa_sign_public, ae_encrypt_public
     global opening_time, closing_time, merkle_tree, urn_open
     print("[AE] Caricamento dati iniziali...")
 
@@ -145,6 +146,7 @@ def load_initial_data() -> None:
         bb = json.load(f)
         sa_sign_public_pem = bb[0]["data"]["sa_sign_public"]
         sa_sign_public = deserialize_public_key(sa_sign_public_pem)
+        ae_encrypt_public = deserialize_public_key(bb[0]["data"]["ae_encrypt_public"])
         opening_time = datetime.fromisoformat(bb[0]["data"]["opening_time"])
         closing_time = datetime.fromisoformat(bb[0]["data"]["closing_time"])
 
@@ -338,6 +340,12 @@ def vote():
             print(f"[AE] {datetime.now().isoformat()} - Voto dopo la chiusura delle urne")
             return jsonify({"error": "Urne chiuse"}), 403
 
+        # 3c. La scheda deve essere un ciphertext RSA ben formato (k byte, minore
+        # del modulo): altrimenti non esisterebbe una decifratura verificabile.
+        if not is_valid_ciphertext(ae_encrypt_public, bytes.fromhex(enc_vote)):
+            print(f"[AE] {datetime.now().isoformat()} - Scheda malformata")
+            return jsonify({"error": "Scheda cifrata malformata"}), 400
+
         # 4. Verifica che il token non sia già stato usato. L'unicità si basa
         # esclusivamente sul nonce opaco del token: poiché il SA rilascia al più
         # un token per elettore (controllo di unicità lato SA), un nonce non
@@ -496,52 +504,52 @@ def _close_locked():
     vote_counts[NULL_LABEL] = 0
     verified_votes = []
 
-    # Elabora tutti i blocchi di voto dal Bulletin Board
+    # Elabora tutti i blocchi di voto dal Bulletin Board.
+    #
+    # DECIFRATURA VERIFICABILE: per ogni scheda si pubblica il blocco decifrato
+    # EM = c^d mod n (prima della decodifica OAEP). Chiunque può controllare con
+    # la sola chiave pubblica che EM^e mod n == c e decodificare EM da sé,
+    # ottenendo voto e seed: l'AE non può attribuire a una scheda un contenuto
+    # diverso da quello reale né dichiarare nulla una scheda valida, perché per
+    # ogni c esiste un solo EM che supera la verifica.
+    #
+    # Il seed è ricavato da EM stesso (fa parte del padding OAEP): il seed
+    # cifrato a parte dall'elettore (enc_seed) non serve più per lo scrutinio.
+    # Un elettore malevolo che invia un enc_seed incoerente non può quindi né
+    # bloccare la verifica né far annullare la propria scheda.
+    ae_encrypt_public = ae_encrypt_private.public_key()
+    k = modulus_length(ae_encrypt_public)
     for block in bb:
         if block['type'] == 'vote':
             enc_vote_hex = block['data']['enc_vote']
-            enc_seed_hex = block['data']['enc_seed']
-
-            # Decifra il seed (randomness OAEP usata per cifrare il voto)
-            enc_seed_bytes = bytes.fromhex(enc_seed_hex)
-            try:
-                seed_bytes = decrypt(ae_encrypt_private, enc_seed_bytes)
-            except Exception:
-                seed_bytes = b""
-
-            # Decifra il voto (contiene il solo indice della lista, 1 byte)
             enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-            try:
-                vote_plain = decrypt(ae_encrypt_private, enc_vote_bytes)
-            except Exception:
-                vote_plain = b""
 
-            # Determina il candidato; schede fuori dominio -> nulle (non scartate)
-            is_valid = False
+            em_bytes = b""
+            seed_bytes = b""
+            vote_plain = b""
+            if is_valid_ciphertext(ae_encrypt_public, enc_vote_bytes):
+                em_bytes = raw_decrypt(ae_encrypt_private, enc_vote_bytes)
+                try:
+                    seed_bytes, vote_plain = oaep_decode(em_bytes, k)
+                except ValueError:
+                    pass  # padding OAEP non valido: scheda nulla (verificabile da EM)
+
+            # Il voto è il solo indice della lista (1 byte); fuori dominio → nulla
             if len(vote_plain) == 1 and 0 <= vote_plain[0] < len(candidates):
-                # VERIFICA DI COERENZA CRITTOGRAFICA (Prevenzione DoS da elettore malevolo)
-                if len(seed_bytes) == 32:
-                    try:
-                        ae_encrypt_public = ae_encrypt_private.public_key()
-                        recomputed = encrypt(ae_encrypt_public, vote_plain, seed=seed_bytes)
-                        if recomputed == enc_vote_bytes:
-                            is_valid = True
-                    except Exception:
-                        pass
-            
-            if is_valid:
                 candidate = candidates[vote_plain[0]]
             else:
                 candidate = NULL_LABEL
-                print(f"[AE] Scheda nulla rilevata (invalidità o incongruenza crittografica) per enc_vote: {enc_vote_hex}")
+                print(f"[AE] Scheda nulla rilevata (contenuto fuori dominio o padding non valido) per enc_vote: {enc_vote_hex[:32]}...")
 
             vote_counts[candidate] += 1
-            # Pubblica la tripla (scheda cifrata, voto in chiaro, seed) per ogni
-            # scheda scrutinata: il seed abilita la verifica universale (ricifratura).
+            # Si pubblicano scheda cifrata, voto in chiaro, seed ed EM: il seed
+            # abilita la ricifratura (verifica individuale del client), EM la
+            # verifica pubblica della decifratura di OGNI scheda, nulle comprese.
             verified_votes.append({
                 "enc_vote": enc_vote_hex,
                 "voto_chiaro": candidate,
-                "seed": seed_bytes.hex()
+                "seed": seed_bytes.hex(),
+                "em": em_bytes.hex()
             })
 
     # 4. Pubblica i risultati dello scrutinio sul Bulletin Board
