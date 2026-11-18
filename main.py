@@ -794,6 +794,43 @@ elezione: la mitigazione impedisce il DoS da singolo elettore malevolo.
 Il test avvia e termina SA e AE automaticamente.
             """,
         },
+        "11": {
+            "name": "Double Voting Concorrente (Race Condition)",
+            "file": "tests/security/concurrent_double_voting_test.py",
+            "description": """
+Variante concorrente del test di double voting: un elettore malevolo
+invia 8 schede diverse con lo STESSO token nello stesso istante.
+
+Se il server controllasse "token già usato?" e solo più tardi marcasse
+il token, tutte le richieste arrivate nel frattempo verrebbero accettate
+(race condition check-then-act). Il test verifica che:
+  - venga accettata esattamente una scheda (HTTP 200) e le altre 7
+    rifiutate con HTTP 409;
+  - 6 autenticazioni simultanee dello stesso elettore presso il SA
+    restituiscano tutte lo stesso token;
+  - AE e Bulletin Board registrino un solo voto.
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
+        "12": {
+            "name": "Verifica Individuale delle Ricevute (Merkle Proof)",
+            "file": "tests/security/receipt_verification_test.py",
+            "description": """
+Verifica end-to-end delle ricevute di voto con il codice reale del client.
+
+  Fase 1-2: 6 elettori votano; a metà votazione l'AE viene riavviata
+            (il Merkle Tree deve essere ricostruito dal Bulletin Board).
+  Fase 3:   a urne chiuse TUTTE le ricevute devono essere verificate:
+            la proof di ciascuna è relativa alla root del momento del voto.
+  Fase 4:   verifica universale dell'Observer.
+  Fase 5:   un'AE corrotta riscrive una scheda e RI-FIRMA la Merkle Root:
+            il Bulletin Board resta coerente, ma le ricevute di chi ha
+            votato da quel momento in poi rilevano la manomissione.
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
     }
 
     while True:
@@ -821,12 +858,14 @@ Il test avvia e termina SA e AE automaticamente.
         print(menu_option("8", TESTS["8"]["name"], available=True))
         print(menu_option("9", TESTS["9"]["name"], available=True))
         print(menu_option("10", TESTS["10"]["name"], available=True))
+        print(menu_option("11", TESTS["11"]["name"], available=True))
+        print(menu_option("12", TESTS["12"]["name"], available=True))
 
         print(f"\n{section_title('NAVIGAZIONE')}")
         print(menu_option("0", "Torna al menu principale", available=True))
         print("="*70)
 
-        choice = input("\nSeleziona un test (0-10): ").strip()
+        choice = input("\nSeleziona un test (0-12): ").strip()
 
         if choice == "0":
             break

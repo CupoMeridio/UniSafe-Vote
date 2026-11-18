@@ -258,6 +258,19 @@ def main():
         tampered_bb[0]["data"]["ae_encrypt_public"] = fake_enc_pem
         tampered_bb[0]["data"]["ae_sign_public"]    = fake_sign_pem
 
+        # Un attaccante realistico RI-FIRMA il blocco init manomesso con la
+        # propria chiave di firma contraffatta. In questo modo la verifica della
+        # firma del blocco init PASSA (la firma è coerente con la chiave di firma
+        # dichiarata nel blocco stesso) e l'unica difesa rimasta è il confronto
+        # con i pin trusted distribuiti su canale separato. Senza questa
+        # ri-firma l'attacco verrebbe fermato dalla verifica della firma e il
+        # test non dimostrerebbe nulla sul certificate pinning.
+        tampered_init_json = json.dumps(tampered_bb[0]["data"], sort_keys=True).encode("utf-8")
+        tampered_bb[0]["signature"] = sign(fake_sign_priv, tampered_init_json).hex()
+        print("\n  Blocco init ri-firmato con la chiave di firma CONTRAFFATTA:")
+        print("  la verifica della firma del blocco init risulterà valida,")
+        print("  quindi l'attacco può essere fermato solo dal certificate pinning.")
+
         with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
             json.dump(tampered_bb, f, indent=2, ensure_ascii=False)
 
@@ -291,8 +304,15 @@ def main():
             print("  [FALLIMENTO] Il client ha accettato le chiavi contraffatte!")
         except SecurityError as e:
             error_message = str(e)
-            detected = True
-            print(f"  [PASS] SecurityError sollevato correttamente!")
+            # Il test passa solo se a bloccare l'attacco è proprio il pinning:
+            # un errore di firma indicherebbe che la ri-firma non è avvenuta e
+            # che il pinning non è stato messo alla prova.
+            detected_by_pinning = "Impronta" in error_message
+            detected = detected_by_pinning
+            if detected:
+                print(f"  [PASS] SecurityError sollevato dal certificate pinning!")
+            else:
+                print(f"  [FAIL] SecurityError sollevato, ma NON dal pinning.")
             print(f"  Messaggio: {error_message}")
 
     finally:
@@ -342,6 +362,8 @@ def main():
                 "ae_sign_public":    pin_sign,
             },
             "tampering_detected": detected,
+            "init_block_resigned_by_attacker": True,
+            "detected_by": "certificate_pinning" if detected else "other_or_none",
             "security_error_message": error_message,
             "protection_mechanism": "Certificate Pinning (SHA-256 DER fingerprint)",
         },

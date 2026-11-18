@@ -502,7 +502,7 @@ class Client:
         else:
             print("\nDevi prima autenticarti!")
 
-    def verify_vote(self) -> None:
+    def verify_vote(self) -> bool:
         """
         Verifica che il voto dell'utente sia stato incluso e non modificato nello scrutinio.
 
@@ -514,12 +514,16 @@ class Client:
         5. Individua il voto nel blocco 'scrutinio'
         6. CRITTOGRAFICO: Riesegue RSA-OAEP (con seed pubblicato) per confrontare con enc_vote originale
         7. Mostra il risultato finale
+
+        Returns:
+            bool: True se tutte le verifiche sono riuscite, False altrimenti
+            (permette ai test di certificare l'esito senza analizzare l'output).
         """
         if self.username:
             receipt_path = f"data/receipts/{self.username}.json"
             if not os.path.exists(receipt_path):
                 print("\nNessuna ricevuta trovata per questo utente.")
-                return
+                return False
 
             # Carica la ricevuta
             with open(receipt_path, "r", encoding="utf-8") as f:
@@ -537,7 +541,7 @@ class Client:
 
             if not merkle_root:
                 print("\nUrne non ancora chiuse e scrutinio non eseguito.")
-                return
+                return False
 
             # 2. Verifica la firma della ricevuta con la chiave pubblica dell'AE
             # La firma copre tutti i campi della ricevuta tranne la firma stessa
@@ -549,7 +553,7 @@ class Client:
 
             if not verify(self.ae_sign_public, receipt_json, receipt_signature):
                 print("\nVerifica firma ricevuta fallita!")
-                return
+                return False
 
             # 3. Ottieni il record del voto dal Bulletin Board, nella posizione
             #    indicata dalla ricevuta firmata (leaf_index).
@@ -558,7 +562,7 @@ class Client:
             if not (0 <= leaf_index < len(vote_blocks)) or \
                     vote_blocks[leaf_index]['data']['enc_vote'] != receipt['enc_vote']:
                 print("\nScheda non trovata nel Bulletin Board alla posizione indicata dalla ricevuta!")
-                return
+                return False
 
             vote_record = vote_blocks[leaf_index]['data']
             record_bytes = json.dumps(vote_record, sort_keys=True).encode('utf-8')
@@ -581,13 +585,13 @@ class Client:
                 # 4a. La proof firmata dimostra l'inclusione nella root del momento del voto
                 if not verify_proof(leaf_hash, receipt['merkle_proof'], receipt['merkle_root_at_vote']):
                     print("\nVerifica Merkle Proof della ricevuta fallita!")
-                    return
+                    return False
                 # 4b. Consistenza: i primi tree_size voti del Bulletin Board
                 #     producono ancora la root firmata nella ricevuta, cioè il
                 #     registro non è stato alterato dopo il voto.
                 if prefix_root != receipt['merkle_root_at_vote']:
                     print("\nIl Bulletin Board non è coerente con la root registrata al momento del voto!")
-                    return
+                    return False
             else:
                 print("\nRicevuta nel formato precedente (senza root al momento del voto): "
                       "si verifica solo l'inclusione nella root finale.")
@@ -596,10 +600,10 @@ class Client:
             #     firmata e il voto è incluso in essa.
             if rebuilt.get_root() != merkle_root:
                 print("\nLa Merkle Root finale non corrisponde ai voti del Bulletin Board!")
-                return
+                return False
             if not verify_proof(leaf_hash, rebuilt.get_proof(leaf_index), merkle_root):
                 print("\nVerifica Merkle Proof contro la root finale fallita!")
-                return
+                return False
 
             # 5. Ottieni e verifica il blocco 'scrutinio'
             scrutinio_block = None
@@ -610,24 +614,24 @@ class Client:
 
             if not scrutinio_block:
                 print("\nVoto incluso nel Merkle Tree, ma scrutinio non ancora pubblicato.")
-                return
+                return False
 
             scrutinio_data = scrutinio_block.get("data")
             scrutinio_signature_hex = scrutinio_block.get("signature")
             if not isinstance(scrutinio_signature_hex, str):
                 print("\nVerifica firma scrutinio fallita: firma mancante o non valida.")
-                return
+                return False
 
             try:
                 scrutinio_signature = bytes.fromhex(scrutinio_signature_hex)
             except ValueError:
                 print("\nVerifica firma scrutinio fallita: firma non valida.")
-                return
+                return False
 
             scrutinio_data_json = json.dumps(scrutinio_data, sort_keys=True).encode('utf-8')
             if not verify(self.ae_sign_public, scrutinio_data_json, scrutinio_signature):
                 print("\nVerifica firma scrutinio fallita!")
-                return
+                return False
 
             scrutinated = scrutinio_data.get("voti_verificati", [])
             matching = next(
@@ -637,7 +641,7 @@ class Client:
 
             if not matching:
                 print("\nLa tua scheda è nel Merkle Tree ma non risulta tra i voti scrutinati!")
-                return
+                return False
 
             # 6. CRITTOGRAFICO: Riesegui RSA-OAEP usando seed pubblicato e voto in chiaro
             print("\n--- VERIFICA CRITTOGRAFICA (WP2 Fase 5) ---")
@@ -667,7 +671,7 @@ class Client:
                 if enc_vote_verify_hex != receipt['enc_vote']:
                     print("\nERRORE CRITTOGRAFICO: I ciphertext NON corrispondono!")
                     print("L'AE potrebbe aver modificato il tuo voto durante lo scrutinio!")
-                    return
+                    return False
 
             # Tutti i controlli passati!
             print("\n✅ Tutte le verifiche sono riuscite!")
@@ -679,9 +683,11 @@ class Client:
                 print("   5. CRITTOGRAFICO: Ciphertext ricostruito corrisponde a quello originale")
             print("\nVoto correttamente conteggiato e non manipolato!")
             print(f"   Voto in chiaro pubblicato: {matching.get('voto_chiaro')}")
+            return True
 
         else:
             print("\nDevi prima autenticarti!")
+            return False
 
     def menu(self) -> None:
         """
