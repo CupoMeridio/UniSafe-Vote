@@ -75,7 +75,7 @@ sys.path.insert(0, TESTS_SEC_DIR)
 from test_reporter import save_report
 
 from crypto.keys import (generate_rsa_keypair, save_keypair, serialize_public_key,
-                          deserialize_public_key, save_encrypted_private_key)
+                          deserialize_public_key)
 from crypto.rsa_pss  import sign
 from crypto.rsa_oaep import encrypt
 from crypto.password import hash_password
@@ -86,7 +86,9 @@ from cryptography.hazmat.primitives import serialization
 # ---------------------------------------------------------------------------
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
-from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs
+from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
+from common import create_test_election, close_payload, clean_election_state
+from common import get_pow_challenge, solve_pow as solve_pow_challenge, pow_fields
 DATA_DIR           = os.path.join(PROJECT_ROOT, "data")
 KEYS_DIR           = os.path.join(DATA_DIR, "keys")
 RECEIPTS_DIR       = os.path.join(DATA_DIR, "receipts")
@@ -133,21 +135,6 @@ def compute_fingerprint(pem_str: str) -> str:
     return "sha256:" + hashlib.sha256(der).hexdigest()
 
 
-def solve_pow(enc_vote_bytes: bytes, difficulty: int) -> str:
-    """Trova un nonce tale che SHA-256(enc_vote || nonce) abbia i primi
-    'difficulty' bit a zero. Restituisce il nonce come stringa hex."""
-    required_bytes = difficulty // 8
-    required_bits  = difficulty % 8
-    mask = (0xFF << (8 - required_bits)) & 0xFF if required_bits else 0
-    for nonce_int in range(2 ** 64):
-        nb = struct.pack(">Q", nonce_int)
-        h  = hashlib.sha256(enc_vote_bytes + nb).digest()
-        if all(h[i] == 0 for i in range(required_bytes)):
-            if required_bits == 0 or (h[required_bytes] & mask) == 0:
-                return nb.hex()
-    raise RuntimeError("Nonce non trovato")
-
-
 def get_pow_difficulty() -> int:
     """Interroga l'AE per ottenere la difficoltà PoW adattiva corrente."""
     r = requests.get(f"{AE_URL}/status", timeout=3, verify=ae_verify())
@@ -191,84 +178,10 @@ def setup() -> Tuple[subprocess.Popen, subprocess.Popen, dict]:
     os.makedirs(KEYS_DIR,    exist_ok=True)
     os.makedirs(RECEIPTS_DIR, exist_ok=True)
 
-    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
-        p = os.path.join(DATA_DIR, fname)
-        if os.path.exists(p):
-            os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f == ".gitkeep":
-            continue
-        os.remove(os.path.join(KEYS_DIR, f))
-    # Si eliminano anche le ricevute JSON dei voti precedenti.
-    for f in os.listdir(RECEIPTS_DIR):
-        fp = os.path.join(RECEIPTS_DIR, f)
-        if f.endswith(".json"):
-            os.remove(fp)
-
-    # Si generano tre coppie RSA-2048: firma SA, cifratura AE e firma AE.
-    sa_sign_priv,  sa_sign_pub  = generate_rsa_keypair()
-    ae_enc_priv,   ae_enc_pub   = generate_rsa_keypair()
-    ae_sign_priv,  ae_sign_pub  = generate_rsa_keypair()
-
-    save_keypair(sa_sign_priv, sa_sign_pub,  "sa_sign")
-    save_keypair(ae_enc_priv,  ae_enc_pub,   "ae_encrypt")
-    save_keypair(ae_sign_priv, ae_sign_pub,  "ae_sign")
-
-    # L'elezione apre immediatamente e chiude tra 24 ore.
-    opening = datetime.now(UTC).isoformat()
-    closing = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
-
-    # Si compone il blocco di inizializzazione con i parametri pubblici
-    # dell'elezione e le chiavi pubbliche dei componenti, poi lo si firma.
-    init_data = {
-        "election_id":      "dos_resilience_test",
-        "candidates":       CANDIDATES,
-        "opening_time":     opening,
-        "closing_time":     closing,
-        "sa_sign_public":   serialize_public_key(sa_sign_pub),
-        "ae_encrypt_public": serialize_public_key(ae_enc_pub),
-        "ae_sign_public":   serialize_public_key(ae_sign_pub),
-    }
-    init_json      = json.dumps(init_data, sort_keys=True).encode("utf-8")
-    init_signature = sign(ae_sign_priv, init_json)
-
-    bb = [{
-        "type":      "init",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "data":      init_data,
-        "signature": init_signature.hex(),
-    }]
-    with open(os.path.join(DATA_DIR, "bulletin_board.json"), "w", encoding="utf-8") as f:
-        json.dump(bb, f, indent=2)
-
-    # Si calcolano le impronte SHA-256 delle chiavi AE e si salvano in pins.json
-    # per simulare il canale di distribuzione trusted (certificate pinning).
-    pins = {
-        "ae_encrypt_public": compute_fingerprint(init_data["ae_encrypt_public"]),
-        "ae_sign_public":    compute_fingerprint(init_data["ae_sign_public"]),
-    }
-    with open(os.path.join(DATA_DIR, "pins.json"), "w", encoding="utf-8") as f:
-        json.dump(pins, f, indent=2)
-
-    # La chiave privata di cifratura AE viene salvata cifrata con AES-GCM
-    # usando la firma del blocco init come IKM (vincolo crittografico WP3 §3.3).
-    save_encrypted_private_key(ae_enc_priv, "ae_encrypt", init_signature)
-
-    # Le password vengono salvate come hash Argon2, mai in chiaro.
-    voters_data = []
-    for u in HONEST_USERS:
-        voters_data.append({
-            "id":       u["id"],
-            "email":    u["email"],
-            "username": u["username"],
-            "password": hash_password(u["password"]),
-        })
-    with open(os.path.join(DATA_DIR, "voters.json"), "w", encoding="utf-8") as f:
-        json.dump(voters_data, f, indent=2)
-
-    # Si inizializza lo stato privato dell'AE con la lista dei token usati vuota.
-    with open(os.path.join(DATA_DIR, "ae_state.json"), "w", encoding="utf-8") as f:
-        json.dump({"used_tokens": []}, f, indent=2)
+    # Elezione di test creata dal modulo condiviso: stesso schema di
+    # init_election.py, chiave di decifratura protetta solo dall'escrow
+    # Shamir (nessuna copia in chiaro su disco).
+    init_data = create_test_election("dos_resilience_test", HONEST_USERS, CANDIDATES)
 
     print("  Chiavi generate e file di configurazione scritti.")
 
@@ -310,7 +223,7 @@ def teardown(sa_proc: subprocess.Popen, ae_proc: subprocess.Popen) -> None:
         # Si tenta prima lo shutdown HTTP controllato; se non risponde,
         # si termina il processo con wait() e infine con kill().
         try:
-            requests.post(f"{url}/shutdown", timeout=1, verify=(ae_verify() if "5002" in url else sa_verify()))
+            requests.post(f"{url}/shutdown", headers=admin_headers(), timeout=1, verify=(ae_verify() if "5002" in url else sa_verify()))
         except Exception:
             pass
         try:
@@ -323,9 +236,7 @@ def teardown(sa_proc: subprocess.Popen, ae_proc: subprocess.Popen) -> None:
         p = os.path.join(DATA_DIR, fname)
         if os.path.exists(p):
             os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f != ".gitkeep":
-            os.remove(os.path.join(KEYS_DIR, f))
+    clean_election_state()  # rimuove anche le quote in data/keys/trustees/
     for f in os.listdir(RECEIPTS_DIR):
         if f.endswith(".json"):
             os.remove(os.path.join(RECEIPTS_DIR, f))
@@ -380,8 +291,8 @@ def vote_user(user: dict, token: str, token_sig: str,
         t0           = time.perf_counter()
 
         for attempt in range(1, MAX_POW_RETRIES + 1):
-            difficulty = get_pow_difficulty()
-            pow_nonce  = solve_pow(enc_vote, difficulty)
+            challenge, difficulty = get_pow_challenge(AE_URL, ae_verify())
+            pow_nonce  = solve_pow_challenge(challenge, enc_vote_hex, difficulty)
 
             r = requests.post(
                 f"{AE_URL}/vote",
@@ -390,6 +301,7 @@ def vote_user(user: dict, token: str, token_sig: str,
                     "enc_seed":        enc_seed.hex(),
                     "token":           token,
                     "token_signature": token_sig,
+                    "pow_challenge":   challenge,
                     "pow_nonce":       pow_nonce,
                 },
                 timeout=60,
@@ -448,11 +360,18 @@ class InvalidFlood:
         self.running   = False
         self._threads: List[threading.Thread] = []
         self.sent      = 0
-        self.rejected  = 0
+        self.rejected  = 0      # HTTP 400: PoW invalida (scartata subito)
+        self.rejected_401 = 0   # HTTP 401: superato il controllo PoW (non deve accadere)
+        self.accepted  = 0      # HTTP 200: non deve MAI accadere
+        self.errors    = 0      # timeout / errori di rete (nessuna risposta)
         self._lock     = threading.Lock()
 
     def _worker(self) -> None:
         while self.running:
+            # Richiesta spazzatura: nessuna challenge del server e nonce fisso.
+            # Senza una challenge valida (autenticata dall'AE, legata all'IP e
+            # non scaduta) la PoW non può essere verificata: la richiesta viene
+            # scartata con 400 prima di qualsiasi operazione crittografica costosa.
             payload = {
                 "enc_vote":        os.urandom(256).hex(),
                 "enc_seed":        os.urandom(256).hex(),
@@ -466,9 +385,14 @@ class InvalidFlood:
                     self.sent += 1
                     if r.status_code == 400:
                         self.rejected += 1
+                    elif r.status_code == 401:
+                        self.rejected_401 += 1
+                    elif r.status_code == 200:
+                        self.accepted += 1
             except Exception:
                 with self._lock:
                     self.sent += 1
+                    self.errors += 1
 
     def start(self) -> None:
         self.running = True
@@ -503,14 +427,15 @@ class ValidFlood:
     def _worker(self) -> None:
         while self.running:
             try:
-                difficulty   = get_pow_difficulty()
+                challenge, difficulty = get_pow_challenge(AE_URL, ae_verify())
                 enc_vote_hex = os.urandom(32).hex()
-                pow_nonce    = solve_pow(bytes.fromhex(enc_vote_hex), difficulty)
+                pow_nonce    = solve_pow_challenge(challenge, enc_vote_hex, difficulty)
                 payload = {
                     "enc_vote":        enc_vote_hex,
                     "enc_seed":        os.urandom(256).hex(),
                     "token":           '{"nonce":"dead","expires_at":"2100-01-01T00:00:00+00:00"}',
                     "token_signature": os.urandom(256).hex(),  # firma falsa → rifiutato a step 2
+                    "pow_challenge":   challenge,
                     "pow_nonce":       pow_nonce,
                 }
                 r = requests.post(f"{AE_URL}/vote", json=payload, timeout=10, verify=ae_verify())
@@ -600,6 +525,26 @@ def main() -> None:
         print(f"  Flood spazzatura avviato ({FLOOD_INVALID_THREADS} thread).")
         print(f"  Flood valido avviato     ({FLOOD_VALID_THREADS} thread, risolve la PoW).")
 
+        # Campionamento continuo della difficoltà PoW per tutta la durata
+        # dell'attacco. Leggerla solo alla fine sarebbe fragile: se il voto
+        # degli onesti dura più della finestra di osservazione dell'AE (10 s),
+        # le richieste del flood escono dalla finestra e la difficoltà risulta
+        # già tornata al minimo (falso FAIL non riproducibile).
+        difficulty_samples: List[int] = []
+        sampling = threading.Event()
+        sampling.set()
+
+        def sample_difficulty() -> None:
+            while sampling.is_set():
+                try:
+                    difficulty_samples.append(get_pow_difficulty())
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+        sampler = threading.Thread(target=sample_difficulty, daemon=True)
+        sampler.start()
+
         # Attesa iniziale per dare al flood valido il tempo di accumulare
         # richieste nella finestra prima che gli utenti onesti inizino a votare.
         time.sleep(4)
@@ -622,20 +567,26 @@ def main() -> None:
         for t in vote_threads:
             t.join(timeout=120)
 
-        # Ferma entrambi i flood.
+        # Ferma entrambi i flood e il campionamento.
         invalid_flood.stop()
         valid_flood.stop()
+        difficulty_samples.append(get_pow_difficulty())
+        sampling.clear()
+        sampler.join(timeout=5)
 
-        # Legge la difficoltà DOPO il flood: a questo punto tutte le richieste
-        # valide sono già state registrate nella finestra di osservazione.
-        diff_during = get_pow_difficulty()
+        # Difficoltà massima osservata durante l'attacco.
+        diff_during = max(difficulty_samples)
+        print(f"  Campioni di difficoltà durante l'attacco: {len(difficulty_samples)}  "
+              f"(min {min(difficulty_samples)}, max {diff_during} bit)")
 
         print(f"\n  Flood fermati. Statistiche attacco:")
         print(f"  Difficoltà PoW durante/dopo l'attacco misto: {diff_during} bit")
         print(f"    [SPAZZATURA] Richieste inviate: {invalid_flood.sent}  |  "
               f"Rifiutate 400: {invalid_flood.rejected}"
               + (f"  ({invalid_flood.rejected/invalid_flood.sent*100:.1f}%)"
-                 if invalid_flood.sent else ""))
+                 if invalid_flood.sent else "")
+              + f"  |  Oltre la PoW (401): {invalid_flood.rejected_401}"
+              + f"  |  Accettate: {invalid_flood.accepted}  |  Senza risposta: {invalid_flood.errors}")
         print(f"    [VALIDO]     Richieste inviate: {valid_flood.sent}  |  "
               f"Rifiutate 401: {valid_flood.rejected_401}  |  "
               f"Rifiutate 400 (race): {valid_flood.rejected_400}")
@@ -685,8 +636,12 @@ def main() -> None:
         p1             = auth_success == len(HONEST_USERS)
         p2_pow         = diff_during > diff_before          # flood valido ha alzato la difficoltà
         p2_votes       = votes_ok == len(HONEST_USERS)      # tutti gli onesti hanno votato
-        p2_inv_blocked = (invalid_flood.sent > 0 and
-                          invalid_flood.rejected / invalid_flood.sent >= 0.95)  # 95%+ spazzatura bloccata
+        # Spazzatura: senza challenge del server nessuna richiesta può superare
+        # il controllo PoW, quindi TUTTE le risposte devono essere 400 (le
+        # richieste senza risposta per timeout sono escluse dal conteggio).
+        answered = invalid_flood.sent - invalid_flood.errors
+        p2_inv_blocked = (answered > 0 and invalid_flood.accepted == 0 and
+                          invalid_flood.rejected == answered)
         p2_val_blocked = (valid_flood.sent > 0 and
                           (valid_flood.rejected_401 + valid_flood.rejected_400) /
                           valid_flood.sent >= 0.80)  # 80%+ ha risolto la PoW (401 + race 400)
@@ -700,8 +655,8 @@ def main() -> None:
               f"({diff_before} → {diff_during} bit)")
         print(f"  {mark(p2_votes)}  Fase 2 — utenti onesti votano con attacco attivo "
               f"({votes_ok}/{len(HONEST_USERS)})")
-        print(f"  {mark(p2_inv_blocked)}  Fase 2 — spazzatura bloccata (400) "
-              f"({invalid_flood.rejected}/{invalid_flood.sent}  ≥95% atteso)")
+        print(f"  {mark(p2_inv_blocked)}  Fase 2 — spazzatura bloccata: nessuna accettata, 400 su risposte "
+              f"({invalid_flood.rejected}/{answered}  100% atteso)")
         print(f"  {mark(p2_val_blocked)}  Fase 2 — flood valido ha risolto la PoW (401+400race) "
               f"({valid_flood.rejected_401 + valid_flood.rejected_400}/{valid_flood.sent}  ≥80% atteso)")
         print(f"  {mark(p3)}  Fase 3 — difficoltà tornata al minimo "
@@ -735,6 +690,9 @@ def main() -> None:
                 "flood_invalid": {
                     "sent":         invalid_flood.sent,
                     "rejected_400": invalid_flood.rejected,
+                    "passed_pow_check_401": invalid_flood.rejected_401,
+                    "accepted": invalid_flood.accepted,
+                    "no_response": invalid_flood.errors,
                     "rejection_rate_pct": round(
                         invalid_flood.rejected / invalid_flood.sent * 100, 1
                     ) if invalid_flood.sent else 0,
@@ -764,7 +722,7 @@ def main() -> None:
                     "p1_all_authenticated":             p1,
                     "p2_pow_increased":                 p2_pow,
                     "p2_all_honest_voted":              p2_votes,
-                    "p2_invalid_blocked_95pct":         p2_inv_blocked,
+                    "p2_invalid_blocked":               p2_inv_blocked,
                     "p2_valid_pow_resolved_80pct":      p2_val_blocked,
                     "p3_difficulty_recovered":          p3,
                 },

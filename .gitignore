@@ -27,6 +27,29 @@ venv/
 env/
 .venv/
 
+# LaTeX build outputs
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.bbl
+*.blg
+*.dvi
+*.xdv
+*.lof
+*.lot
+*.nav
+*.snm
+*.vrb
+# Ignora la cartella di build e i PDF temporanei in docs, consentendo i sorgenti (.tex, capitoli, immagini)
+docs/build/
+docs/*.pdf
+!docs/Relazione.pdf
+build/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -35,3 +58,4 @@ Thumbs.db
 .env
 *.db
 .vscode/
+.idea/

@@ -29,9 +29,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from cryptography.hazmat.primitives import serialization
 from crypto.keys import deserialize_public_key
-from crypto.rsa_oaep import encrypt
+from crypto.rsa_oaep import encrypt, verify_raw_decryption, oaep_decode, modulus_length
 from crypto.rsa_pss import verify
-from crypto.merkle import verify_proof
+from crypto.merkle import MerkleTree, verify_proof, leaf_hash as merkle_leaf_hash
 SA_URL: str = "https://localhost:5001"  # URL del Sistema di Autenticazione
 AE_URL: str = "https://localhost:5002"  # URL dell'Autorità Elettorale
 BULLETIN_BOARD_PATH: str = "data/bulletin_board.json"
@@ -111,22 +111,46 @@ class Client:
 
     def load_bulletin_board(self) -> None:
         """
-        Carica il Bulletin Board da file locale e verifica le chiavi AE tramite pinning.
+        Carica il Bulletin Board da file locale, verifica la firma del blocco init
+        e controlla le chiavi AE tramite pinning.
 
-        Le chiavi pubbliche vengono usate solo se le loro impronte coincidono con
-        quelle presenti in data/pins.json, file separato dal Bulletin Board.
+        Le chiavi pubbliche vengono usate solo se la firma del blocco init è valida
+        e le loro impronte coincidono con quelle presenti in data/pins.json, file
+        separato dal Bulletin Board.
         """
         self.trusted_pins = self.load_pins()
 
         with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
             self.bb = json.load(f)
-        self.init_data = self.bb[0]["data"]  # Dati di inizializzazione
+
+        if not self.bb or self.bb[0].get("type") != "init":
+            raise SecurityError("Bulletin Board non valido: blocco init mancante.")
+
+        init_block = self.bb[0]
+        self.init_data = init_block["data"]  # Dati di inizializzazione
         self.candidates = self.init_data["candidates"]  # Lista candidati
+
+        # Verifica che il blocco init sia stato firmato dall'AE.
+        ae_sign_pem = self.init_data["ae_sign_public"]
+        init_signature_hex = init_block.get("signature")
+        if not isinstance(init_signature_hex, str):
+            raise SecurityError("Firma del blocco init mancante o non valida.")
+
+        try:
+            init_signature = bytes.fromhex(init_signature_hex)
+        except ValueError:
+            raise SecurityError("Firma del blocco init non valida.") from None
+
+        ae_sign_public = deserialize_public_key(ae_sign_pem)
+        init_data_json = json.dumps(self.init_data, sort_keys=True).encode('utf-8')
+        if not verify(ae_sign_public, init_data_json, init_signature):
+            raise SecurityError(
+                "Firma del blocco init non valida. Possibile alterazione del Bulletin Board."
+            )
 
         # Certificate Pinning: verifica le impronte delle chiavi AE contro il
         # canale trusted separato (data/pins.json), non contro il BB stesso.
         ae_encrypt_pem = self.init_data["ae_encrypt_public"]
-        ae_sign_pem = self.init_data["ae_sign_public"]
 
         received_encrypt_fingerprint = compute_public_key_fingerprint(ae_encrypt_pem)
         received_sign_fingerprint = compute_public_key_fingerprint(ae_sign_pem)
@@ -144,7 +168,7 @@ class Client:
 
         # Ora le chiavi sono state validate contro il canale trusted separato.
         self.ae_encrypt_public = deserialize_public_key(ae_encrypt_pem)
-        self.ae_sign_public = deserialize_public_key(ae_sign_pem)
+        self.ae_sign_public = ae_sign_public
 
     def _sa_verify(self) -> str | bool:
         """Restituisce il parametro verify per requests verso il SA.
@@ -156,68 +180,57 @@ class Client:
         """Restituisce il parametro verify per requests verso l'AE."""
         return AE_CERT if os.path.exists(AE_CERT) else True
 
-    def get_pow_difficulty(self) -> int:
+    def get_pow_challenge(self):
         """
-        Interroga l'AE per ottenere la difficoltà di Proof of Work corrente.
+        Chiede all'AE una challenge per la Proof of Work.
 
-        La difficoltà è adattiva e globale: l'AE la aumenta automaticamente
-        sotto carico anomalo (mitigazione DoS). Se l'AE non è raggiungibile o
-        non espone il dato, si usa la difficoltà minima di default.
+        La challenge è emessa e autenticata dall'AE, scade dopo pochi minuti e
+        contiene la difficoltà adattiva corrente per questo client: la PoW non
+        può essere precalcolata in anticipo né riutilizzata.
 
         Returns:
-            int: Numero di bit a zero richiesti dalla PoW.
+            tuple: (challenge esadecimale, difficoltà in bit), oppure (None, 0)
+            se l'AE non è raggiungibile.
         """
         try:
-            response = requests.get(f"{AE_URL}/status", timeout=5, verify=self._ae_verify())
+            response = requests.get(f"{AE_URL}/pow_challenge", timeout=5, verify=self._ae_verify())
             if response.status_code == 200:
-                return int(response.json().get("pow_difficulty", 4))
+                body = response.json()
+                return body["challenge"], int(body["difficulty"])
         except requests.exceptions.RequestException:
             pass
-        return 4
+        return None, 0
 
-    def solve_pow(self, enc_vote_hex: str, difficulty: int = 4) -> str:
+    def solve_pow(self, challenge_hex: str, enc_vote_hex: str, difficulty: int) -> str:
         """
         Risolve la Proof of Work (PoW) per poter inviare un voto.
 
         La PoW serve a dimostrare che l'elettore ha investito risorse computazionali,
         prevenendo attacchi di spam automatico.
 
-        L'obiettivo è trovare un nonce tale che SHA-256(enc_vote || nonce)
+        L'obiettivo è trovare un nonce tale che SHA-256(challenge || enc_vote || nonce)
         inizi con 'difficulty' bit a zero.
 
         Args:
+            challenge_hex (str): Challenge emessa dall'AE (esadecimale)
             enc_vote_hex (str): Voto cifrato in esadecimale
-            difficulty (int, optional): Numero di bit a zero richiesti. Default 4.
+            difficulty (int): Numero di bit a zero richiesti
 
         Returns:
             str: Nonce valido in formato esadecimale
         """
-        enc_vote_bytes = bytes.fromhex(enc_vote_hex)
+        prefix = bytes.fromhex(challenge_hex) + bytes.fromhex(enc_vote_hex)
+        shift = 256 - difficulty
         nonce = 0
         print("  Risolvendo Proof of Work...", end="", flush=True)
 
         while True:
             # Converti il nonce in 8 byte big-endian
             nonce_bytes = nonce.to_bytes(8, byteorder='big')
-            combined = enc_vote_bytes + nonce_bytes
-            hash_result = hashlib.sha256(combined).digest()
+            hash_result = hashlib.sha256(prefix + nonce_bytes).digest()
 
-            # Verifica se l'hash soddisfa la difficoltà richiesta
-            valid = True
-            required_zeros = difficulty // 8
-            required_bits = difficulty % 8
-
-            for i in range(required_zeros):
-                if hash_result[i] != 0:
-                    valid = False
-                    break
-
-            if valid and required_bits > 0:
-                mask = (0xFF << (8 - required_bits)) & 0xFF
-                if (hash_result[required_zeros] & mask) != 0:
-                    valid = False
-
-            if valid:
+            # I primi 'difficulty' bit dell'hash devono essere a zero
+            if int.from_bytes(hash_result, 'big') >> shift == 0:
                 print(" OK")
                 return nonce_bytes.hex()
 
@@ -363,7 +376,8 @@ class Client:
             elif not self.is_urn_open():
                 print("\nUrne chiuse! Non puoi più votare.")
             elif self.is_token_expired():
-                print("\nIl tuo token è scaduto! Non puoi più votare.")
+                print("\nIl tuo token è scaduto: autenticati di nuovo per rinnovarlo "
+                      "(il SA rinnova la stessa credenziale, si può votare una sola volta).")
             return
 
         # Ricarica i parametri pubblici dal Bulletin Board prima del voto, così
@@ -401,9 +415,9 @@ class Client:
         #    riproducibile da chiunque conosca (voto, seed, pk_AE), abilitando
         #    la verifica universale a scrutinio concluso.
         enc_vote_bytes = encrypt(self.ae_encrypt_public, vote_byte, seed=seed)
-        # Il seed viene cifrato separatamente con pk_AE (seed OAEP casuale
-        # interno) così che solo l'AE possa recuperarlo a urne chiuse e
-        # pubblicarlo per la verifica universale.
+        # Il seed viene inviato anche cifrato separatamente (enc_seed). Lo
+        # scrutinio non ne dipende: l'AE ricava il seed dalla decifratura della
+        # scheda stessa (EM), quindi un enc_seed incoerente non invalida il voto.
         enc_seed_bytes = encrypt(self.ae_encrypt_public, seed)
         enc_vote_hex = enc_vote_bytes.hex()
         enc_seed_hex = enc_seed_bytes.hex()
@@ -414,11 +428,14 @@ class Client:
         # MAX_POW_RETRIES volte prima di arrendersi.
         MAX_POW_RETRIES = 3
         for attempt in range(1, MAX_POW_RETRIES + 1):
-            difficulty = self.get_pow_difficulty()
+            challenge_hex, difficulty = self.get_pow_challenge()
+            if challenge_hex is None:
+                print("\nImpossibile ottenere la challenge PoW dall'AE. Assicurati che sia in esecuzione.")
+                return
             if attempt > 1:
                 print(f"  [Tentativo {attempt}/{MAX_POW_RETRIES}] "
                       f"Difficoltà aggiornata: {difficulty} bit")
-            pow_nonce_hex = self.solve_pow(enc_vote_hex, difficulty)
+            pow_nonce_hex = self.solve_pow(challenge_hex, enc_vote_hex, difficulty)
 
             try:
                 response = requests.post(
@@ -428,6 +445,7 @@ class Client:
                         "enc_seed": enc_seed_hex,
                         "token": self.token,
                         "token_signature": self.token_signature,
+                        "pow_challenge": challenge_hex,
                         "pow_nonce": pow_nonce_hex
                     },
                     verify=self._ae_verify()
@@ -478,22 +496,31 @@ class Client:
         else:
             print("\nDevi prima autenticarti!")
 
-    def verify_vote(self) -> None:
+    def verify_vote(self) -> bool:
         """
         Verifica che il voto dell'utente sia stato incluso e non modificato nello scrutinio.
 
-        Effettua cinque controlli completi (WP2/3 Fase 5 - Verifica individuale):
-        1. Verifica che la firma della ricevuta sia valida
-        2. Verifica che il voto sia incluso nel Merkle Tree tramite la Proof
-        3. Individua il voto nel blocco 'scrutinio'
-        4. CRITTOGRAFICO: Riesegue RSA-OAEP (con seed pubblicato) per confrontare con enc_vote originale
-        5. Mostra il risultato finale
+        Effettua sette controlli completi (WP2/3 Fase 5 - Verifica individuale):
+        1. Verifica che il blocco init sia firmato e che i pin AE siano validi
+        2. Verifica che la firma della ricevuta sia valida
+        3. Verifica la Merkle Proof della ricevuta contro la root del momento
+           del voto, la consistenza del registro (i primi tree_size voti danno
+           ancora quella root) e l'inclusione nella Merkle Root finale
+        4. Verifica che il blocco 'scrutinio' sia firmato dall'AE
+        5. Individua il voto nel blocco 'scrutinio'
+        6. CRITTOGRAFICO: verifica la decifratura pubblicata (EM^e mod n == c) e
+           riesegue RSA-OAEP con il seed pubblicato per confrontarlo con enc_vote
+        7. Mostra il risultato finale
+
+        Returns:
+            bool: True se tutte le verifiche sono riuscite, False altrimenti
+            (permette ai test di certificare l'esito senza analizzare l'output).
         """
         if self.username:
             receipt_path = f"data/receipts/{self.username}.json"
             if not os.path.exists(receipt_path):
                 print("\nNessuna ricevuta trovata per questo utente.")
-                return
+                return False
 
             # Carica la ricevuta
             with open(receipt_path, "r", encoding="utf-8") as f:
@@ -511,52 +538,97 @@ class Client:
 
             if not merkle_root:
                 print("\nUrne non ancora chiuse e scrutinio non eseguito.")
-                return
+                return False
 
             # 2. Verifica la firma della ricevuta con la chiave pubblica dell'AE
-            receipt_data_to_verify = {
-                "leaf_index": receipt['leaf_index'],
-                "enc_vote": receipt['enc_vote'],
-                "merkle_proof": receipt['merkle_proof'],
-                "timestamp": receipt['timestamp']
-            }
+            # La firma copre tutti i campi della ricevuta tranne la firma stessa
+            # (compatibile sia con le ricevute nuove, che includono tree_size e
+            # merkle_root_at_vote, sia con quelle del formato precedente).
+            receipt_data_to_verify = {k: v for k, v in receipt.items() if k != 'ae_signature'}
             receipt_json = json.dumps(receipt_data_to_verify, sort_keys=True).encode('utf-8')
             receipt_signature = bytes.fromhex(receipt['ae_signature'])
 
             if not verify(self.ae_sign_public, receipt_json, receipt_signature):
                 print("\nVerifica firma ricevuta fallita!")
-                return
+                return False
 
-            # 3. Ottieni il record del voto dal Bulletin Board per calcolare la foglia
-            vote_record = None
-            for block in self.bb:
-                if block['type'] == 'vote' and block['data']['enc_vote'] == receipt['enc_vote']:
-                    vote_record = block['data']
-                    break
+            # 3. Ottieni il record del voto dal Bulletin Board, nella posizione
+            #    indicata dalla ricevuta firmata (leaf_index).
+            vote_blocks = [block for block in self.bb if block['type'] == 'vote']
+            leaf_index = receipt['leaf_index']
+            if not (0 <= leaf_index < len(vote_blocks)) or \
+                    vote_blocks[leaf_index]['data']['enc_vote'] != receipt['enc_vote']:
+                print("\nScheda non trovata nel Bulletin Board alla posizione indicata dalla ricevuta!")
+                return False
 
-            if not vote_record:
-                print("\nScheda non trovata nel Bulletin Board!")
-                return
-
-            # 4. Calcola l'hash della foglia e verifica la Merkle Proof
+            vote_record = vote_blocks[leaf_index]['data']
             record_bytes = json.dumps(vote_record, sort_keys=True).encode('utf-8')
-            leaf_hash = hashlib.sha256(record_bytes).digest()
-            proof = receipt['merkle_proof']
+            leaf_hash = merkle_leaf_hash(record_bytes)
 
-            if not verify_proof(leaf_hash, proof, merkle_root):
-                print("\nVerifica Merkle Proof fallita!")
-                return
+            # 4. Verifica Merkle. La proof nella ricevuta è relativa all'albero
+            #    AL MOMENTO DEL VOTO (i voti successivi cambiano il percorso),
+            #    quindi va verificata contro merkle_root_at_vote, non contro la
+            #    root finale. Si controlla poi che il registro non sia stato
+            #    riscritto e che il voto sia incluso nella root finale.
+            rebuilt = MerkleTree()
+            prefix_root = None
+            tree_size = receipt.get('tree_size')
+            for i, block in enumerate(vote_blocks):
+                rebuilt.add_leaf(json.dumps(block['data'], sort_keys=True).encode('utf-8'))
+                if tree_size is not None and i + 1 == tree_size:
+                    prefix_root = rebuilt.get_root()
 
-            # 5. Ottieni blocco 'scrutinio'
-            scrutinio_data = None
+            if 'merkle_root_at_vote' in receipt and tree_size is not None:
+                # 4a. La proof firmata dimostra l'inclusione nella root del momento del voto
+                if not verify_proof(leaf_hash, receipt['merkle_proof'], receipt['merkle_root_at_vote']):
+                    print("\nVerifica Merkle Proof della ricevuta fallita!")
+                    return False
+                # 4b. Consistenza: i primi tree_size voti del Bulletin Board
+                #     producono ancora la root firmata nella ricevuta, cioè il
+                #     registro non è stato alterato dopo il voto.
+                if prefix_root != receipt['merkle_root_at_vote']:
+                    print("\nIl Bulletin Board non è coerente con la root registrata al momento del voto!")
+                    return False
+            else:
+                print("\nRicevuta nel formato precedente (senza root al momento del voto): "
+                      "si verifica solo l'inclusione nella root finale.")
+
+            # 4c. La ricostruzione dal Bulletin Board produce la root finale
+            #     firmata e il voto è incluso in essa.
+            if rebuilt.get_root() != merkle_root:
+                print("\nLa Merkle Root finale non corrisponde ai voti del Bulletin Board!")
+                return False
+            if not verify_proof(leaf_hash, rebuilt.get_proof(leaf_index), merkle_root):
+                print("\nVerifica Merkle Proof contro la root finale fallita!")
+                return False
+
+            # 5. Ottieni e verifica il blocco 'scrutinio'
+            scrutinio_block = None
             for block in self.bb:
                 if block['type'] == 'scrutinio':
-                    scrutinio_data = block['data']
+                    scrutinio_block = block
                     break
 
-            if not scrutinio_data:
+            if not scrutinio_block:
                 print("\nVoto incluso nel Merkle Tree, ma scrutinio non ancora pubblicato.")
-                return
+                return False
+
+            scrutinio_data = scrutinio_block.get("data")
+            scrutinio_signature_hex = scrutinio_block.get("signature")
+            if not isinstance(scrutinio_signature_hex, str):
+                print("\nVerifica firma scrutinio fallita: firma mancante o non valida.")
+                return False
+
+            try:
+                scrutinio_signature = bytes.fromhex(scrutinio_signature_hex)
+            except ValueError:
+                print("\nVerifica firma scrutinio fallita: firma non valida.")
+                return False
+
+            scrutinio_data_json = json.dumps(scrutinio_data, sort_keys=True).encode('utf-8')
+            if not verify(self.ae_sign_public, scrutinio_data_json, scrutinio_signature):
+                print("\nVerifica firma scrutinio fallita!")
+                return False
 
             scrutinated = scrutinio_data.get("voti_verificati", [])
             matching = next(
@@ -566,7 +638,7 @@ class Client:
 
             if not matching:
                 print("\nLa tua scheda è nel Merkle Tree ma non risulta tra i voti scrutinati!")
-                return
+                return False
 
             # 6. CRITTOGRAFICO: Riesegui RSA-OAEP usando seed pubblicato e voto in chiaro
             print("\n--- VERIFICA CRITTOGRAFICA (WP2 Fase 5) ---")
@@ -575,9 +647,32 @@ class Client:
 
             # Converti voto chiaro e seed in bytes
             voto_chiaro_str = matching.get('voto_chiaro')
+
+            # 6a. Decifratura verificabile: l'AE pubblica EM = c^d mod n. Con la
+            #     sola chiave pubblica si controlla che EM^e mod n == c e si
+            #     decodifica EM in modo indipendente: il contenuto ricavato deve
+            #     coincidere con quello dichiarato dall'AE (anche per le nulle).
+            em_hex = matching.get('em')
+            if em_hex is not None:
+                enc_vote_bytes = bytes.fromhex(receipt['enc_vote'])
+                em_bytes = bytes.fromhex(em_hex)
+                if not verify_raw_decryption(self.ae_encrypt_public, enc_vote_bytes, em_bytes):
+                    print("\nERRORE: la decifratura pubblicata (EM) non corrisponde alla tua scheda!")
+                    return False
+                try:
+                    _, plain = oaep_decode(em_bytes, modulus_length(self.ae_encrypt_public))
+                except ValueError:
+                    plain = b""
+                expected = (self.candidates[plain[0]]
+                            if len(plain) == 1 and plain[0] < len(self.candidates) else "Scheda nulla")
+                print(f"Contenuto ricavato dalla decifratura pubblicata (EM): {expected}")
+                if expected != voto_chiaro_str:
+                    print("\nERRORE: l'AE dichiara un contenuto diverso da quello della tua scheda!")
+                    return False
+
             if voto_chiaro_str == "Scheda nulla":
-                print("\nNota: Questa è una scheda nulla, non verifichiamo la corrispondenza crittografica (non abbiamo un indice di candidato valido).")
-                # Ma gli altri controlli sono già passati (Firma ricevuta, Merkle Proof, incluso nel scrutinio)
+                print("\nNota: scheda nulla. Il contenuto è stato verificato tramite EM;"
+                      " non c'è un indice di candidato da ricifrare.")
             else:
                 voto_chiaro_index = int(self.candidates.index(voto_chiaro_str))  # indice (es: 0,1,2)
                 voto_chiaro_bytes = voto_chiaro_index.to_bytes(1, byteorder='big')
@@ -596,20 +691,23 @@ class Client:
                 if enc_vote_verify_hex != receipt['enc_vote']:
                     print("\nERRORE CRITTOGRAFICO: I ciphertext NON corrispondono!")
                     print("L'AE potrebbe aver modificato il tuo voto durante lo scrutinio!")
-                    return
+                    return False
 
             # Tutti i controlli passati!
             print("\n✅ Tutte le verifiche sono riuscite!")
             print("   1. Firma ricevuta valida")
             print("   2. Merkle Proof valida (voto incluso nel tree)")
-            print("   3. Voto presente nel blocco 'scrutinio'")
+            print("   3. Firma scrutinio valida")
+            print("   4. Voto presente nel blocco 'scrutinio'")
             if voto_chiaro_str != "Scheda nulla":
-                print("   4. CRITTOGRAFICO: Ciphertext ricostruito corrisponde a quello originale")
+                print("   5. CRITTOGRAFICO: Ciphertext ricostruito corrisponde a quello originale")
             print("\nVoto correttamente conteggiato e non manipolato!")
             print(f"   Voto in chiaro pubblicato: {matching.get('voto_chiaro')}")
+            return True
 
         else:
             print("\nDevi prima autenticarti!")
+            return False
 
     def menu(self) -> None:
         """

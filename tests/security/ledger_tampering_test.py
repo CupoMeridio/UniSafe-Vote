@@ -18,7 +18,7 @@ sys.path.insert(0, SRC_DIR)
 sys.path.insert(0, TESTS_SEC_DIR)
 
 from test_reporter import save_report
-from crypto.merkle import MerkleTree, verify_proof
+from crypto.merkle import MerkleTree, verify_proof, leaf_hash as merkle_leaf_hash, node_hash
 
 
 def create_dummy_vote(index: int, candidate: int = 0) -> dict:
@@ -33,7 +33,7 @@ def create_dummy_vote(index: int, candidate: int = 0) -> dict:
 def get_leaf_hash(vote_record: dict) -> bytes:
     """Calcola l'hash SHA-256 di un record di voto (come nel sistema vero)"""
     record_bytes = json.dumps(vote_record, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(record_bytes).digest()
+    return merkle_leaf_hash(record_bytes)
 
 
 def main():
@@ -47,6 +47,7 @@ def main():
     print("-" * 90)
     original_votes = []
     mt = MerkleTree()
+    leaf_to_modify_index = 3
 
     for i in range(8):
         vote = create_dummy_vote(index=i, candidate=i % 3)  # 0, 1, 2 ripetuti
@@ -54,16 +55,28 @@ def main():
         record_bytes = json.dumps(vote, sort_keys=True).encode("utf-8")
         mt.add_leaf(record_bytes)
         print(f"  [Foglia {i}] Aggiunto voto per candidato {i % 3}")
+        if i == leaf_to_modify_index:
+            # Ricevuta rilasciata dall'AE AL MOMENTO DEL VOTO, come nel sistema
+            # reale: proof, numero di foglie e root di quell'istante. La proof
+            # è valida rispetto a questa root, non a quella finale.
+            receipt_at_vote = {
+                "leaf_index": i,
+                "tree_size": i + 1,
+                "merkle_proof": mt.get_proof(i),
+                "merkle_root_at_vote": mt.get_root(),
+            }
+            print(f"           → ricevuta all'elettore: tree_size {i + 1}, "
+                  f"root_at_vote {receipt_at_vote['merkle_root_at_vote'][:24]}...")
 
     original_root = mt.get_root()
     print(f"\n  [RADICE ORIGINALE] Merkle Root: {original_root}")
     print(f"  (Salvata sul Bulletin Board e visibile pubblicamente)")
 
-    # Salva anche una proof per la foglia 3, per dimostrare la verifica individuale
-    leaf_to_modify_index = 3
+    # Salva anche una proof per la foglia 3 calcolata sull'albero completo,
+    # per il confronto diretto tra radice originale e modificata
     original_leaf = original_votes[leaf_to_modify_index]
     original_leaf_record_bytes = json.dumps(original_leaf, sort_keys=True).encode("utf-8")
-    original_leaf_hash = hashlib.sha256(original_leaf_record_bytes).digest()
+    original_leaf_hash = merkle_leaf_hash(original_leaf_record_bytes)
     original_proof = mt.get_proof(leaf_to_modify_index)
 
     print(f"\n[2] PREPARAZIONE ATTACCO")
@@ -101,7 +114,7 @@ def main():
 
     modified_root = mt_modified.get_root()
     modified_leaf_record_bytes = json.dumps(modified_vote, sort_keys=True).encode("utf-8")
-    modified_leaf_hash = hashlib.sha256(modified_leaf_record_bytes).digest()
+    modified_leaf_hash = merkle_leaf_hash(modified_leaf_record_bytes)
     modified_proof = mt_modified.get_proof(leaf_to_modify_index)
 
     # Passo 5: Confronta le radici
@@ -123,6 +136,47 @@ def main():
     print(f"      * Verifica con radice ORIGINALE: {verify_proof(modified_leaf_hash, modified_proof, original_root)}")
     print(f"      * Verifica con radice MODIFICATA: {verify_proof(modified_leaf_hash, modified_proof, modified_root)}")
 
+    # Verifica come la esegue il client reale, con la ricevuta del momento del voto
+    print("\n  [Verifica con la ricevuta rilasciata AL MOMENTO DEL VOTO (come il client reale)]")
+    receipt_proof_vs_vote_root = verify_proof(original_leaf_hash, receipt_at_vote["merkle_proof"],
+                                              receipt_at_vote["merkle_root_at_vote"])
+    receipt_proof_vs_final_root = verify_proof(original_leaf_hash, receipt_at_vote["merkle_proof"],
+                                               original_root)
+    print(f"    - Proof della ricevuta vs root al momento del voto: {receipt_proof_vs_vote_root}")
+    print(f"    - Proof della ricevuta vs root finale:              {receipt_proof_vs_final_root}"
+          f"  (atteso False: l'albero è cresciuto dopo il voto)")
+
+    def prefix_root(votes, size):
+        t = MerkleTree()
+        for v in votes[:size]:
+            t.add_leaf(json.dumps(v, sort_keys=True).encode("utf-8"))
+        return t.get_root()
+
+    size = receipt_at_vote["tree_size"]
+    prefix_ok_original = prefix_root(original_votes, size) == receipt_at_vote["merkle_root_at_vote"]
+    prefix_ok_tampered = prefix_root(modified_votes, size) == receipt_at_vote["merkle_root_at_vote"]
+    print(f"    - Consistenza dei primi {size} voti (registro ORIGINALE): {prefix_ok_original}")
+    print(f"    - Consistenza dei primi {size} voti (registro MANOMESSO): {prefix_ok_tampered}"
+          f"  → {'manomissione rilevata' if not prefix_ok_tampered else 'NON rilevata'}")
+
+    # Attacco di seconda preimmagine: l'amministratore presenta come "foglia"
+    # la concatenazione dei due figli di un nodo interno (H(foglia 0) || H(foglia 1)),
+    # sperando che la proof di quel dato inventato risulti valida. Con prefissi
+    # distinti per foglie (0x00) e nodi (0x01) l'hash del dato inventato come
+    # foglia non coincide mai con l'hash del nodo interno.
+    print("\n  [Seconda preimmagine: nodo interno spacciato per foglia]")
+    pair_tree = MerkleTree()
+    for vote in original_votes[:2]:
+        pair_tree.add_leaf(json.dumps(vote, sort_keys=True).encode("utf-8"))
+    pair_root = pair_tree.get_root()
+    forged_leaf_data = pair_tree.leaves[0] + pair_tree.leaves[1]
+    second_preimage_accepted = verify_proof(merkle_leaf_hash(forged_leaf_data), [], pair_root)
+    print(f"    - Root dell'albero con 2 voti:            {pair_root[:32]}...")
+    print(f"    - Hash del nodo interno (0x01 || figli):  {node_hash(pair_tree.leaves[0], pair_tree.leaves[1]).hex()[:32]}...")
+    print(f"    - Hash del dato inventato come foglia:    {merkle_leaf_hash(forged_leaf_data).hex()[:32]}...")
+    print(f"    - Proof del dato inventato accettata?     {second_preimage_accepted}"
+          f"  → {'VULNERABILE' if second_preimage_accepted else 'attacco bloccato dalla separazione di dominio'}")
+
     print("\n  [Conclusioni]")
     print("  1. Qualsiasi modifica ai dati sul Bulletin Board altera la Merkle Root")
     print("  2. La Merkle Root originale è pubblicamente conosciuta (sul Bulletin Board firmata)")
@@ -143,7 +197,9 @@ def main():
     save_report(
         test_id="ledger_tampering",
         test_name="Manomissione del Bulletin Board (Ledger Tampering / Merkle Tree)",
-        outcome="PASS" if (not roots_match and orig_valid_orig and not orig_valid_mod) else "FAIL",
+        outcome="PASS" if (not roots_match and orig_valid_orig and not orig_valid_mod
+                           and receipt_proof_vs_vote_root and prefix_ok_original
+                           and not prefix_ok_tampered and not second_preimage_accepted) else "FAIL",
         details={
             "leaves_count": 8,
             "tampered_leaf_index": leaf_to_modify_index,
@@ -155,6 +211,15 @@ def main():
                 "original_leaf_original_proof_vs_modified_root": orig_valid_mod,
                 "modified_leaf_modified_proof_vs_original_root": mod_valid_orig,
                 "modified_leaf_modified_proof_vs_modified_root": mod_valid_mod,
+            },
+            "second_preimage_forged_leaf_accepted": second_preimage_accepted,
+            "receipt_at_vote": {
+                "tree_size": receipt_at_vote["tree_size"],
+                "merkle_root_at_vote": receipt_at_vote["merkle_root_at_vote"],
+                "proof_vs_root_at_vote": receipt_proof_vs_vote_root,
+                "proof_vs_final_root": receipt_proof_vs_final_root,
+                "prefix_consistent_original_ledger": prefix_ok_original,
+                "prefix_consistent_tampered_ledger": prefix_ok_tampered,
             },
             "conclusion": (
                 "Qualsiasi modifica ai dati del Bulletin Board altera la Merkle Root: "

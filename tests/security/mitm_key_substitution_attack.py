@@ -22,8 +22,10 @@ sys.path.insert(0, SRC_DIR)
 sys.path.insert(0, TESTS_SEC_DIR)
 
 from test_reporter import save_report
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
+from common import create_test_election, close_payload
 from crypto.keys import (generate_rsa_keypair, save_keypair, serialize_public_key,
-                          deserialize_public_key, save_encrypted_private_key)
+                          deserialize_public_key)
 from crypto.rsa_pss import sign
 from crypto.password import hash_password
 from cryptography.hazmat.primitives import serialization
@@ -73,77 +75,10 @@ def init_election():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(KEYS_DIR, exist_ok=True)
 
-    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
-        p = os.path.join(DATA_DIR, fname)
-        if os.path.exists(p):
-            os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f == ".gitkeep":
-            continue
-        os.remove(os.path.join(KEYS_DIR, f))
-
-    # Si generano tre coppie RSA-2048: firma SA, cifratura AE e firma AE.
-    sa_sign_priv,  sa_sign_pub  = generate_rsa_keypair()
-    ae_enc_priv,   ae_enc_pub   = generate_rsa_keypair()
-    ae_sign_priv,  ae_sign_pub  = generate_rsa_keypair()
-
-    save_keypair(sa_sign_priv, sa_sign_pub,  "sa_sign")
-    save_keypair(ae_enc_priv,  ae_enc_pub,   "ae_encrypt")
-    save_keypair(ae_sign_priv, ae_sign_pub,  "ae_sign")
-
-    # L'elezione apre immediatamente e chiude tra 24 ore.
-    opening = datetime.now(UTC).isoformat()
-    closing = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
-
-    # Si compone il blocco di inizializzazione con i parametri pubblici
-    # dell'elezione e le chiavi pubbliche dei componenti, poi lo si firma.
-    init_data = {
-        "election_id":       "elezione_test_double_voting",
-        "candidates":        CANDIDATES,
-        "opening_time":      opening,
-        "closing_time":      closing,
-        "sa_sign_public":    serialize_public_key(sa_sign_pub),
-        "ae_encrypt_public": serialize_public_key(ae_enc_pub),
-        "ae_sign_public":    serialize_public_key(ae_sign_pub),
-    }
-    init_json      = json.dumps(init_data, sort_keys=True).encode("utf-8")
-    init_signature = sign(ae_sign_priv, init_json)
-
-    bb = [{
-        "type":      "init",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "data":      init_data,
-        "signature": init_signature.hex(),
-    }]
-    with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
-        json.dump(bb, f, indent=2, ensure_ascii=False)
-
-    # Si calcolano le impronte SHA-256 delle chiavi pubbliche AE e si salvano
-    # in pins.json, simulando il canale di distribuzione trusted separato
-    # dal Bulletin Board (certificate pinning, WP3 §3.4).
-    pins = {
-        "ae_encrypt_public": "sha256:" + compute_public_key_fingerprint(init_data["ae_encrypt_public"]),
-        "ae_sign_public":    "sha256:" + compute_public_key_fingerprint(init_data["ae_sign_public"]),
-    }
-    with open(os.path.join(DATA_DIR, "pins.json"), "w", encoding="utf-8") as f:
-        json.dump(pins, f, indent=2, ensure_ascii=False)
-
-    # La chiave privata di cifratura AE viene salvata cifrata con AES-GCM
-    # usando la firma del blocco init come IKM (WP3 §3.3).
-    save_encrypted_private_key(ae_enc_priv, "ae_encrypt", init_signature)
-
-    # Le password vengono salvate come hash Argon2, mai in chiaro.
-    voters_data = []
-    for v in VOTERS:
-        vc = v.copy()
-        vc["password"] = hash_password(vc["password"])
-        voters_data.append(vc)
-    with open(os.path.join(DATA_DIR, "voters.json"), "w", encoding="utf-8") as f:
-        json.dump(voters_data, f, indent=2, ensure_ascii=False)
-
-    # Si inizializza lo stato privato dell'AE con la lista dei token usati vuota.
-    with open(os.path.join(DATA_DIR, "ae_state.json"), "w", encoding="utf-8") as f:
-        json.dump({"used_tokens": []}, f, indent=2, ensure_ascii=False)
+    # Elezione di test creata dal modulo condiviso: stesso schema di
+    # init_election.py, chiave di decifratura protetta solo dall'escrow
+    # Shamir (nessuna copia in chiaro su disco).
+    init_data = create_test_election("elezione_test_double_voting", VOTERS, CANDIDATES)
 
     print("Elezioni inizializzate con successo!")
 
@@ -258,6 +193,19 @@ def main():
         tampered_bb[0]["data"]["ae_encrypt_public"] = fake_enc_pem
         tampered_bb[0]["data"]["ae_sign_public"]    = fake_sign_pem
 
+        # Un attaccante realistico RI-FIRMA il blocco init manomesso con la
+        # propria chiave di firma contraffatta. In questo modo la verifica della
+        # firma del blocco init PASSA (la firma è coerente con la chiave di firma
+        # dichiarata nel blocco stesso) e l'unica difesa rimasta è il confronto
+        # con i pin trusted distribuiti su canale separato. Senza questa
+        # ri-firma l'attacco verrebbe fermato dalla verifica della firma e il
+        # test non dimostrerebbe nulla sul certificate pinning.
+        tampered_init_json = json.dumps(tampered_bb[0]["data"], sort_keys=True).encode("utf-8")
+        tampered_bb[0]["signature"] = sign(fake_sign_priv, tampered_init_json).hex()
+        print("\n  Blocco init ri-firmato con la chiave di firma CONTRAFFATTA:")
+        print("  la verifica della firma del blocco init risulterà valida,")
+        print("  quindi l'attacco può essere fermato solo dal certificate pinning.")
+
         with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
             json.dump(tampered_bb, f, indent=2, ensure_ascii=False)
 
@@ -291,8 +239,15 @@ def main():
             print("  [FALLIMENTO] Il client ha accettato le chiavi contraffatte!")
         except SecurityError as e:
             error_message = str(e)
-            detected = True
-            print(f"  [PASS] SecurityError sollevato correttamente!")
+            # Il test passa solo se a bloccare l'attacco è proprio il pinning:
+            # un errore di firma indicherebbe che la ri-firma non è avvenuta e
+            # che il pinning non è stato messo alla prova.
+            detected_by_pinning = "Impronta" in error_message
+            detected = detected_by_pinning
+            if detected:
+                print(f"  [PASS] SecurityError sollevato dal certificate pinning!")
+            else:
+                print(f"  [FAIL] SecurityError sollevato, ma NON dal pinning.")
             print(f"  Messaggio: {error_message}")
 
     finally:
@@ -342,6 +297,8 @@ def main():
                 "ae_sign_public":    pin_sign,
             },
             "tampering_detected": detected,
+            "init_block_resigned_by_attacker": True,
+            "detected_by": "certificate_pinning" if detected else "other_or_none",
             "security_error_message": error_message,
             "protection_mechanism": "Certificate Pinning (SHA-256 DER fingerprint)",
         },

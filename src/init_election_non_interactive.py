@@ -12,7 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from cryptography.hazmat.primitives import serialization
-from crypto.keys import generate_rsa_keypair, save_keypair, serialize_public_key, deserialize_public_key, save_encrypted_private_key
+from crypto.keys import generate_rsa_keypair, save_keypair, serialize_public_key, deserialize_public_key, escrow_private_key, escrow_public_info
 from crypto.rsa_pss import sign
 from crypto.password import hash_password
 
@@ -52,9 +52,11 @@ def main():
     ae_encrypt_private, ae_encrypt_public = generate_rsa_keypair()
     ae_sign_private, ae_sign_public = generate_rsa_keypair()
     save_keypair(sa_sign_private, sa_sign_public, "sa_sign")
-    # ae_encrypt: salviamo SOLO la chiave pubblica in PEM (serve ai client per cifrare);
-    # la chiave privata viene salvata cifrata con AES-GCM (IKM = firma blocco init).
-    save_keypair(ae_encrypt_private, ae_encrypt_public, "ae_encrypt")  # salva entrambe per ora
+    # ae_encrypt: pubblichiamo solo la chiave pubblica; la chiave privata
+    # resta disponibile solo nel file cifrato creato più avanti.
+    os.makedirs("data/keys", exist_ok=True)
+    with open("data/keys/ae_encrypt_public.pem", "w", encoding="utf-8") as f:
+        f.write(serialize_public_key(ae_encrypt_public))
     save_keypair(ae_sign_private, ae_sign_public, "ae_sign")
 
     # 2. Configura elezione
@@ -64,6 +66,14 @@ def main():
     opening_time = datetime.now(UTC).isoformat()
     closing_time = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
 
+
+    # Escrow a soglia della chiave privata di decifratura (Shamir 2-su-3): la
+    # chiave viene cifrata con una chiave AES casuale, divisa in 3 quote per
+    # gli scrutatori; ne servono 2 per lo scrutinio. Gli impegni sulle quote
+    # finiscono nel blocco init firmato, così le quote non sono sostituibili.
+    trustee_shares = escrow_private_key(ae_encrypt_private, election_id, trustees=3, threshold=2)
+    del ae_encrypt_private
+
     init_data = {
         "election_id": election_id,
         "candidates": candidates,
@@ -71,7 +81,8 @@ def main():
         "closing_time": closing_time,
         "sa_sign_public": serialize_public_key(sa_sign_public),
         "ae_encrypt_public": serialize_public_key(ae_encrypt_public),
-        "ae_sign_public": serialize_public_key(ae_sign_public)
+        "ae_sign_public": serialize_public_key(ae_sign_public),
+        "escrow": escrow_public_info(trustee_shares)
     }
 
     init_data_json = json.dumps(init_data, sort_keys=True).encode('utf-8')
@@ -94,15 +105,6 @@ def main():
     }
     with open("data/pins.json", "w", encoding="utf-8") as f:
         json.dump(pins, f, indent=2, ensure_ascii=False)
-
-    # Cifra la chiave privata di decifratura dell'AE con AES-GCM.
-    # IKM = firma del blocco init: la chiave può essere decifrata solo da chi
-    # possiede quella firma, ovvero l'AE stessa a urne chiuse.
-    # Al /close, il nuovo IKM sarà la firma della Merkle Root finale, che include
-    # i voti e può quindi esistere solo dopo la chiusura delle urne.
-    # Per il salvataggio iniziale usiamo la firma del blocco init come placeholder:
-    # ae.py sovrascriverà il .enc durante il /close con il nuovo IKM corretto.
-    save_encrypted_private_key(ae_encrypt_private, "ae_encrypt", init_signature)
 
     with open("data/voters.json", "w", encoding="utf-8") as f:
         voters_to_save = []

@@ -2,6 +2,16 @@
 Locust Test File per UniSafe-Vote Performance Testing
 - Scenario Ottimale (Baseline): Utenti legittimi che autenticano e votano
 - Scenario DoS: Attacco volumetrico con PoW invalida (simulazione DDoS)
+
+Prerequisiti:
+- elezione inizializzata (preconfigurata) e server SA/AE avviati;
+- per simulare IP diversi tramite X-Forwarded-For, avviare il SA con la
+  variabile d'ambiente UNISAFE_TRUST_PROXY_HEADERS=1: in modalità normale il SA
+  ignora l'header (falsificabile) e tutte le richieste locali condividono il
+  rate limit dello stesso IP.
+
+SA e AE ascoltano su porte diverse: le richieste usano URL assoluti, quindi
+l'opzione --host di Locust è ininfluente.
 """
 import json
 import os
@@ -18,29 +28,17 @@ from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
 
 
-def solve_pow(enc_vote_bytes: bytes, difficulty: int = 4) -> str:
-    """Risoluzione Proof of Work per test"""
+SA_URL = "https://localhost:5001"
+AE_URL = "https://localhost:5002"
+
+
+def solve_pow(challenge_hex: str, enc_vote_bytes: bytes, difficulty: int) -> str:
+    """Trova un nonce tale che SHA-256(challenge || enc_vote || nonce) abbia `difficulty` bit iniziali a zero."""
+    prefix = bytes.fromhex(challenge_hex) + enc_vote_bytes
     nonce = 0
     while True:
         nonce_bytes = nonce.to_bytes(8, 'big')
-        combined = enc_vote_bytes + nonce_bytes
-        hash_result = hashlib.sha256(combined).digest()
-        
-        valid = True
-        required_zeros = difficulty // 8
-        required_bits = difficulty % 8
-        
-        for i in range(required_zeros):
-            if hash_result[i] != 0:
-                valid = False
-                break
-        
-        if valid and required_bits > 0:
-            mask = (0xFF << (8 - required_bits)) & 0xFF
-            if (hash_result[required_zeros] & mask) != 0:
-                valid = False
-        
-        if valid:
+        if int.from_bytes(hashlib.sha256(prefix + nonce_bytes).digest(), 'big') >> (256 - difficulty) == 0:
             return nonce_bytes.hex()
         nonce += 1
 
@@ -48,7 +46,7 @@ def solve_pow(enc_vote_bytes: bytes, difficulty: int = 4) -> str:
 class LegitimateUser(HttpUser):
     """Utente legittimo: autentica e vota"""
     wait_time = between(1, 3)
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.username: Optional[str] = None
@@ -56,14 +54,14 @@ class LegitimateUser(HttpUser):
         self.token_signature: Optional[str] = None
         self.has_voted: bool = False
         self.ae_public_key = None
-        
+
         # IP Finto per bypassare il Rate Limiting
         self.fake_ip = f"192.168.{random.randint(1, 254)}.{random.randint(1, 254)}"
         self.headers = {"X-Forwarded-For": self.fake_ip}
-    
+
     def on_start(self):
         """Carica la chiave dell'AE e autentica l'utente"""
-        
+
         # 1. Carica la chiave pubblica dell'AE per cifrare i voti
         # Data è ora in data/
         bb_path = os.path.join(PROJECT_ROOT, "data", "bulletin_board.json")
@@ -74,7 +72,7 @@ class LegitimateUser(HttpUser):
                 self.ae_public_key = deserialize_public_key(ae_pub_pem)
         except Exception as e:
             print(f"Errore caricamento chiave AE da {bb_path}: {e}")
-            
+
         # 2. Utenti presenti nel voters.json
         test_users = [
             ("vitto.posti",  "password123"),
@@ -82,56 +80,62 @@ class LegitimateUser(HttpUser):
             ("carlo.deluca", "pass_cDL92"),
             ("sara.espo",    "pass_sE99"),
         ]
-        
+
         self.username, password = random.choice(test_users)
-        
+
         # Autenticazione sul SA
         auth_response = self.client.post(
-            "/authenticate",
+            f"{SA_URL}/authenticate",
             json={"username": self.username, "password": password},
             headers=self.headers
         )
         if auth_response.status_code == 200:
             self.token = auth_response.json()["token"]
             self.token_signature = auth_response.json()["signature"]
-    
+
     @task(3)  # 3 voti ogni 1 verifica
     def vote(self):
         if not self.token or self.has_voted or not self.ae_public_key:
             return
-        
+
         # 1. Genera un VOTO VERO e cifralo in RSA-OAEP
+        # Il voto è il solo indice della lista (1 byte): prima veniva cifrato il
+        # carattere ASCII dell'indice (es. b"0" = 0x30), fuori dominio, e ogni
+        # voto di Locust risultava scheda nulla.
         candidate_index = random.randint(0, 2)
-        candidate_bytes = str(candidate_index).encode('utf-8')
-        
+        candidate_bytes = bytes([candidate_index])
+
         seed = os.urandom(32)
         enc_vote_bytes = encrypt(self.ae_public_key, candidate_bytes, seed)
         enc_seed_bytes = encrypt(self.ae_public_key, seed, os.urandom(32))
-        
-        # 2. Calcola la Proof of Work
-        pow_nonce = solve_pow(enc_vote_bytes, 4)
-        
+
+        # 2. Chiede la challenge all'AE e calcola la Proof of Work
+        challenge = self.client.get(f"{AE_URL}/pow_challenge", headers=self.headers,
+                                    name="/pow_challenge").json()
+        pow_nonce = solve_pow(challenge["challenge"], enc_vote_bytes, int(challenge["difficulty"]))
+
         vote_payload = {
             "enc_vote": enc_vote_bytes.hex(),
             "enc_seed": enc_seed_bytes.hex(),
             "token": self.token,
             "token_signature": self.token_signature,
+            "pow_challenge": challenge["challenge"],
             "pow_nonce": pow_nonce
         }
-        
+
         # 3. Invia il voto all'AE
         response = self.client.post(
-            "/vote",
+            f"{AE_URL}/vote",
             json=vote_payload,
             headers=self.headers
         )
         if response.status_code == 200:
             self.has_voted = True
-    
+
     @task(1)  # 1 verifica ogni 3 voti
     def verify_status(self):
         self.client.get(
-            "/status",
+            f"{AE_URL}/status",
             headers=self.headers
         )
 
@@ -139,7 +143,7 @@ class LegitimateUser(HttpUser):
 class MaliciousDoSUser(HttpUser):
     """Utente malintenzionato che attacca con PoW invalida (Botnet DDoS)"""
     wait_time = between(0.01, 0.1)
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fake_ip = f"10.0.{random.randint(1, 254)}.{random.randint(1, 254)}"
@@ -157,7 +161,7 @@ class MaliciousDoSUser(HttpUser):
             "pow_nonce": "0000000000000000"
         }
         self.client.post(
-            "/vote",
+            f"{AE_URL}/vote",
             json=vote_payload,
             headers=self.headers
         )

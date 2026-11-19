@@ -1,190 +1,177 @@
+"""
+Test del flusso completo di un'elezione (end-to-end).
 
+Percorre l'intero ciclo di vita con i server reali SA e AE:
+  1. inizializzazione dell'elezione di test (modulo condiviso tests/common.py);
+  2. autenticazione presso il SA e verifica dei pin trusted delle chiavi AE;
+  3. cifratura del voto, Proof of Work, invio all'AE e ricevuta firmata;
+  4. riconciliazione, consegna delle quote degli scrutatori e scrutinio;
+  5. verifica individuale della ricevuta con il client reale;
+  6. verifica universale con l'Observer.
+"""
+
+import contextlib
+import io
+import json
 import os
 import subprocess
 import sys
 import time
-import requests
-import json
-import hashlib
 
-# Risolve dinamicamente la cartella del progetto corrente
+import requests
+
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(TESTS_DIR, ".."))
 SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 sys.path.insert(0, SRC_DIR)
 sys.path.insert(0, TESTS_DIR)
+sys.path.insert(0, os.path.join(TESTS_DIR, "security"))
 
-SA_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "sa_cert.pem")
-AE_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "ae_cert.pem")
-
-
-def verify_for(url: str) -> str | bool:
-    if "5001" in url:
-        return SA_CERT if os.path.exists(SA_CERT) else True
-    if "5002" in url:
-        return AE_CERT if os.path.exists(AE_CERT) else True
-    return True
-
-from tls_config import ensure_tls_certs
+from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
+from common import (create_test_election, close_payload, clean_election_state, pow_fields,
+                    compute_public_key_fingerprint, DATA_DIR, BULLETIN_BOARD_PATH)
+from test_reporter import save_report
 from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt
-from client import compute_public_key_fingerprint
+
+VOTER = {"id": "v001", "email": "v.postiglione7@studenti.unisa.it",
+         "username": "vitto.posti", "password": "password123"}
+RECEIPTS_DIR = os.path.join(DATA_DIR, "receipts")
 
 
-def validate_pins(bulletin_board):
-    """Verifica che le chiavi AE del Bulletin Board corrispondano ai pin trusted."""
-    with open(os.path.join(SRC_DIR, "data", "pins.json"), "r", encoding="utf-8") as f:
-        pins = json.load(f)
+def wait_server(url: str, verify) -> bool:
+    for _ in range(30):
+        try:
+            if requests.get(f"{url}/status", timeout=0.5, verify=verify).status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
 
-    init_data = bulletin_board[0]["data"]
-
-    def normalize_pin(pin_value):
-        return pin_value[7:] if pin_value.startswith("sha256:") else pin_value
-
-    assert normalize_pin(pins["ae_encrypt_public"]) == compute_public_key_fingerprint(init_data["ae_encrypt_public"])
-    assert normalize_pin(pins["ae_sign_public"]) == compute_public_key_fingerprint(init_data["ae_sign_public"])
-    print("Pin trusted AE verificati con successo!")
-
-def check_server(url):
-    try:
-        r = requests.get(url + "/status", timeout=1, verify=verify_for(url))
-        return r.status_code == 200
-    except:
-        return False
-
-def solve_pow(enc_vote_hex, difficulty=4):
-    enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-    nonce = 0
-    while True:
-        nonce_bytes = nonce.to_bytes(8, byteorder='big')
-        combined = enc_vote_bytes + nonce_bytes
-        hash_result = hashlib.sha256(combined).digest()
-        
-        valid = True
-        required_zeros = difficulty // 8
-        required_bits = difficulty % 8
-        for i in range(required_zeros):
-            if hash_result[i] != 0:
-                valid = False
-                break
-        if valid and required_bits > 0:
-            mask = (0xFF << (8 - required_bits)) & 0xFF
-            if (hash_result[required_zeros] & mask) != 0:
-                valid = False
-        if valid:
-            return nonce_bytes.hex()
-        nonce += 1
 
 def main():
-    print("Avvio dei server SA e AE per il test...")
-    python_exe = sys.executable
-    ensure_tls_certs()
-    
-    # Avvia i server SA e AE in background
-    sa_proc = subprocess.Popen([python_exe, "sa.py"], cwd=SRC_DIR)
-    ae_proc = subprocess.Popen([python_exe, "ae.py"], cwd=SRC_DIR)
-    
+    print("=" * 70)
+    print("  TEST FLUSSO COMPLETO DELL'ELEZIONE (END-TO-END)")
+    print("=" * 70)
+    steps = {}
+    sa_proc = ae_proc = None
     try:
-        # Attesa del boot
-        print("Attesa che i server rispondano...")
-        for _ in range(15):
-            if check_server("https://localhost:5001") and check_server("https://localhost:5002"):
-                print("Server pronti!")
-                break
-            time.sleep(1)
-        else:
-            raise Exception("Timeout nell'avvio dei server")
-            
-        # 1. Autenticazione elettore
-        print("Autenticazione vitto.posti...")
-        r = requests.post("https://localhost:5001/authenticate", json={
-            "username": "vitto.posti",
-            "password": "password123"
-        }, verify=verify_for("https://localhost:5001"))
+        # 1 -----------------------------------------------------------------
+        print("\n[1] Inizializzazione dell'elezione di test e avvio dei server...")
+        ensure_tls_certs()
+        init_data = create_test_election("test_flusso_completo", [VOTER])
+        sa_proc = subprocess.Popen([sys.executable, os.path.join(SRC_DIR, "sa.py")], cwd=PROJECT_ROOT,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ae_proc = subprocess.Popen([sys.executable, os.path.join(SRC_DIR, "ae.py")], cwd=PROJECT_ROOT,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        steps["servers_started"] = wait_server(SA_URL, sa_verify()) and wait_server(AE_URL, ae_verify())
+        assert steps["servers_started"], "Timeout nell'avvio dei server"
+        print("    SA e AE pronti.")
+
+        # 2 -----------------------------------------------------------------
+        print(f"\n[2] Autenticazione di {VOTER['username']} e verifica dei pin AE...")
+        r = requests.post(f"{SA_URL}/authenticate",
+                          json={"username": VOTER["username"], "password": VOTER["password"]},
+                          timeout=10, verify=sa_verify())
         r.raise_for_status()
-        auth_data = r.json()
-        token = auth_data["token"]
-        token_signature = auth_data["signature"]
-        print("Autenticato con successo!")
-        
-        # 2. Preparazione voto
-        print("Preparazione del voto per Lista A (indice 0)...")
-        with open(os.path.join(SRC_DIR, "data", "bulletin_board.json"), "r", encoding="utf-8") as f:
-            bb = json.load(f)
-        validate_pins(bb)
-        ae_encrypt_public_pem = bb[0]["data"]["ae_encrypt_public"]
-        ae_encrypt_public = deserialize_public_key(ae_encrypt_public_pem)
-        
+        token, token_signature = r.json()["token"], r.json()["signature"]
+        with open(os.path.join(DATA_DIR, "pins.json"), "r", encoding="utf-8") as f:
+            pins = json.load(f)
+        steps["pins_ok"] = (
+            pins["ae_encrypt_public"].removeprefix("sha256:") == compute_public_key_fingerprint(init_data["ae_encrypt_public"])
+            and pins["ae_sign_public"].removeprefix("sha256:") == compute_public_key_fingerprint(init_data["ae_sign_public"])
+        )
+        print(f"    Token ottenuto; pin trusted AE {'verificati' if steps['pins_ok'] else 'NON corrispondenti'}.")
+
+        # 3 -----------------------------------------------------------------
+        print("\n[3] Voto per Lista A: cifratura, Proof of Work, invio all'AE...")
+        ae_encrypt_public = deserialize_public_key(init_data["ae_encrypt_public"])
         seed = os.urandom(32)
-        vote_byte = (0).to_bytes(1, byteorder='big')
-        # Voto cifrato con seed iniettato (deterministico/verificabile), seed cifrato a parte
-        enc_vote = encrypt(ae_encrypt_public, vote_byte, seed=seed).hex()
+        enc_vote = encrypt(ae_encrypt_public, (0).to_bytes(1, "big"), seed=seed).hex()
         enc_seed = encrypt(ae_encrypt_public, seed).hex()
-        
-        print("Risoluzione Proof of Work...")
-        pow_nonce = solve_pow(enc_vote)
-        
-        # 3. Invio del voto all'AE
-        print("Invio del voto all'AE...")
-        r = requests.post("https://localhost:5002/vote", json={
-            "enc_vote": enc_vote,
-            "enc_seed": enc_seed,
-            "token": token,
-            "token_signature": token_signature,
-            "pow_nonce": pow_nonce
-        }, verify=verify_for("https://localhost:5002"))
+        r = requests.post(f"{AE_URL}/vote", json={
+            "enc_vote": enc_vote, "enc_seed": enc_seed, "token": token,
+            "token_signature": token_signature, **pow_fields(enc_vote),
+        }, timeout=10, verify=ae_verify())
         r.raise_for_status()
         receipt = r.json()
-        print(f"Voto accettato! Leaf index: {receipt['leaf_index']}")
-        
-        # 4. Chiusura elezione e scrutinio
-        print("Chiusura dell'elezione e riconciliazione...")
-        requests.post("https://localhost:5001/reconcile", verify=verify_for("https://localhost:5001")).raise_for_status()
-        r = requests.post("https://localhost:5002/close", verify=verify_for("https://localhost:5002"))
+        os.makedirs(RECEIPTS_DIR, exist_ok=True)
+        with open(os.path.join(RECEIPTS_DIR, f"{VOTER['username']}.json"), "w", encoding="utf-8") as f:
+            json.dump(receipt, f, indent=2)
+        steps["vote_accepted"] = True
+        print(f"    Voto accettato, leaf_index {receipt['leaf_index']}, ricevuta salvata.")
+
+        # 4 -----------------------------------------------------------------
+        print("\n[4] Riconciliazione, consegna delle quote degli scrutatori e scrutinio...")
+        requests.post(f"{SA_URL}/reconcile", headers=admin_headers(), timeout=10, verify=sa_verify()).raise_for_status()
+        r = requests.post(f"{AE_URL}/close", headers=admin_headers(), json=close_payload(),
+                          timeout=60, verify=ae_verify())
         r.raise_for_status()
-        close_res = r.json()
-        print("Scrutinio completato:", close_res["result"])
-        
-        # 5. Verifica con l'Observer
-        print("Avvio dell'observer per la verifica universale...")
-        obs_proc = subprocess.Popen([python_exe, "observer.py"], cwd=SRC_DIR, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = obs_proc.communicate()
-        print("--- Output Observer ---")
-        print(stdout)
-        print("--- Stderr Observer ---")
-        print(stderr)
-        
-        if "TUTTE LE VERIFICHE PUBBLICHE SONO RIUSCITE!" in stdout:
-            print("TEST OK: La verifica dell'observer ha avuto successo!")
-        else:
-            print("TEST FALLITO: L'observer ha riscontrato problemi!")
-            sys.exit(1)
-            
+        result = r.json()["result"]
+        steps["tally_ok"] = result.get("Lista A") == 1
+        print(f"    Scrutinio: {result}")
+
+        # 5 -----------------------------------------------------------------
+        print("\n[5] Verifica individuale della ricevuta (client reale)...")
+        from client import Client
+        client = Client()
+        client.username = VOTER["username"]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            steps["receipt_verified"] = bool(client.verify_vote())
+        print(f"    Ricevuta {'verificata' if steps['receipt_verified'] else 'NON verificata'}.")
+
+        # 6 -----------------------------------------------------------------
+        print("\n[6] Verifica universale (Observer)...")
+        obs = subprocess.run([sys.executable, os.path.join(SRC_DIR, "observer.py")], cwd=PROJECT_ROOT,
+                             input="\n", capture_output=True, text=True, encoding="utf-8", errors="replace")
+        for line in obs.stdout.splitlines():
+            if line.strip() and line.strip()[0].isdigit():
+                print(f"    {line.strip()}")
+        steps["observer_ok"] = "TUTTE LE VERIFICHE PUBBLICHE SONO RIUSCITE" in obs.stdout
+
+    except Exception as e:
+        print(f"\n[ERRORE] {e}")
+        steps["error"] = str(e)
     finally:
-        print("Spegnimento dei server...")
-        try:
-            requests.post("https://localhost:5001/shutdown", timeout=2, verify=verify_for("https://localhost:5001"))
-        except:
-            pass
-        try:
-            requests.post("https://localhost:5002/shutdown", timeout=2, verify=verify_for("https://localhost:5002"))
-        except:
-            pass
-            
-        sa_proc.terminate()
-        ae_proc.terminate()
-        try:
-            sa_proc.wait(timeout=3)
-        except:
-            sa_proc.kill()
-        try:
-            ae_proc.wait(timeout=3)
-        except:
-            ae_proc.kill()
-        print("Server spenti.")
+        print("\nSpegnimento dei server e pulizia...")
+        for url, proc, verify in [(SA_URL, sa_proc, sa_verify()), (AE_URL, ae_proc, ae_verify())]:
+            try:
+                requests.post(f"{url}/shutdown", headers=admin_headers(), timeout=2, verify=verify)
+            except Exception:
+                pass
+            if proc:
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        clean_election_state()
+        if os.path.isdir(RECEIPTS_DIR):
+            for f in os.listdir(RECEIPTS_DIR):
+                if f.endswith(".json"):
+                    os.remove(os.path.join(RECEIPTS_DIR, f))
+
+    checks = ["servers_started", "pins_ok", "vote_accepted", "tally_ok", "receipt_verified", "observer_ok"]
+    passed = all(steps.get(c) for c in checks)
+    print("\n" + "=" * 70)
+    for c in checks:
+        print(f"  {'[PASS]' if steps.get(c) else '[FAIL]'} {c}")
+    print(f"\n  {'TEST OK: flusso completo riuscito.' if passed else 'TEST FALLITO.'}")
+    print("=" * 70)
+    save_report(test_id="full_flow", test_name="Flusso completo dell'elezione (end-to-end)",
+                outcome="PASS" if passed else "FAIL", details=steps)
+    return passed
+
 
 if __name__ == "__main__":
+    os.chdir(PROJECT_ROOT)
+    ok = False
     try:
-        main()
+        ok = main()
     finally:
-        input("\nPremi Invio per chiudere...")
+        try:
+            input("\nPremi Invio per chiudere...")
+        except EOFError:
+            pass
+    sys.exit(0 if ok else 1)

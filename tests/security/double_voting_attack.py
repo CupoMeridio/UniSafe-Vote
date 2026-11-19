@@ -30,7 +30,7 @@ sys.path.insert(0, TESTS_SEC_DIR)
 from test_reporter import save_report
 
 from crypto.keys import (generate_rsa_keypair, save_keypair, serialize_public_key,
-                          deserialize_public_key, save_encrypted_private_key,
+                          deserialize_public_key,
                           load_private_key, load_public_key)
 from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import sign
@@ -59,7 +59,9 @@ def compute_public_key_fingerprint(pem_str: str) -> str:
 # ---------------------------------------------------------------------------
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
-from tls_config import AE_URL, SA_URL, ae_verify, sa_verify, ensure_tls_certs
+from tls_config import AE_URL, SA_URL, ae_verify, sa_verify, ensure_tls_certs, admin_headers
+from common import create_test_election, close_payload, clean_election_state
+from common import get_pow_challenge, solve_pow as solve_pow_challenge, pow_fields
 
 BULLETIN_BOARD_PATH = os.path.join(DATA_DIR, "bulletin_board.json")
 
@@ -111,75 +113,10 @@ def setup():
     # Genera i certificati TLS self-signed se non presenti (necessari per HTTPS).
     ensure_tls_certs()
 
-    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
-        p = os.path.join(DATA_DIR, fname)
-        if os.path.exists(p):
-            os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f == ".gitkeep":
-            continue
-        os.remove(os.path.join(KEYS_DIR, f))
-
-    # Si generano tre coppie RSA-2048: firma SA, cifratura AE e firma AE.
-    sa_sign_priv,  sa_sign_pub  = generate_rsa_keypair()
-    ae_enc_priv,   ae_enc_pub   = generate_rsa_keypair()
-    ae_sign_priv,  ae_sign_pub  = generate_rsa_keypair()
-
-    save_keypair(sa_sign_priv, sa_sign_pub,  "sa_sign")
-    save_keypair(ae_enc_priv,  ae_enc_pub,   "ae_encrypt")
-    save_keypair(ae_sign_priv, ae_sign_pub,  "ae_sign")
-
-    # L'elezione apre immediatamente e chiude tra 24 ore.
-    opening = datetime.now(UTC).isoformat()
-    closing = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
-
-    # Si compone e firma il blocco di inizializzazione del Bulletin Board.
-    init_data = {
-        "election_id":       "elezione_test_double_voting",
-        "candidates":        CANDIDATES,
-        "opening_time":      opening,
-        "closing_time":      closing,
-        "sa_sign_public":    serialize_public_key(sa_sign_pub),
-        "ae_encrypt_public": serialize_public_key(ae_enc_pub),
-        "ae_sign_public":    serialize_public_key(ae_sign_pub),
-    }
-    init_json      = json.dumps(init_data, sort_keys=True).encode("utf-8")
-    init_signature = sign(ae_sign_priv, init_json)
-
-    bb = [{
-        "type":      "init",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "data":      init_data,
-        "signature": init_signature.hex(),
-    }]
-    with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
-        json.dump(bb, f, indent=2)
-
-    # Si calcolano le impronte delle chiavi AE e si salvano in pins.json
-    # per simulare il canale di distribuzione trusted (certificate pinning).
-    pins = {
-        "ae_encrypt_public": "sha256:" + compute_public_key_fingerprint(init_data["ae_encrypt_public"]),
-        "ae_sign_public":    "sha256:" + compute_public_key_fingerprint(init_data["ae_sign_public"]),
-    }
-    with open(os.path.join(DATA_DIR, "pins.json"), "w", encoding="utf-8") as f:
-        json.dump(pins, f, indent=2)
-
-    # La chiave privata di cifratura AE viene salvata cifrata con AES-GCM
-    # usando la firma del blocco init come IKM (WP3 §3.3).
-    save_encrypted_private_key(ae_enc_priv, "ae_encrypt", init_signature)
-
-    # Le password vengono salvate come hash Argon2, mai in chiaro.
-    voters_data = []
-    for v in VOTERS:
-        vc = v.copy()
-        vc["password"] = hash_password(vc["password"])
-        voters_data.append(vc)
-    with open(os.path.join(DATA_DIR, "voters.json"), "w", encoding="utf-8") as f:
-        json.dump(voters_data, f, indent=2)
-
-    # Si inizializza lo stato privato dell'AE con la lista dei token usati vuota.
-    with open(os.path.join(DATA_DIR, "ae_state.json"), "w", encoding="utf-8") as f:
-        json.dump({"used_tokens": []}, f, indent=2)
+    # Elezione di test creata dal modulo condiviso: stesso schema di
+    # init_election.py, chiave di decifratura protetta solo dall'escrow
+    # Shamir (nessuna copia in chiaro su disco).
+    init_data = create_test_election("elezione_test_double_voting", VOTERS, CANDIDATES)
 
     # Si avvia il SA e si attende che Flask risponda su /status.
     sa_process = subprocess.Popen(
@@ -212,7 +149,7 @@ def teardown():
         # Si tenta prima lo shutdown HTTP controllato; se il server non risponde,
         # si termina il processo con terminate() e infine con kill().
         try:
-            requests.post(f"{url}/shutdown", timeout=1,
+            requests.post(f"{url}/shutdown", headers=admin_headers(), timeout=1,
                           verify=(ae_verify() if "5002" in url else sa_verify()))
         except Exception:
             pass
@@ -227,9 +164,7 @@ def teardown():
         p = os.path.join(DATA_DIR, fname)
         if os.path.exists(p):
             os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f != ".gitkeep":
-            os.remove(os.path.join(KEYS_DIR, f))
+    clean_election_state()  # rimuove anche le quote in data/keys/trustees/
     print("[TEARDOWN] File di stato rimossi.")
 
 
@@ -261,50 +196,10 @@ def load_bulletin_board():
     return bulletin_board
 
 
-def solve_pow(enc_vote_hex: str, difficulty: int = 4) -> str:
-    """
-    Calcola il nonce della Proof of Work per un voto cifrato.
-    Si cerca un valore tale che SHA-256(enc_vote || nonce) abbia
-    i primi 'difficulty' bit a zero.
-    """
-    enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-    nonce = 0
-    while True:
-        nonce_bytes = nonce.to_bytes(8, byteorder='big')
-        combined = enc_vote_bytes + nonce_bytes
-        hash_result = hashlib.sha256(combined).digest()
-        # Si verifica prima i byte interi a zero, poi i bit rimanenti.
-        required_zeros = difficulty // 8
-        required_bits = difficulty % 8
-        valid = True
-        for i in range(required_zeros):
-            if hash_result[i] != 0:
-                valid = False
-                break
-        if valid and required_bits > 0:
-            mask = (0xFF << (8 - required_bits)) & 0xFF
-            if (hash_result[required_zeros] & mask) != 0:
-                valid = False
-        if valid:
-            return nonce_bytes.hex()
-        nonce += 1
-
-
-def get_pow_difficulty():
-    """Interroga l'AE per ottenere la difficoltà PoW adattiva corrente."""
-    try:
-        response = requests.get(f"{AE_URL}/status", timeout=5, verify=ae_verify())
-        if response.status_code == 200:
-            return int(response.json().get("pow_difficulty", 4))
-    except requests.exceptions.RequestException:
-        pass
-    return 4
-
-
 def get_valid_token():
     """Ottieni un token valido autenticandosi al SA usando la password in chiaro."""
     # La password in chiaro viene presa dalla costante VOTERS, non da voters.json
-    # che contiene già l'hash Argon2 salvato dal setup.
+    # che contiene già l'hash PBKDF2 salvato dal setup.
     voter_plain = VOTERS[0]
     print(f"  Autenticazione elettore: {voter_plain['username']}")
     response = requests.post(
@@ -346,16 +241,14 @@ def create_vote_payload(token: str, token_signature: str, candidate_index: int =
     enc_vote_hex = enc_vote_bytes.hex()
     enc_seed_hex = enc_seed_bytes.hex()
 
-    # Si calcola la PoW alla difficoltà adattiva corrente restituita dall'AE.
-    difficulty = get_pow_difficulty()
-    pow_nonce = solve_pow(enc_vote_hex, difficulty)
-
+    # Si chiede all'AE una challenge (con la difficoltà adattiva corrente) e
+    # si risolve la PoW su SHA-256(challenge || enc_vote || nonce).
     return {
         "enc_vote": enc_vote_hex,
         "enc_seed": enc_seed_hex,
         "token": token,
         "token_signature": token_signature,
-        "pow_nonce": pow_nonce
+        **pow_fields(enc_vote_hex),
     }
 
 

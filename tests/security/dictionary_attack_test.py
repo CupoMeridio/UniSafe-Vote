@@ -27,8 +27,10 @@ sys.path.insert(0, SRC_DIR)
 sys.path.insert(0, TESTS_SEC_DIR)
 
 from test_reporter import save_report
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
+from common import create_test_election, close_payload
 from crypto.keys import (generate_rsa_keypair, save_keypair, serialize_public_key,
-                          deserialize_public_key, save_encrypted_private_key)
+                          deserialize_public_key)
 from crypto.rsa_pss import sign
 from crypto.rsa_oaep import encrypt
 from crypto.password import hash_password
@@ -76,82 +78,10 @@ def setup_data():
 
     # Si eliminano i file residui di eventuali esecuzioni precedenti per
     # garantire uno stato pulito e riproducibile.
-    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
-        p = os.path.join(DATA_DIR, fname)
-        if os.path.exists(p):
-            os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f == ".gitkeep":
-            continue
-        os.remove(os.path.join(KEYS_DIR, f))
-
-    # Si generano tre coppie di chiavi RSA-2048 distinte per funzione:
-    # firma del SA, cifratura dell'AE e firma dell'AE.
-    sa_sign_priv,  sa_sign_pub  = generate_rsa_keypair()
-    ae_enc_priv,   ae_enc_pub   = generate_rsa_keypair()
-    ae_sign_priv,  ae_sign_pub  = generate_rsa_keypair()
-
-    save_keypair(sa_sign_priv, sa_sign_pub,  "sa_sign")
-    save_keypair(ae_enc_priv,  ae_enc_pub,   "ae_encrypt")
-    save_keypair(ae_sign_priv, ae_sign_pub,  "ae_sign")
-
-    # Si definisce la finestra temporale dell'elezione: apertura immediata,
-    # chiusura tra 24 ore, in modo che i voti di test siano sempre validi.
-    opening = datetime.now(UTC).isoformat()
-    closing = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
-
-    # Si costruisce il blocco di inizializzazione del Bulletin Board con tutti
-    # i parametri pubblici dell'elezione e le chiavi pubbliche dei componenti.
-    init_data = {
-        "election_id":       "dictionary_attack_test",
-        "candidates":        CANDIDATES,
-        "opening_time":      opening,
-        "closing_time":      closing,
-        "sa_sign_public":    serialize_public_key(sa_sign_pub),
-        "ae_encrypt_public": serialize_public_key(ae_enc_pub),
-        "ae_sign_public":    serialize_public_key(ae_sign_pub),
-    }
-    # Il blocco init viene firmato dall'AE con la propria chiave di firma,
-    # esattamente come avviene nel sistema reale durante l'inizializzazione.
-    init_json      = json.dumps(init_data, sort_keys=True).encode("utf-8")
-    init_signature = sign(ae_sign_priv, init_json)
-
-    bb = [{
-        "type":      "init",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "data":      init_data,
-        "signature": init_signature.hex(),
-    }]
-    with open(os.path.join(DATA_DIR, "bulletin_board.json"), "w", encoding="utf-8") as f:
-        json.dump(bb, f, indent=2)
-
-    # Si calcolano le impronte SHA-256 delle chiavi pubbliche dell'AE e si
-    # salvano in pins.json, simulando il canale di distribuzione trusted
-    # separato dal Bulletin Board (certificate pinning, WP3 §3.4).
-    pins = {
-        "ae_encrypt_public": "sha256:" + compute_public_key_fingerprint(init_data["ae_encrypt_public"]),
-        "ae_sign_public":    "sha256:" + compute_public_key_fingerprint(init_data["ae_sign_public"]),
-    }
-    with open(os.path.join(DATA_DIR, "pins.json"), "w", encoding="utf-8") as f:
-        json.dump(pins, f, indent=2)
-
-    # La chiave privata di cifratura dell'AE viene salvata cifrata con AES-GCM,
-    # usando la firma del blocco init come IKM.
-    save_encrypted_private_key(ae_enc_priv, "ae_encrypt", init_signature)
-
-    # Le password degli elettori vengono memorizzate come hash Argon2,
-    # mai in chiaro, come nel sistema reale.
-    voters_data = []
-    for v in VOTERS:
-        vc = v.copy()
-        vc["password"] = hash_password(vc["password"])
-        voters_data.append(vc)
-    with open(os.path.join(DATA_DIR, "voters.json"), "w", encoding="utf-8") as f:
-        json.dump(voters_data, f, indent=2)
-
-    # Si inizializza lo stato privato dell'AE con la lista dei token usati vuota.
-    with open(os.path.join(DATA_DIR, "ae_state.json"), "w", encoding="utf-8") as f:
-        json.dump({"used_tokens": []}, f, indent=2)
+    # Elezione di test creata dal modulo condiviso: stesso schema di
+    # init_election.py, chiave di decifratura protetta solo dall'escrow
+    # Shamir (nessuna copia in chiaro su disco).
+    init_data = create_test_election("dictionary_attack_test", VOTERS, CANDIDATES)
 
     print("[SETUP] Dati di elezione pronti (nessun server avviato).")
 

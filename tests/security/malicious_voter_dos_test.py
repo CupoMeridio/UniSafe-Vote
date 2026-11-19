@@ -1,6 +1,16 @@
 """
-Test per dimostrare la vulnerabilità DoS (Denial of Service) dell'Observer
-causata da un elettore malevolo che invia un seed spazzatura.
+Test dell'elettore malevolo che invia un seed incoerente con la propria scheda,
+e dell'AE corrotta che dichiara nulla una scheda valida.
+
+Scenario 1 — L'elettore cifra un voto valido con il seed s, ma invia come
+enc_seed la cifratura di un seed diverso. Lo scrutinio ricava il seed dalla
+decifratura della scheda stessa (EM = c^d mod n, pubblicato), quindi la scheda
+conta per il suo contenuto reale e l'Observer completa la verifica: un singolo
+elettore malevolo non può bloccare né invalidare l'elezione.
+
+Scenario 2 — Un'AE corrotta dichiara nulla quella scheda e ri-firma il blocco
+di scrutinio. Poiché EM è pubblico, l'Observer ricostruisce il contenuto reale
+della scheda e rileva la discrepanza.
 """
 
 import os
@@ -21,16 +31,19 @@ sys.path.insert(0, SRC_DIR)
 sys.path.insert(0, TESTS_SEC_DIR)
 
 from crypto.keys import (generate_rsa_keypair, save_keypair, serialize_public_key,
-                          deserialize_public_key, save_encrypted_private_key,
+                          deserialize_public_key,
                           load_public_key, load_private_key)
 from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import sign
 from crypto.password import hash_password
+from test_reporter import save_report
 from cryptography.hazmat.primitives import serialization
 
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
-from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs
+from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
+from common import create_test_election, close_payload, clean_election_state
+from common import get_pow_challenge, solve_pow as solve_pow_challenge, pow_fields
 
 BULLETIN_BOARD_PATH = os.path.join(DATA_DIR, "bulletin_board.json")
 VOTERS_PATH         = os.path.join(DATA_DIR, "voters.json")
@@ -71,65 +84,10 @@ def setup():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(KEYS_DIR, exist_ok=True)
     ensure_tls_certs()
-    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
-        p = os.path.join(DATA_DIR, fname)
-        if os.path.exists(p):
-            os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f != ".gitkeep":
-            os.remove(os.path.join(KEYS_DIR, f))
-
-    sa_sign_priv,  sa_sign_pub  = generate_rsa_keypair()
-    ae_enc_priv,   ae_enc_pub   = generate_rsa_keypair()
-    ae_sign_priv,  ae_sign_pub  = generate_rsa_keypair()
-
-    save_keypair(sa_sign_priv, sa_sign_pub,  "sa_sign")
-    save_keypair(ae_enc_priv,  ae_enc_pub,   "ae_encrypt")
-    save_keypair(ae_sign_priv, ae_sign_pub,  "ae_sign")
-
-    opening = datetime.now(UTC).isoformat()
-    closing = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
-
-    init_data = {
-        "election_id":       "dos_attack_test",
-        "candidates":        CANDIDATES,
-        "opening_time":      opening,
-        "closing_time":      closing,
-        "sa_sign_public":    serialize_public_key(sa_sign_pub),
-        "ae_encrypt_public": serialize_public_key(ae_enc_pub),
-        "ae_sign_public":    serialize_public_key(ae_sign_pub),
-    }
-    init_json      = json.dumps(init_data, sort_keys=True).encode("utf-8")
-    init_signature = sign(ae_sign_priv, init_json)
-
-    bb = [{
-        "type":      "init",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "data":      init_data,
-        "signature": init_signature.hex(),
-    }]
-    with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
-        json.dump(bb, f, indent=2)
-
-    pins = {
-        "ae_encrypt_public": "sha256:" + compute_public_key_fingerprint(init_data["ae_encrypt_public"]),
-        "ae_sign_public":    "sha256:" + compute_public_key_fingerprint(init_data["ae_sign_public"]),
-    }
-    with open(os.path.join(DATA_DIR, "pins.json"), "w", encoding="utf-8") as f:
-        json.dump(pins, f, indent=2)
-
-    save_encrypted_private_key(ae_enc_priv, "ae_encrypt", init_signature)
-
-    voters_data = []
-    for v in VOTERS:
-        vc = v.copy()
-        vc["password"] = hash_password(vc["password"])
-        voters_data.append(vc)
-    with open(VOTERS_PATH, "w", encoding="utf-8") as f:
-        json.dump(voters_data, f, indent=2)
-
-    with open(os.path.join(DATA_DIR, "ae_state.json"), "w", encoding="utf-8") as f:
-        json.dump({"used_tokens": []}, f, indent=2)
+    # Elezione di test creata dal modulo condiviso: stesso schema di
+    # init_election.py, chiave di decifratura protetta solo dall'escrow
+    # Shamir (nessuna copia in chiaro su disco).
+    init_data = create_test_election("dos_attack_test", VOTERS, CANDIDATES)
 
     sa_process = subprocess.Popen(
         [sys.executable, os.path.join(SRC_DIR, "sa.py")],
@@ -152,7 +110,7 @@ def teardown():
     print("\n[TEARDOWN] Chiusura server...")
     for url, proc, name in [(SA_URL, sa_process, "SA"), (AE_URL, ae_process, "AE")]:
         try:
-            requests.post(f"{url}/shutdown", timeout=1,
+            requests.post(f"{url}/shutdown", headers=admin_headers(), timeout=1,
                           verify=(ae_verify() if "5002" in url else sa_verify()))
         except Exception:
             pass
@@ -165,35 +123,11 @@ def teardown():
         p = os.path.join(DATA_DIR, fname)
         if os.path.exists(p):
             os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f != ".gitkeep":
-            os.remove(os.path.join(KEYS_DIR, f))
-
-def solve_pow(enc_vote_hex: str, difficulty: int = 4) -> str:
-    enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-    nonce = 0
-    while True:
-        nonce_bytes = nonce.to_bytes(8, byteorder="big")
-        combined = enc_vote_bytes + nonce_bytes
-        hash_result = hashlib.sha256(combined).digest()
-        required_zeros = difficulty // 8
-        required_bits = difficulty % 8
-        valid = True
-        for i in range(required_zeros):
-            if hash_result[i] != 0:
-                valid = False
-                break
-        if valid and required_bits > 0:
-            mask = (0xFF << (8 - required_bits)) & 0xFF
-            if (hash_result[required_zeros] & mask) != 0:
-                valid = False
-        if valid:
-            return nonce_bytes.hex()
-        nonce += 1
+    clean_election_state()  # rimuove anche le quote in data/keys/trustees/
 
 def main():
     print("=" * 80)
-    print("  TEST VULNERABILITA' DOS DA ELETTORE MALEVOLO")
+    print("  TEST MITIGAZIONE DOS DA ELETTORE MALEVOLO (SEED CORROTTO)")
     print("=" * 80)
     try:
         setup()
@@ -226,14 +160,12 @@ def main():
         enc_seed_hex = enc_seed_bytes.hex()
 
         print("[3] L'attaccante risolve la PoW...")
-        pow_nonce = solve_pow(enc_vote_hex)
-
         payload = {
             "enc_vote": enc_vote_hex,
             "enc_seed": enc_seed_hex,
             "token": token,
             "token_signature": signature,
-            "pow_nonce": pow_nonce
+            **pow_fields(enc_vote_hex),
         }
 
         print("[4] L'attaccante invia il voto all'AE...")
@@ -244,8 +176,8 @@ def main():
         print("    L'AE ha accettato il voto con seed fittizio senza errori.")
 
         print("\n[5] Chiusura delle urne e Scrutinio...")
-        requests.post(f"{SA_URL}/reconcile", verify=sa_verify())
-        r_close = requests.post(f"{AE_URL}/close", verify=ae_verify())
+        requests.post(f"{SA_URL}/reconcile", headers=admin_headers(), verify=sa_verify())
+        r_close = requests.post(f"{AE_URL}/close", headers=admin_headers(), json=close_payload(), verify=ae_verify())
         assert r_close.status_code == 200
 
         with open(BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
@@ -255,22 +187,85 @@ def main():
         assert scrutinio_block is not None
         voti_verificati = scrutinio_block["data"]["voti_verificati"]
         print(f"    Voti scrutinati: {len(voti_verificati)}")
-        print(f"    Il voto malevolo è stato conteggiato per: {voti_verificati[0]['voto_chiaro']}")
+        voto_chiaro = voti_verificati[0]["voto_chiaro"]
+        seed_pubblicato = voti_verificati[0]["seed"]
+        print(f"    Il voto malevolo è stato conteggiato per: {voto_chiaro}")
+        print(f"    Seed pubblicato:  {seed_pubblicato[:32]}...")
+        print(f"    Seed reale:       {seed_reale.hex()[:32]}...")
+        print(f"    Seed falso (enc_seed inviato dall'attaccante): {seed_falso.hex()[:32]}...")
+        # Il seed viene ricavato dalla decifratura della scheda stessa (EM), non
+        # dall'enc_seed dell'elettore: il seed falso è irrilevante e la scheda
+        # conta per il suo contenuto reale (Lista A).
+        phase1_pass = voto_chiaro == "Lista A" and seed_pubblicato == seed_reale.hex()
+        print(f"  {'[PASS]' if phase1_pass else '[FAIL]'} La scheda è conteggiata per il suo contenuto reale"
+              f" e il seed pubblicato è quello vero")
 
         print("\n[6] Esecuzione dell'Observer (Verifica Universale)...")
-        # Eseguiamo l'observer e catturiamo l'output
-        result = subprocess.run([sys.executable, os.path.join(SRC_DIR, "observer.py")], 
-                              cwd=PROJECT_ROOT, capture_output=True, text=True, input="\n")
-        
+        result = subprocess.run([sys.executable, os.path.join(SRC_DIR, "observer.py")],
+                              cwd=PROJECT_ROOT, capture_output=True, text=True, input="\n",
+                              encoding="utf-8", errors="replace")
+
         print("-" * 40)
         print("OUTPUT OBSERVER:")
         print(result.stdout)
         print("-" * 40)
 
-        if "Ricifratura non corrispondente" in result.stdout and "ALCUNE VERIFICHE PUBBLICHE HANNO FALLITO" in result.stdout:
-            print("\n[SUCCESS] Vulnerabilità dimostrata: L'Observer ha rilevato un'incongruenza e ha fatto fallire l'INTERA elezione per tutti gli utenti, pur essendo colpa di un singolo elettore malevolo!")
+        observer_ok = "TUTTE LE VERIFICHE PUBBLICHE SONO RIUSCITE" in result.stdout
+        print(f"  {'[PASS]' if observer_ok else '[FAIL]'} L'Observer completa la verifica universale")
+
+        # ------------------------------------------------------------------ #
+        # [7] AE corrotta: dichiara NULLA una scheda valida e ri-firma         #
+        # ------------------------------------------------------------------ #
+        print("\n[7] AE corrotta: dichiara nulla la scheda valida e RI-FIRMA lo scrutinio...")
+        ae_sign_private = load_private_key("ae_sign", base_path=KEYS_DIR)
+        forged = json.loads(json.dumps(scrutinio_block["data"]))
+        forged["voti_verificati"][0]["voto_chiaro"] = "Scheda nulla"
+        forged["risultato_aggregato"]["Lista A"] -= 1
+        forged["risultato_aggregato"]["Scheda nulla"] += 1
+        for b in bb:
+            if b["type"] == "scrutinio":
+                b["data"] = forged
+                b["signature"] = sign(ae_sign_private, json.dumps(forged, sort_keys=True).encode()).hex()
+        with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
+            json.dump(bb, f, indent=2, ensure_ascii=False)
+        print(f"    Risultato falsificato (firma AE valida): {forged['risultato_aggregato']}")
+
+        result_forged = subprocess.run([sys.executable, os.path.join(SRC_DIR, "observer.py")],
+                                       cwd=PROJECT_ROOT, capture_output=True, text=True, input="\n",
+                                       encoding="utf-8", errors="replace")
+        forged_detected = "ALCUNE VERIFICHE PUBBLICHE HANNO FALLITO" in result_forged.stdout
+        for line in result_forged.stdout.splitlines():
+            if line.strip().startswith(("5.", "-")) or "dichiara" in line:
+                print(f"    {line.strip()}")
+        print(f"  {'[PASS]' if forged_detected else '[FAIL]'} L'Observer rileva la scheda annullata ad arte")
+
+        passed = phase1_pass and observer_ok and forged_detected
+        print("\n" + "=" * 80)
+        if passed:
+            print("[SUCCESS] Un enc_seed incoerente non blocca né annulla la scheda: il seed è")
+            print("ricavato dalla decifratura verificabile (EM). Un'AE che dichiara nulla una")
+            print("scheda valida viene smascherata dall'Observer, anche se ri-firma lo scrutinio.")
         else:
-            print("\n[FAIL] Il test non ha funzionato come previsto.")
+            print("[FAIL] Il sistema non ha risposto come atteso.")
+        print("=" * 80)
+
+        save_report(
+            test_id="malicious_voter_dos",
+            test_name="Elettore Malevolo (seed corrotto) e AE che annulla schede valide",
+            outcome="PASS" if passed else "FAIL",
+            details={
+                "malicious_ballot": {
+                    "declared_content": voto_chiaro,
+                    "published_seed_is_real": seed_pubblicato == seed_reale.hex(),
+                    "counted_for_real_content": phase1_pass,
+                },
+                "observer_ok_with_malicious_voter": observer_ok,
+                "forged_null_ballot_detected": forged_detected,
+                "protection_mechanism": "Decifratura verificabile: EM = c^d mod n pubblicato per ogni scheda",
+            },
+        )
+        if not passed:
+            sys.exit(1)
 
     finally:
         teardown()

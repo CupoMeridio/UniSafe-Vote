@@ -21,7 +21,9 @@ a chiunque di verificare l'integrità delle operazioni.
 import os
 import json
 import hashlib
+import hmac
 import time
+import threading
 from collections import deque
 from datetime import datetime, UTC
 from typing import Optional, Dict, Set, Literal, Deque
@@ -31,10 +33,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from crypto.keys import load_private_key, load_public_key, deserialize_public_key, load_and_decrypt_private_key, save_encrypted_private_key
-from crypto.rsa_oaep import decrypt, encrypt
+from crypto.keys import load_private_key, load_public_key, deserialize_public_key, recover_private_key, share_commitment
+from crypto.rsa_oaep import raw_decrypt, oaep_decode, is_valid_ciphertext, modulus_length
 from crypto.rsa_pss import sign, verify
 from crypto.merkle import MerkleTree
+from admin_auth import get_or_create_admin_token, require_admin
+from bb_chain import link_to_previous
 
 
 app = Flask(__name__)
@@ -44,47 +48,107 @@ app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # Limita le richieste a 1 MB
 used_tokens: Set[str] = set()  # Set di nonce di token già usati (privato AE)
 merkle_tree = MerkleTree()  # Albero di Merkle per i voti
 urn_open: bool = True  # Stato delle urne (True = aperte, False = chiuse)
+# Il server Flask gestisce le richieste in thread paralleli: questo lock rende
+# atomiche le sezioni critiche (controllo/uso del token, Merkle Tree, scrittura
+# del Bulletin Board e dello stato AE, chiusura delle urne). Senza di esso due
+# richieste concorrenti con lo stesso token potrebbero superare entrambe il
+# controllo di unicità (race condition check-then-act → doppio voto).
+state_lock = threading.Lock()
+pow_lock = threading.Lock()  # Protegge timestamp per IP e challenge usate della PoW
 ae_encrypt_private: Optional[RSAPrivateKey] = None  # Chiave privata per decifrare i voti (caricata solo a urne chiuse)
 ae_sign_private: Optional[RSAPrivateKey] = None  # Chiave privata per firmare blocchi e ricevute
 ae_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica per verificare le firme
 sa_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica del SA per verificare i token
+ae_encrypt_public: Optional[RSAPublicKey] = None  # Chiave pubblica di cifratura (per validare le schede)
 bulletin_board_path: str = "data/bulletin_board.json"  # Percorso del Bulletin Board
 ae_state_path: str = "data/ae_state.json"  # Percorso dello stato privato AE
 opening_time: Optional[datetime] = None  # Istante di apertura delle urne (da init)
 closing_time: Optional[datetime] = None  # Istante di chiusura delle urne (da init)
 
-# --- Proof of Work adattiva globale (mitigazione DoS) ---
+# --- Proof of Work adattiva per IP, legata a una challenge del server ---
 POW_MIN_DIFFICULTY: int = 4   # Difficoltà minima (operatività standard, ~0.1s)
 POW_MAX_DIFFICULTY: int = 24  # Tetto massimo per evitare di bloccare elettori onesti
 POW_WINDOW_SECONDS: float = 10.0  # Finestra di osservazione del traffico
 POW_RATE_THRESHOLD: int = 5  # Richieste/finestra oltre cui si considera traffico anomalo
-request_timestamps: Deque[float] = deque()  # Timestamp delle richieste recenti
+POW_CHALLENGE_TTL_SECONDS: int = 120  # Validità di una challenge emessa dal server
+POW_MAX_TRACKED_IPS: int = 10000  # Oltre questa soglia si eliminano gli IP inattivi
+
+# Timestamp delle PoW valide recenti, separati per IP. Con una difficoltà
+# GLOBALE un attaccante che risolve PoW facili a raffica alzerebbe il costo per
+# tutti gli elettori onesti (DoS per amplificazione): per IP, il costo cresce
+# solo per chi genera il traffico anomalo.
+request_timestamps: Dict[str, Deque[float]] = {}
+
+# Chiave segreta con cui l'AE autentica le challenge (HMAC): le challenge sono
+# verificabili senza memorizzarle, ma non falsificabili dal client. Una nuova
+# chiave a ogni avvio invalida le challenge emesse prima del riavvio.
+POW_SECRET: bytes = os.urandom(32)
+# Challenge già usate, con la loro scadenza: ogni challenge vale per una sola PoW.
+used_challenges: Dict[bytes, float] = {}
 
 
-def current_pow_difficulty() -> int:
+def current_pow_difficulty(ip: str) -> int:
     """
-    Calcola la difficoltà di Proof of Work corrente in base al carico globale.
+    Calcola la difficoltà di Proof of Work corrente per un IP.
 
-    La strategia è adattiva: in condizioni normali la difficoltà è minima
-    (POW_MIN_DIFFICULTY); quando il numero di richieste nella finestra di
-    osservazione supera la soglia, la difficoltà cresce di 1 bit per ogni
-    blocco di richieste oltre soglia (crescita esponenziale del costo per
-    l'attaccante), fino a POW_MAX_DIFFICULTY.
+    In condizioni normali la difficoltà è minima (POW_MIN_DIFFICULTY); quando
+    le PoW valide inviate da quell'IP nella finestra di osservazione superano
+    la soglia, la difficoltà cresce di 1 bit per ogni blocco di richieste oltre
+    soglia (crescita esponenziale del costo per l'attaccante), fino a
+    POW_MAX_DIFFICULTY.
 
     Returns:
         int: Numero di bit a zero richiesti dalla PoW.
     """
     now = time.monotonic()
-    # Rimuovi i timestamp più vecchi della finestra
-    while request_timestamps and now - request_timestamps[0] > POW_WINDOW_SECONDS:
-        request_timestamps.popleft()
-
-    recent = len(request_timestamps)
+    with pow_lock:
+        timestamps = request_timestamps.get(ip)
+        if not timestamps:
+            return POW_MIN_DIFFICULTY
+        # Rimuovi i timestamp più vecchi della finestra
+        while timestamps and now - timestamps[0] > POW_WINDOW_SECONDS:
+            timestamps.popleft()
+        recent = len(timestamps)
     if recent <= POW_RATE_THRESHOLD:
         return POW_MIN_DIFFICULTY
 
     extra = (recent - POW_RATE_THRESHOLD) // POW_RATE_THRESHOLD
     return min(POW_MIN_DIFFICULTY + extra, POW_MAX_DIFFICULTY)
+
+
+def record_valid_pow(ip: str) -> None:
+    """Registra una PoW valida dell'IP per l'adattamento della difficoltà."""
+    now = time.monotonic()
+    with pow_lock:
+        request_timestamps.setdefault(ip, deque()).append(now)
+        if len(request_timestamps) > POW_MAX_TRACKED_IPS:
+            for old_ip in [k for k, ts in request_timestamps.items()
+                           if not ts or now - ts[-1] > POW_WINDOW_SECONDS]:
+                del request_timestamps[old_ip]
+
+
+def _ip_tag(ip: str) -> bytes:
+    return hashlib.sha256(ip.encode("utf-8")).digest()[:8]
+
+
+def issue_pow_challenge(ip: str) -> Dict:
+    """
+    Emette una challenge per la Proof of Work.
+
+    Formato (byte): casuale(16) || scadenza(8, epoch s) || difficoltà(1)
+                    || hash dell'IP(8) || HMAC-SHA256 dei campi precedenti(16)
+
+    La PoW va calcolata su SHA-256(challenge || enc_vote || nonce). Legarla a una
+    challenge del server con scadenza impedisce all'attaccante di PRECALCOLARE
+    offline grandi quantità di PoW ad alta difficoltà da inviare tutte insieme;
+    il legame con l'IP impedisce di distribuire una challenge a una botnet.
+    """
+    difficulty = current_pow_difficulty(ip)
+    expires = int(time.time()) + POW_CHALLENGE_TTL_SECONDS
+    body = os.urandom(16) + expires.to_bytes(8, "big") + bytes([difficulty]) + _ip_tag(ip)
+    tag = hmac.new(POW_SECRET, body, hashlib.sha256).digest()[:16]
+    return {"challenge": (body + tag).hex(), "difficulty": difficulty,
+            "expires_in": POW_CHALLENGE_TTL_SECONDS}
 
 
 def load_ae_state() -> None:
@@ -122,8 +186,8 @@ def load_initial_data() -> None:
     - Chiavi di firma dell'AE
     - Chiave pubblica del SA (per verificare i token)
     """
-    global ae_encrypt_private, ae_sign_private, ae_sign_public, sa_sign_public
-    global opening_time, closing_time
+    global ae_encrypt_private, ae_sign_private, ae_sign_public, sa_sign_public, ae_encrypt_public
+    global opening_time, closing_time, merkle_tree, urn_open
     print("[AE] Caricamento dati iniziali...")
 
     # Carica la coppia di chiavi per la firma dell'AE
@@ -135,6 +199,7 @@ def load_initial_data() -> None:
         bb = json.load(f)
         sa_sign_public_pem = bb[0]["data"]["sa_sign_public"]
         sa_sign_public = deserialize_public_key(sa_sign_public_pem)
+        ae_encrypt_public = deserialize_public_key(bb[0]["data"]["ae_encrypt_public"])
         opening_time = datetime.fromisoformat(bb[0]["data"]["opening_time"])
         closing_time = datetime.fromisoformat(bb[0]["data"]["closing_time"])
 
@@ -143,13 +208,30 @@ def load_initial_data() -> None:
     # Bulletin Board.
     load_ae_state()
 
+    # Ricostruisce il Merkle Tree dai blocchi voto già presenti nel Bulletin
+    # Board. Senza questo passaggio, dopo un riavvio l'albero ripartirebbe
+    # vuoto: la Merkle Root finale escluderebbe i voti precedenti e la
+    # verifica universale fallirebbe.
+    merkle_tree = MerkleTree()
+    for block in bb:
+        if block.get("type") == "vote":
+            record_bytes = json.dumps(block["data"], sort_keys=True).encode('utf-8')
+            merkle_tree.add_leaf(record_bytes)
+    if merkle_tree.leaves:
+        print(f"[AE] Merkle Tree ricostruito dal Bulletin Board: {len(merkle_tree.leaves)} voti")
+
+    # Se la Merkle Root finale è già stata pubblicata, le urne sono chiuse:
+    # un riavvio non deve riaprirle.
+    if any(block.get("type") == "merkle_root" for block in bb):
+        urn_open = False
+        print("[AE] Merkle Root finale già pubblicata: urne chiuse")
+
     print("[AE] Pronto sulla porta 5002")
 
 
 def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", "scrutinio",
                                                    "reconciliation_ae", "reconciliation_sa"],
-                             block_data: Dict,
-                             precomputed_signature: bytes = None) -> Dict:
+                             block_data: Dict) -> Dict:
     """
     Appende un nuovo blocco firmato al Bulletin Board.
 
@@ -160,8 +242,6 @@ def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", 
     Args:
         block_type (str): Tipo di blocco
         block_data (dict): Dati da includere nel blocco
-        precomputed_signature (bytes, optional): Se fornita, non viene ricalcolata
-            la firma (utile quando la firma stessa viene usata come IKM crittografico).
 
     Returns:
         dict: Il nuovo blocco creato (con firma e timestamp)
@@ -170,9 +250,12 @@ def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", 
     with open(bulletin_board_path, "r", encoding="utf-8") as f:
         bb = json.load(f)
 
-    # Prepara i dati e calcola la firma (o usa quella precomputed)
+    # Collega il blocco al precedente (prev_hash dentro i dati firmati) e firma.
+    # block_data viene modificato in place: chi lo usa dopo (es. la foglia del
+    # Merkle Tree per un voto) vede esattamente i dati pubblicati.
+    link_to_previous(bb, block_data)
     block_data_json = json.dumps(block_data, sort_keys=True).encode('utf-8')
-    signature = precomputed_signature if precomputed_signature is not None else sign(ae_sign_private, block_data_json)
+    signature = sign(ae_sign_private, block_data_json)
 
     # Crea il nuovo blocco
     new_block = {
@@ -192,44 +275,66 @@ def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", 
     return new_block
 
 
-def verify_pow(enc_vote_hex: str, pow_nonce_hex: str, difficulty: int = POW_MIN_DIFFICULTY) -> bool:
+def _leading_zero_bits_ok(digest: bytes, difficulty: int) -> bool:
+    """True se i primi `difficulty` bit di digest sono a zero."""
+    return int.from_bytes(digest, "big") >> (len(digest) * 8 - difficulty) == 0 if difficulty else True
+
+
+def verify_pow(challenge_hex: str, enc_vote_hex: str, pow_nonce_hex: str, ip: str) -> bool:
     """
-    Verifica la Proof of Work (PoW) inviata dal client.
+    Verifica la Proof of Work inviata dal client.
 
-    La PoW serve a prevenire spam e voti multipli automatizzati.
-    Il client deve trovare un nonce tale che SHA-256(enc_vote || nonce)
-    inizi con un certo numero di bit a zero (difficulty).
+    Controlli, in ordine dal più economico:
+    1. la challenge è autentica (HMAC dell'AE), non scaduta ed emessa per
+       questo IP;
+    2. SHA-256(challenge || enc_vote || nonce) ha almeno D bit iniziali a zero,
+       con D = max(difficoltà scritta nella challenge, difficoltà attuale
+       dell'IP): una challenge ottenuta a bassa difficoltà prima di un flood
+       non permette di continuare a inviare PoW facili;
+    3. la challenge non è già stata usata (viene marcata come usata solo se
+       la PoW è valida).
 
-    Args:
-        enc_vote_hex (str): Voto cifrato in esadecimale
-        pow_nonce_hex (str): Nonce della PoW in esadecimale
-        difficulty (int, optional): Numero di bit a zero richiesti. Default 4.
-
-    Returns:
-        bool: True se la PoW è valida, False altrimenti
+    La PoW serve a prevenire spam e flood automatizzati: ogni scheda costa
+    all'inviante un lavoro computazionale proporzionale a 2^D.
     """
-    enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-    pow_nonce_bytes = bytes.fromhex(pow_nonce_hex)
-    # Concateniamo voto e nonce
-    combined = enc_vote_bytes + pow_nonce_bytes
-    hash_result = hashlib.sha256(combined).digest()
+    try:
+        challenge = bytes.fromhex(challenge_hex)
+        enc_vote_bytes = bytes.fromhex(enc_vote_hex)
+        pow_nonce_bytes = bytes.fromhex(pow_nonce_hex)
+    except (TypeError, ValueError):
+        return False
+    if len(challenge) != 16 + 8 + 1 + 8 + 16:
+        return False
+    body, tag = challenge[:-16], challenge[-16:]
+    if not hmac.compare_digest(tag, hmac.new(POW_SECRET, body, hashlib.sha256).digest()[:16]):
+        return False
+    expires = int.from_bytes(body[16:24], "big")
+    if time.time() > expires or body[25:33] != _ip_tag(ip):
+        return False
 
-    # Verifica i primi 'difficulty' bit
-    required_zeros = difficulty // 8  # Numero di byte interi a zero
-    required_bits = difficulty % 8  # Bit rimanenti da verificare
+    difficulty = max(body[24], current_pow_difficulty(ip))
+    digest = hashlib.sha256(challenge + enc_vote_bytes + pow_nonce_bytes).digest()
+    if not _leading_zero_bits_ok(digest, difficulty):
+        return False
 
-    # Verifica i byte interi
-    for i in range(required_zeros):
-        if hash_result[i] != 0:
+    with pow_lock:
+        now = time.time()
+        for old in [c for c, exp in used_challenges.items() if exp < now]:
+            del used_challenges[old]
+        if challenge in used_challenges:
             return False
-
-    # Verifica i bit rimanenti (se presenti)
-    if required_bits > 0:
-        mask = (0xFF << (8 - required_bits)) & 0xFF
-        if (hash_result[required_zeros] & mask) != 0:
-            return False
-
+        used_challenges[challenge] = expires
     return True
+
+
+@app.route('/pow_challenge', methods=['GET'])
+def pow_challenge():
+    """
+    Emette una challenge per la Proof of Work del prossimo voto.
+
+    Risposta (200 OK): {"challenge": "...", "difficulty": 4, "expires_in": 120}
+    """
+    return jsonify(issue_pow_challenge(request.remote_addr)), 200
 
 
 @app.route('/vote', methods=['POST'])
@@ -243,14 +348,18 @@ def vote():
         "enc_seed": "def456...",  // Seed cifrato RSA-OAEP (esadecimale)
         "token": "{...}",         // Token di autenticazione firmato dal SA
         "token_signature": "789...", // Firma del token (esadecimale)
+        "pow_challenge": "...",   // Challenge ottenuta da GET /pow_challenge
         "pow_nonce": "0123..."    // Nonce della Proof of Work (esadecimale)
     }
 
-    Risposta (200 OK):
+    Risposta (200 OK): ricevuta firmata
     {
         "leaf_index": 0,
         "enc_vote": "abc123...",
-        "merkle_proof": [...],
+        "merkle_proof": [...],         // relativa alla root al momento del voto
+        "tree_size": 1,                // numero di voti al momento del voto
+        "merkle_root_at_vote": "...",  // root al momento del voto
+        "timestamp": "...",
         "ae_signature": "456..."
     }
 
@@ -271,6 +380,8 @@ def vote():
         token = req_data.get('token')
         token_signature = req_data.get('token_signature')
         pow_nonce = req_data.get('pow_nonce')
+        pow_challenge_hex = req_data.get('pow_challenge')
+        client_ip = request.remote_addr
 
         # 1. Verifica la Proof of Work alla difficoltà adattiva corrente.
         # Il timestamp viene registrato SOLO se la PoW è valida: le richieste
@@ -279,12 +390,12 @@ def vote():
         # La difficoltà aumenta esclusivamente quando un attaccante risolve
         # davvero la PoW a raffica (botnet), che è l'unico caso in cui il
         # meccanismo adattivo ha senso.
-        if not verify_pow(enc_vote, pow_nonce, current_pow_difficulty()):
+        if not verify_pow(pow_challenge_hex, enc_vote, pow_nonce, client_ip):
             print(f"[AE] {datetime.now().isoformat()} - PoW invalida")
             return jsonify({"error": "Proof of Work invalida"}), 400
 
         # PoW valida: registra la richiesta per l'adattamento della difficoltà
-        request_timestamps.append(time.monotonic())
+        record_valid_pow(client_ip)
 
         # 2. Verifica la firma del token con la chiave pubblica del SA
         token_bytes = token.encode('utf-8')
@@ -309,44 +420,73 @@ def vote():
             print(f"[AE] {datetime.now().isoformat()} - Voto dopo la chiusura delle urne")
             return jsonify({"error": "Urne chiuse"}), 403
 
+        # 3c. La scheda deve essere un ciphertext RSA ben formato (k byte, minore
+        # del modulo): altrimenti non esisterebbe una decifratura verificabile.
+        if not is_valid_ciphertext(ae_encrypt_public, bytes.fromhex(enc_vote)):
+            print(f"[AE] {datetime.now().isoformat()} - Scheda malformata")
+            return jsonify({"error": "Scheda cifrata malformata"}), 400
+
         # 4. Verifica che il token non sia già stato usato. L'unicità si basa
         # esclusivamente sul nonce opaco del token: poiché il SA rilascia al più
         # un token per elettore (controllo di unicità lato SA), un nonce non
         # ancora usato corrisponde a un elettore che non ha ancora votato. L'AE
         # non conosce alcun identificatore dell'elettore, preservando l'anonimato.
         token_identifier = token_obj['nonce']
-        if token_identifier in used_tokens:
-            print(f"[AE] {datetime.now().isoformat()} - Token già usato")
-            return jsonify({"error": "Token già usato"}), 409
 
-        # 5. Tutte le verifiche sono andate a buon fine:
-        # aggiungi il voto al Merkle Tree e al Bulletin Board.
-        # Il Bulletin Board resta pseudoanonimo: non pubblica il nonce del token,
-        # che rimane solo nello stato privato AE.
-        vote_record = {
-            "enc_vote": enc_vote,
-            "enc_seed": enc_seed,
-            "timestamp": datetime.now(UTC).isoformat()
-        }
+        # Sezione critica: controllo di unicità del token, inserimento nel
+        # Merkle Tree, scrittura del Bulletin Board e marcatura del token devono
+        # avvenire in modo atomico rispetto alle altre richieste e a /close.
+        with state_lock:
+            # Ricontrolla lo stato delle urne: /close potrebbe essere stato
+            # eseguito mentre questa richiesta verificava PoW e firma.
+            if not urn_open:
+                return jsonify({"error": "Urne chiuse"}), 403
 
-        record_bytes = json.dumps(vote_record, sort_keys=True).encode('utf-8')
-        leaf_index = merkle_tree.add_leaf(record_bytes)
+            if token_identifier in used_tokens:
+                print(f"[AE] {datetime.now().isoformat()} - Token già usato")
+                return jsonify({"error": "Token già usato"}), 409
 
-        # Salva il voto sul Bulletin Board
-        append_to_bulletin_board("vote", vote_record)
+            # 5. Tutte le verifiche sono andate a buon fine:
+            # aggiungi il voto al Merkle Tree e al Bulletin Board.
+            # Il Bulletin Board resta pseudoanonimo: non pubblica il nonce del token,
+            # che rimane solo nello stato privato AE.
+            vote_record = {
+                "enc_vote": enc_vote,
+                "enc_seed": enc_seed,
+                "timestamp": datetime.now(UTC).isoformat()
+            }
 
-        # Marca il token come usato per evitare riutilizzi. Il nonce è un
-        # identificatore opaco e non viene pubblicato sul Bulletin Board.
-        used_tokens.add(token_identifier)
-        save_ae_state()
+            # Salva il voto sul Bulletin Board (aggiunge prev_hash al record),
+            # poi inserisce nel Merkle Tree esattamente il record pubblicato.
+            append_to_bulletin_board("vote", vote_record)
+            record_bytes = json.dumps(vote_record, sort_keys=True).encode('utf-8')
+            leaf_index = merkle_tree.add_leaf(record_bytes)
 
-        # Genera la ricevuta per l'elettore, con la Merkle Proof
-        merkle_proof = merkle_tree.get_proof(leaf_index)
+            # Marca il token come usato per evitare riutilizzi. Il nonce è un
+            # identificatore opaco e non viene pubblicato sul Bulletin Board.
+            used_tokens.add(token_identifier)
+            save_ae_state()
+
+            # Fotografia dell'albero al momento del voto: proof, numero di
+            # foglie e root corrispondente. La proof è valida rispetto a QUESTA
+            # root, non alla root finale (che include i voti successivi).
+            merkle_proof = merkle_tree.get_proof(leaf_index)
+            tree_size = len(merkle_tree.leaves)
+            merkle_root_at_vote = merkle_tree.get_root()
+
+        # Genera la ricevuta per l'elettore. Includere (tree_size,
+        # merkle_root_at_vote) nella ricevuta firmata permette all'elettore, a
+        # urne chiuse, di verificare che i primi tree_size voti del Bulletin
+        # Board producano ancora la stessa root (il registro non è stato
+        # riscritto dopo il suo voto) e che il suo voto sia incluso nella root
+        # finale.
         timestamp_str = datetime.now(UTC).isoformat()
         receipt_data = {
             "leaf_index": leaf_index,
             "enc_vote": enc_vote,
             "merkle_proof": merkle_proof,
+            "tree_size": tree_size,
+            "merkle_root_at_vote": merkle_root_at_vote,
             "timestamp": timestamp_str
         }
 
@@ -356,13 +496,7 @@ def vote():
 
         print(f"[AE] {datetime.now().isoformat()} - Voto accettato, leaf index: {leaf_index}")
 
-        return jsonify({
-            "leaf_index": leaf_index,
-            "enc_vote": enc_vote,
-            "merkle_proof": merkle_proof,
-            "timestamp": timestamp_str,
-            "ae_signature": receipt_signature.hex()
-        }), 200
+        return jsonify({**receipt_data, "ae_signature": receipt_signature.hex()}), 200
 
     except (ValueError, KeyError, TypeError, AttributeError) as e:
         print(f"[AE] Errore di validazione (400): {str(e)}")
@@ -373,59 +507,79 @@ def vote():
 
 
 @app.route('/close', methods=['POST'])
+@require_admin
 def close():
     """
     Endpoint per la chiusura delle urne e l'inizio dello scrutinio.
 
-    Una volta chiuse le urne:
-    1. Viene pubblicata la Merkle Root finale sul Bulletin Board
-    2. Viene caricata la chiave privata di decifratura
-    3. Vengono decifrati tutti i voti
-    4. Viene verificata la corrispondenza dei seed
-    5. Vengono calcolati i risultati aggregati
-    6. Viene pubblicato tutto sul Bulletin Board
+    Richiesta (JSON): {"trustee_shares": [quota, quota, ...]}
+    Le quote degli scrutatori (Shamir) servono a ricostruire la chiave privata
+    di decifratura: l'AE da sola non può decifrare le schede.
+
+    Sequenza:
+    1. Si verificano le quote contro gli impegni pubblicati nel blocco init e
+       si ricostruisce la chiave privata. Con meno quote valide della soglia la
+       richiesta è rifiutata e le urne restano aperte.
+    2. Si chiudono le urne e si pubblicano riconciliazione e Merkle Root finale
+    3. Si decifrano le schede, pubblicando per ognuna la decifratura
+       verificabile (EM), e si calcolano i risultati aggregati
+    4. Si pubblica lo scrutinio sul Bulletin Board
 
     Returns:
         JSON con lo stato e i risultati aggregati
     """
+    # L'intera chiusura è eseguita sotto lock: nessun voto può essere aggiunto
+    # tra il calcolo della Merkle Root finale e lo scrutinio, e due chiamate
+    # concorrenti a /close non possono avviare due scrutini.
+    with state_lock:
+        return _close_locked()
+
+
+def _close_locked():
+    """Implementazione di /close; va chiamata solo tenendo state_lock."""
     global urn_open, ae_encrypt_private
     # Verifica che le urne non siano già chiuse
     if not urn_open:
         return jsonify({"error": "Urne già chiuse"}), 400
 
+    # 1. Quote degli scrutatori. Ogni quota deve corrispondere a uno degli
+    #    impegni (hash) pubblicati nel blocco init firmato: quote manomesse o
+    #    di un'altra elezione vengono scartate. Servono almeno `threshold`
+    #    quote di scrutatori distinti.
+    with open(bulletin_board_path, "r", encoding="utf-8") as f:
+        init_data = json.load(f)[0]["data"]
+    escrow = init_data.get("escrow") or {}
+    commitments = set(escrow.get("share_commitments", []))
+    threshold = escrow.get("threshold", 0)
+
+    req_data = request.get_json(silent=True) or {}
+    received = req_data.get("trustee_shares") or []
+    valid_shares = {}
+    for share in received if isinstance(received, list) else []:
+        if isinstance(share, dict) and share_commitment(share) in commitments:
+            valid_shares[share.get("x")] = share  # una quota per scrutatore
+    if not threshold or len(valid_shares) < threshold:
+        print(f"[AE] {datetime.now().isoformat()} - Chiusura rifiutata: "
+              f"{len(valid_shares)} quote valide su {threshold} necessarie")
+        return jsonify({"error": f"Servono almeno {threshold} quote valide di scrutatori distinti "
+                                 f"(ricevute valide: {len(valid_shares)})"}), 400
+    try:
+        ae_encrypt_private = recover_private_key(list(valid_shares.values()), init_data["election_id"])
+    except Exception:
+        return jsonify({"error": "Ricostruzione della chiave di decifratura fallita"}), 400
+    print(f"[AE] Chiave di decifratura ricostruita con {len(valid_shares)} quote di scrutatori")
+
     urn_open = False
     print(f"[AE] {datetime.now().isoformat()} - Urne chiuse")
 
-    # 0. Pubblica blocco di riconciliazione (totale voti ricevuti)
+    # 2. Pubblica blocco di riconciliazione (totale voti ricevuti) e la
+    #    Merkle Root finale firmata.
     total_votes = len(used_tokens)
     reconciliation_data = {"total_votes": total_votes}
     append_to_bulletin_board("reconciliation_ae", reconciliation_data)
 
-    # 1. Calcola la Merkle Root finale e firmala — questa firma diventa l'IKM
-    #    per decifrare la chiave privata dell'AE (vincolo crittografico WP3-3.3).
     merkle_root = merkle_tree.get_root()
-    root_data = {"merkle_root": merkle_root}
-    root_data_json = json.dumps(root_data, sort_keys=True).encode('utf-8')
-    merkle_root_signature = sign(ae_sign_private, root_data_json)
-    append_to_bulletin_board("merkle_root", root_data, precomputed_signature=merkle_root_signature)
-
-    # 2. Decifra la chiave privata di decifratura usando la firma della Merkle Root
-    #    come Input Key Material (HKDF-SHA256 → AES-256-GCM).
-    #    Questa operazione fallisce se la firma non corrisponde a quella usata
-    #    durante il salvataggio: in caso di esecuzione anticipata (urne ancora
-    #    aperte) la root non è quella definitiva e la decifratura è impossibile.
-    try:
-        ae_encrypt_private = load_and_decrypt_private_key("ae_encrypt", merkle_root_signature)
-    except Exception:
-        # Prima esecuzione di /close: il file .enc è stato creato con IKM=init_signature.
-        # Leggiamo la firma del blocco init dal Bulletin Board, la usiamo per decifrare
-        # il file .enc iniziale, poi lo ri-cifriamo con l'IKM definitivo (Merkle Root).
-        with open(bulletin_board_path, "r", encoding="utf-8") as _f:
-            _bb = json.load(_f)
-        init_signature_bytes = bytes.fromhex(_bb[0]["signature"])
-        ae_encrypt_private = load_and_decrypt_private_key("ae_encrypt", init_signature_bytes)
-        save_encrypted_private_key(ae_encrypt_private, "ae_encrypt", merkle_root_signature)
-        print("[AE] Chiave privata AE ri-cifrata con IKM definitivo (Merkle Root firmata)")
+    append_to_bulletin_board("merkle_root", {"merkle_root": merkle_root})
 
     # 3. Esegui lo scrutinio
     with open(bulletin_board_path, "r", encoding="utf-8") as f:
@@ -440,52 +594,52 @@ def close():
     vote_counts[NULL_LABEL] = 0
     verified_votes = []
 
-    # Elabora tutti i blocchi di voto dal Bulletin Board
+    # Elabora tutti i blocchi di voto dal Bulletin Board.
+    #
+    # DECIFRATURA VERIFICABILE: per ogni scheda si pubblica il blocco decifrato
+    # EM = c^d mod n (prima della decodifica OAEP). Chiunque può controllare con
+    # la sola chiave pubblica che EM^e mod n == c e decodificare EM da sé,
+    # ottenendo voto e seed: l'AE non può attribuire a una scheda un contenuto
+    # diverso da quello reale né dichiarare nulla una scheda valida, perché per
+    # ogni c esiste un solo EM che supera la verifica.
+    #
+    # Il seed è ricavato da EM stesso (fa parte del padding OAEP): il seed
+    # cifrato a parte dall'elettore (enc_seed) non serve più per lo scrutinio.
+    # Un elettore malevolo che invia un enc_seed incoerente non può quindi né
+    # bloccare la verifica né far annullare la propria scheda.
+    ae_encrypt_public = ae_encrypt_private.public_key()
+    k = modulus_length(ae_encrypt_public)
     for block in bb:
         if block['type'] == 'vote':
             enc_vote_hex = block['data']['enc_vote']
-            enc_seed_hex = block['data']['enc_seed']
-
-            # Decifra il seed (randomness OAEP usata per cifrare il voto)
-            enc_seed_bytes = bytes.fromhex(enc_seed_hex)
-            try:
-                seed_bytes = decrypt(ae_encrypt_private, enc_seed_bytes)
-            except Exception:
-                seed_bytes = b""
-
-            # Decifra il voto (contiene il solo indice della lista, 1 byte)
             enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-            try:
-                vote_plain = decrypt(ae_encrypt_private, enc_vote_bytes)
-            except Exception:
-                vote_plain = b""
 
-            # Determina il candidato; schede fuori dominio -> nulle (non scartate)
-            is_valid = False
+            em_bytes = b""
+            seed_bytes = b""
+            vote_plain = b""
+            if is_valid_ciphertext(ae_encrypt_public, enc_vote_bytes):
+                em_bytes = raw_decrypt(ae_encrypt_private, enc_vote_bytes)
+                try:
+                    seed_bytes, vote_plain = oaep_decode(em_bytes, k)
+                except ValueError:
+                    pass  # padding OAEP non valido: scheda nulla (verificabile da EM)
+
+            # Il voto è il solo indice della lista (1 byte); fuori dominio → nulla
             if len(vote_plain) == 1 and 0 <= vote_plain[0] < len(candidates):
-                # VERIFICA DI COERENZA CRITTOGRAFICA (Prevenzione DoS da elettore malevolo)
-                if len(seed_bytes) == 32:
-                    try:
-                        ae_encrypt_public = ae_encrypt_private.public_key()
-                        recomputed = encrypt(ae_encrypt_public, vote_plain, seed=seed_bytes)
-                        if recomputed == enc_vote_bytes:
-                            is_valid = True
-                    except Exception:
-                        pass
-            
-            if is_valid:
                 candidate = candidates[vote_plain[0]]
             else:
                 candidate = NULL_LABEL
-                print(f"[AE] Scheda nulla rilevata (invalidità o incongruenza crittografica) per enc_vote: {enc_vote_hex}")
+                print(f"[AE] Scheda nulla rilevata (contenuto fuori dominio o padding non valido) per enc_vote: {enc_vote_hex[:32]}...")
 
             vote_counts[candidate] += 1
-            # Pubblica la tripla (scheda cifrata, voto in chiaro, seed) per ogni
-            # scheda scrutinata: il seed abilita la verifica universale (ricifratura).
+            # Si pubblicano scheda cifrata, voto in chiaro, seed ed EM: il seed
+            # abilita la ricifratura (verifica individuale del client), EM la
+            # verifica pubblica della decifratura di OGNI scheda, nulle comprese.
             verified_votes.append({
                 "enc_vote": enc_vote_hex,
                 "voto_chiaro": candidate,
-                "seed": seed_bytes.hex()
+                "seed": seed_bytes.hex(),
+                "em": em_bytes.hex()
             })
 
     # 4. Pubblica i risultati dello scrutinio sul Bulletin Board
@@ -510,11 +664,12 @@ def status():
     return jsonify({
         "votes_received": len(used_tokens),
         "urn_open": urn_open,
-        "pow_difficulty": current_pow_difficulty()
+        "pow_difficulty": current_pow_difficulty(request.remote_addr)
     }), 200
 
 
 @app.route('/shutdown', methods=['POST'])
+@require_admin
 def shutdown():
     """Termina il server AE in modo controllato (adatto all'uso locale)."""
     import threading
@@ -531,14 +686,14 @@ def print_server_banner() -> None:
     print("Ruolo: ricevere le schede cifrate, verificare token e Proof of Work,")
     print("registrare i voti nel Bulletin Board e, a urne chiuse, eseguire lo")
     print("scrutinio e pubblicare le prove.")
-    print("\nIn questo terminale potrai visualizzare:")
+    print("\nIn questo terminale vengono visualizzati:")
     print("- il caricamento dei dati iniziali;")
     print("- l'avvio del server Flask;")
     print("- le richieste ricevute su /status, /vote, /close, /shutdown;")
     print("- eventuali schede nulle rilevate durante lo scrutinio;")
     print("- eventuali errori o messaggi diagnostici dell'AE.")
-    print("\nNon serve interagire con questo terminale: chiudilo solo quando")
-    print("hai terminato l'elezione o il test.")
+    print("\nNon è richiesta alcuna interazione con questo terminale: la chiusura")
+    print("è consentita al termine dell'elezione o del test.")
     print("=" * 70 + "\n")
 
 
@@ -546,6 +701,7 @@ if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     print_server_banner()
     load_initial_data()
+    get_or_create_admin_token()
 
     # Certificati TLS self-signed per HTTPS
     tls_cert = os.path.join("data", "tls", "ae_cert.pem")
@@ -556,7 +712,7 @@ if __name__ == "__main__":
         print("[AE] TLS abilitato — in ascolto su https://localhost:5002")
     else:
         ssl_ctx = None
-        print("[AE] Certificati TLS non trovati — avvio in HTTP (esegui generate_tls_certs.py)")
+        print("[AE] Certificati TLS non trovati — avvio in HTTP (generare i certificati con generate_tls_certs.py)")
 
     # Avvia il server Flask sulla porta 5002, debug disabilitato
     app.run(port=5002, debug=False, ssl_context=ssl_ctx)

@@ -7,10 +7,13 @@ Questo modulo si occupa di:
 - Salvataggio delle chiavi in formato PEM
 - Caricamento delle chiavi da file
 - Serializzazione/deserializzazione delle chiavi pubbliche
+- Escrow a soglia (Shamir k-su-n) della chiave privata di decifratura dell'AE
 """
 
 import os
-from typing import Tuple
+import json
+import hashlib
+from typing import Dict, List, Tuple
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives import serialization
@@ -76,107 +79,126 @@ def save_keypair(private_key: RSAPrivateKey, public_key: RSAPublicKey, name: str
         f.write(public_pem)
 
 
-def save_encrypted_private_key(private_key: RSAPrivateKey, name: str,
-                               ikm: bytes, base_path: str = "data/keys") -> None:
+def escrow_private_key(private_key: RSAPrivateKey, election_id: str, trustees: int = 3,
+                       threshold: int = 2, name: str = "ae_encrypt",
+                       base_path: str = "data/keys") -> List[Dict]:
     """
-    Cifra una chiave privata RSA con AES-GCM e la salva su disco.
+    Protegge la chiave privata di decifratura dell'AE con un escrow a soglia.
 
-    La chiave simmetrica AES-256 è derivata con HKDF-SHA256 dal materiale
-    chiave in ingresso (ikm), tipicamente la firma di un blocco pubblico
-    (es. firma della Merkle Root). Finché quel blocco non è stato pubblicato,
-    il materiale non è disponibile e la chiave privata non può essere decifrata.
+    1. Si genera una chiave AES-256 casuale e con essa si cifra (AES-GCM) la
+       chiave privata RSA. L'ID dell'elezione è usato come dato associato
+       (AAD): il file cifrato non può essere riutilizzato per un'altra elezione.
+    2. La chiave AES viene divisa con Shamir Secret Sharing in `trustees` quote,
+       di cui `threshold` sufficienti a ricostruirla, e la chiave AES viene
+       scartata: non esiste più in nessun luogo come valore intero.
+    3. Ogni quota è destinata a uno scrutatore diverso. Nel PoC le quote sono
+       salvate in data/keys/trustees/ per simulare la consegna; in un sistema
+       reale ciascuna verrebbe consegnata al proprio scrutatore e non
+       risiederebbe sulla macchina dell'AE.
 
-    Formato file:
-        [12 byte nonce GCM] || [n byte ciphertext+tag]
+    Formato del file cifrato: [12 byte nonce GCM] || [ciphertext + tag].
 
-    Args:
-        private_key: Chiave privata RSA da proteggere.
-        name: Nome base del file (senza suffisso).
-        ikm: Input Key Material da cui derivare la chiave AES-256.
-        base_path: Cartella di destinazione.
+    Returns:
+        List[Dict]: le quote, ognuna come documento JSON-serializzabile.
     """
-    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-    from cryptography.hazmat.primitives import hashes as _hashes
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from crypto.shamir import split_secret
 
-    # Serializza la chiave privata in PEM
     private_pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption()
     )
-
-    # Deriva una chiave AES-256 via HKDF-SHA256
-    hkdf = HKDF(
-        algorithm=_hashes.SHA256(),
-        length=32,
-        salt=None,
-        info=b"ae_encrypt_private_key_escrow",
-        backend=default_backend()
-    )
-    aes_key = hkdf.derive(ikm)
-
-    # Cifra con AES-256-GCM
-    aesgcm = AESGCM(aes_key)
+    aes_key = AESGCM.generate_key(bit_length=256)
     nonce = os.urandom(12)  # 96-bit nonce raccomandato per GCM
-    ciphertext = aesgcm.encrypt(nonce, private_pem, None)
+    ciphertext = AESGCM(aes_key).encrypt(nonce, private_pem, election_id.encode("utf-8"))
 
-    # Salva: nonce || ciphertext (include il GCM tag di autenticazione)
     os.makedirs(base_path, exist_ok=True)
     with open(os.path.join(base_path, f"{name}_private.enc"), "wb") as f:
         f.write(nonce + ciphertext)
 
+    shares = []
+    for x, y in split_secret(aes_key, trustees, threshold):
+        shares.append({
+            "election_id": election_id,
+            "trustee": x,
+            "threshold": threshold,
+            "trustees": trustees,
+            "x": x,
+            "y": format(y, "x"),
+        })
+    del aes_key
 
-def load_and_decrypt_private_key(name: str, ikm: bytes,
-                                 base_path: str = "data/keys") -> RSAPrivateKey:
+    trustees_dir = os.path.join(base_path, "trustees")
+    os.makedirs(trustees_dir, exist_ok=True)
+    for share in shares:
+        with open(os.path.join(trustees_dir, f"trustee_{share['trustee']}.json"), "w", encoding="utf-8") as f:
+            json.dump(share, f, indent=2)
+    return shares
+
+
+def share_commitment(share: Dict) -> str:
     """
-    Decifra e carica una chiave privata protetta con AES-GCM.
+    Impegno pubblico su una quota: SHA-256 della sua serializzazione canonica.
 
-    Inverte save_encrypted_private_key(): usa lo stesso IKM per derivare la
-    chiave AES e decifrare il file. Se l'IKM è errato (o il file manomesso),
-    AESGCM solleva un'eccezione di autenticazione.
+    Gli impegni vengono pubblicati nel blocco init del Bulletin Board: al
+    momento dello scrutinio l'AE (e chiunque) può verificare che le quote
+    consegnate dagli scrutatori siano quelle originali e non quote manomesse.
+    """
+    canonical = json.dumps(share, sort_keys=True).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
-    Args:
-        name: Nome base del file (senza suffisso).
-        ikm: Input Key Material identico a quello usato in salvataggio.
-        base_path: Cartella da cui leggere il file.
 
-    Returns:
-        RSAPrivateKey: Chiave privata RSA in memoria (mai scritta in chiaro).
+def escrow_public_info(shares: List[Dict]) -> Dict:
+    """
+    Parametri pubblici dell'escrow da inserire nel blocco init (firmato) del
+    Bulletin Board: schema, soglia, numero di scrutatori e impegni sulle quote.
+    """
+    return {
+        "scheme": "shamir",
+        "threshold": shares[0]["threshold"],
+        "trustees": shares[0]["trustees"],
+        "share_commitments": [share_commitment(s) for s in shares],
+    }
+
+
+def load_trustee_shares(base_path: str = "data/keys") -> List[Dict]:
+    """Legge le quote degli scrutatori salvate in data/keys/trustees/ (simulazione PoC)."""
+    trustees_dir = os.path.join(base_path, "trustees")
+    if not os.path.isdir(trustees_dir):
+        return []
+    shares = []
+    for filename in sorted(os.listdir(trustees_dir)):
+        if filename.endswith(".json"):
+            with open(os.path.join(trustees_dir, filename), "r", encoding="utf-8") as f:
+                shares.append(json.load(f))
+    return shares
+
+
+def recover_private_key(shares: List[Dict], election_id: str, name: str = "ae_encrypt",
+                        base_path: str = "data/keys") -> RSAPrivateKey:
+    """
+    Ricostruisce la chiave privata dell'AE a partire dalle quote degli scrutatori.
+
+    La chiave AES viene ricostruita con l'interpolazione di Lagrange e usata
+    per decifrare il file: se le quote sono meno della soglia, manomesse o di
+    un'altra elezione, AES-GCM fallisce l'autenticazione (InvalidTag).
 
     Raises:
-        cryptography.exceptions.InvalidTag: Se il ciphertext è manomesso o IKM errato.
-        FileNotFoundError: Se il file cifrato non esiste.
+        cryptography.exceptions.InvalidTag: quote insufficienti o non valide.
+        ValueError: quote duplicate o malformate.
     """
-    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-    from cryptography.hazmat.primitives import hashes as _hashes
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from crypto.shamir import combine_shares
 
-    # Deriva la stessa chiave AES-256
-    hkdf = HKDF(
-        algorithm=_hashes.SHA256(),
-        length=32,
-        salt=None,
-        info=b"ae_encrypt_private_key_escrow",
-        backend=default_backend()
-    )
-    aes_key = hkdf.derive(ikm)
+    points = [(int(s["x"]), int(s["y"], 16)) for s in shares]
+    aes_key = combine_shares(points, secret_length=32)
 
-    # Leggi nonce + ciphertext dal file
-    file_path = os.path.join(base_path, f"{name}_private.enc")
-    with open(file_path, "rb") as f:
+    with open(os.path.join(base_path, f"{name}_private.enc"), "rb") as f:
         blob = f.read()
     nonce, ciphertext = blob[:12], blob[12:]
-
-    # Decifra e autentica (l'eccezione InvalidTag indica IKM errato o file corrotto)
-    aesgcm = AESGCM(aes_key)
-    private_pem = aesgcm.decrypt(nonce, ciphertext, None)
-
-    return serialization.load_pem_private_key(
-        private_pem,
-        password=None,
-        backend=default_backend()
-    )
+    private_pem = AESGCM(aes_key).decrypt(nonce, ciphertext, election_id.encode("utf-8"))
+    return serialization.load_pem_private_key(private_pem, password=None, backend=default_backend())
 
 
 def load_private_key(name: str, base_path: str = "data/keys") -> RSAPrivateKey:

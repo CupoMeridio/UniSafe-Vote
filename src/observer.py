@@ -10,8 +10,11 @@ Le verifiche effettuate sono:
 2. Verifica della firma del blocco con la Merkle Root
 3. Verifica della firma del blocco con i risultati dello scrutinio
 4. Ricostruzione del Merkle Tree e verifica che corrisponda alla Root pubblicata
-5. Verifica della correttezza dei voti decifrati e del conteggio aggregato
+5. Verifica pubblica della decifratura di OGNI scheda (EM^e mod n == c),
+   schede nulle comprese, e del conteggio aggregato
 6. Verifica delle Merkle Proof per ogni singolo voto
+7. Riconciliazione tra token emessi e schede
+8. Catena di hash (prev_hash) e firma di ogni blocco del Bulletin Board
 
 Tutto questo è possibile grazie al fatto che il Bulletin Board è un
 registro append-only, pubblico e firmato digitalmente.
@@ -28,8 +31,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from crypto.keys import deserialize_public_key
 from crypto.rsa_pss import verify
-from crypto.rsa_oaep import encrypt
-from crypto.merkle import MerkleTree, verify_proof
+from crypto.rsa_oaep import encrypt, verify_raw_decryption, oaep_decode, is_valid_ciphertext, modulus_length
+from crypto.merkle import MerkleTree, verify_proof, leaf_hash as merkle_leaf_hash
+from bb_chain import find_chain_break, block_hash
 
 
 def main() -> None:
@@ -140,11 +144,14 @@ def main() -> None:
             print("FAIL")
             all_passed = False
 
-        # 5. Verifica dati pubblici del blocco scrutinio tramite RICIFRATURA.
-        #    Grazie all'OAEP con seed iniettabile, l'observer ricifra
-        #    Enc_OAEP(voto, seed) e confronta con la scheda registrata: se il
-        #    risultato coincide, l'AE non ha alterato né inventato la decifratura.
-        print("\n5. Verifica voti scrutinati (ricifratura) e conteggio aggregato... ", end="")
+        # 5. Verifica dati pubblici del blocco scrutinio tramite DECIFRATURA
+        #    VERIFICABILE. Per ogni scheda l'AE pubblica EM = c^d mod n: con la
+        #    sola chiave pubblica si controlla che EM^e mod n == c (esiste un
+        #    solo EM con questa proprietà) e si decodifica EM ricavando voto e
+        #    seed. Il contenuto di ogni scheda, NULLE COMPRESE, viene così
+        #    ricostruito in modo indipendente: l'AE non può dichiarare nulla una
+        #    scheda valida né attribuirle un candidato diverso.
+        print("\n5. Verifica pubblica delle decifrature (EM) e conteggio aggregato... ", end="")
         scrutinated_votes = scrutinio_data.get("voti_verificati", [])
         scrutinated_enc_votes = [vote.get("enc_vote") for vote in scrutinated_votes]
         vote_block_enc_votes = [block["data"]["enc_vote"] for block in vote_blocks]
@@ -157,51 +164,68 @@ def main() -> None:
             and len(vote_block_enc_votes) == len(vote_block_set)
         )
 
-        # Mappa enc_vote -> enc_seed dai blocchi voto, per recuperare il seed pubblicato
         valid_labels = set(candidates) | {NULL_LABEL}
         verified_counts = {c: 0 for c in candidates}
         verified_counts[NULL_LABEL] = 0
+        k = modulus_length(ae_encrypt_public)
+        problems = []
 
         for verified_vote in scrutinated_votes:
             enc_vote_hex = verified_vote.get("enc_vote")
-            seed_hex = verified_vote.get("seed")
             candidate = verified_vote.get("voto_chiaro")
+            em_hex = verified_vote.get("em")
+            seed_hex = verified_vote.get("seed", "")
 
-            if not enc_vote_hex or not seed_hex or not candidate:
-                public_votes_ok = False
-                continue
-
-            if enc_vote_hex not in vote_block_set:
-                public_votes_ok = False
-                continue
-
-            if candidate not in valid_labels:
-                public_votes_ok = False
+            if (not enc_vote_hex or enc_vote_hex not in vote_block_set
+                    or candidate not in valid_labels or em_hex is None):
+                problems.append(f"voce di scrutinio incompleta o estranea: {str(enc_vote_hex)[:32]}...")
                 continue
 
             try:
-                seed_bytes = bytes.fromhex(seed_hex)
+                enc_vote_bytes = bytes.fromhex(enc_vote_hex)
+                em_bytes = bytes.fromhex(em_hex)
             except ValueError:
-                public_votes_ok = False
+                problems.append(f"campi non esadecimali per {enc_vote_hex[:32]}...")
                 continue
 
-            if len(seed_bytes) != 32:
-                public_votes_ok = False
+            # Contenuto ricostruito in modo indipendente dall'AE
+            if not em_bytes:
+                # Nessun EM: ammesso solo se il ciphertext è malformato
+                if is_valid_ciphertext(ae_encrypt_public, enc_vote_bytes):
+                    problems.append(f"EM mancante per una scheda ben formata: {enc_vote_hex[:32]}...")
+                    continue
+                expected, expected_seed = NULL_LABEL, b""
+            else:
+                if not verify_raw_decryption(ae_encrypt_public, enc_vote_bytes, em_bytes):
+                    problems.append(f"EM non corrisponde alla scheda (EM^e mod n != c): {enc_vote_hex[:32]}...")
+                    continue
+                try:
+                    expected_seed, plain = oaep_decode(em_bytes, k)
+                except ValueError:
+                    expected_seed, plain = b"", b""
+                if len(plain) == 1 and 0 <= plain[0] < len(candidates):
+                    expected = candidates[plain[0]]
+                else:
+                    expected = NULL_LABEL
+
+            if candidate != expected:
+                problems.append(f"l'AE dichiara '{candidate}' ma la scheda contiene '{expected}': {enc_vote_hex[:32]}...")
+                continue
+            if seed_hex != expected_seed.hex():
+                problems.append(f"seed pubblicato diverso da quello contenuto in EM: {enc_vote_hex[:32]}...")
                 continue
 
-            # Ricifratura deterministica per le schede valide: il voto in chiaro
-            # corrisponde a un indice di candidato noto, quindi possiamo ricostruire
-            # Enc_OAEP(indice, seed) e confrontarlo con enc_vote pubblicato.
+            # Ricifratura con il seed pubblicato (la stessa verifica del client)
             if candidate != NULL_LABEL:
-                vote_index = candidates.index(candidate)
-                vote_byte = vote_index.to_bytes(1, byteorder='big')
-                recomputed = encrypt(ae_encrypt_public, vote_byte, seed=seed_bytes).hex()
-                if recomputed != enc_vote_hex:
-                    print(f"\n   Ricifratura non corrispondente per enc_vote: {enc_vote_hex}")
-                    public_votes_ok = False
+                vote_byte = candidates.index(candidate).to_bytes(1, byteorder='big')
+                if encrypt(ae_encrypt_public, vote_byte, seed=expected_seed).hex() != enc_vote_hex:
+                    problems.append(f"ricifratura non corrispondente: {enc_vote_hex[:32]}...")
                     continue
 
             verified_counts[candidate] += 1
+
+        if problems:
+            public_votes_ok = False
 
         # Verifica che il conteggio aggregato corrisponda
         if public_votes_ok and verified_counts == scrutinio_data["risultato_aggregato"]:
@@ -211,7 +235,9 @@ def main() -> None:
             print("FAIL")
             all_passed = False
             if not public_votes_ok:
-                print("   Uno o più voti scrutinati non corrispondono ai blocchi voto o alla ricifratura.")
+                print("   Uno o più voti scrutinati non corrispondono ai blocchi voto o alla decifratura pubblicata.")
+                for problem in problems:
+                    print(f"   - {problem}")
             if verified_counts != scrutinio_data["risultato_aggregato"]:
                 print(f"   Conteggio atteso: {scrutinio_data['risultato_aggregato']}")
                 print(f"   Conteggio ricostruito: {verified_counts}")
@@ -223,7 +249,7 @@ def main() -> None:
         for i, vote_block in enumerate(vote_blocks):
             # Genera proof dall'albero ricostruito
             record_bytes = json.dumps(vote_block["data"], sort_keys=True).encode('utf-8')
-            leaf_hash = hashlib.sha256(record_bytes).digest()
+            leaf_hash = merkle_leaf_hash(record_bytes)
             proof = reconstructed_tree.get_proof(i)
 
             if not verify_proof(leaf_hash, proof, merkle_root):
@@ -256,8 +282,12 @@ def main() -> None:
         else:
             total_tokens = rec_sa_block["data"]["total_tokens"]
             total_votes = rec_ae_block["data"]["total_votes"]
+            received_vote_blocks = len(vote_blocks)
             
-            if total_votes <= total_tokens:
+            if total_votes != received_vote_blocks:
+                print(f"FAIL (Voti dichiarati {total_votes} != Blocchi voto {received_vote_blocks})")
+                all_passed = False
+            elif total_votes <= total_tokens:
                 print(f"OK ({total_votes} voti su {total_tokens} token emessi)")
             else:
                 print(f"FAIL (Voti ricevuti {total_votes} > Token emessi {total_tokens})")
@@ -265,6 +295,34 @@ def main() -> None:
     else:
         print("Saltato (Blocchi di riconciliazione mancanti)")
 
+
+    # 8. Catena di hash e firma di OGNI blocco. Le verifiche precedenti
+    #    controllano solo alcuni blocchi: qui si verifica che ogni blocco sia
+    #    firmato dall'autorità che lo ha emesso (il SA per la propria
+    #    riconciliazione, l'AE per tutti gli altri) e che la sequenza non sia
+    #    stata alterata (nessun blocco rimosso, inserito o riordinato).
+    print("\n8. Verifica catena di hash e firme di tutti i blocchi... ", end="")
+    chain_break = find_chain_break(bb)
+    bad_signatures = []
+    for i, block in enumerate(bb):
+        signer = sa_sign_public if block["type"] == "reconciliation_sa" else ae_sign_public
+        try:
+            sig = bytes.fromhex(block["signature"])
+        except (KeyError, ValueError):
+            bad_signatures.append(i)
+            continue
+        if not verify(signer, json.dumps(block["data"], sort_keys=True).encode('utf-8'), sig):
+            bad_signatures.append(i)
+    if chain_break is None and not bad_signatures:
+        print(f"OK ({len(bb)} blocchi collegati, firme valide; ultimo hash {block_hash(bb[-1])[:16]}...)")
+    else:
+        print("FAIL")
+        all_passed = False
+        if chain_break is not None:
+            print(f"   Catena interrotta al blocco {chain_break} ({bb[chain_break]['type']}): "
+                  f"prev_hash non corrisponde al blocco precedente.")
+        if bad_signatures:
+            print(f"   Firme non valide nei blocchi: {bad_signatures}")
 
     print("\n=== RISULTATO FINALE ===")
     if all_passed:

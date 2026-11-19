@@ -26,6 +26,7 @@ import time
 from typing import Optional
 import requests
 import platform
+import shutil
 
 SA_PROCESS: Optional[subprocess.Popen] = None  # Riferimento al processo del server SA (Sistema di Autenticazione)
 AE_PROCESS: Optional[subprocess.Popen] = None  # Riferimento al processo del server AE (Autorità Elettorale)
@@ -114,6 +115,35 @@ def _verify_for(url: str) -> str | bool:
     if url.startswith(AE_URL):
         return AE_CERT if os.path.exists(AE_CERT) else True
     return True
+
+
+def _admin_headers() -> dict:
+    """
+    Header per le operazioni amministrative (/close, /reconcile, /shutdown).
+
+    SA e AE generano il token in data/keys/admin_token al primo avvio; il
+    pannello di controllo, che gira sulla stessa macchina, lo legge dal file.
+    """
+    token_path = os.path.join(PROJECT_DIR, "data", "keys", "admin_token")
+    try:
+        with open(token_path, "r", encoding="utf-8") as f:
+            token = f.read().strip()
+    except FileNotFoundError:
+        return {}
+    return {"X-Admin-Token": token} if token else {}
+
+
+def _load_trustee_shares() -> list:
+    """Legge le quote degli scrutatori da data/keys/trustees/ (simulazione PoC)."""
+    trustees_dir = os.path.join(PROJECT_DIR, "data", "keys", "trustees")
+    if not os.path.isdir(trustees_dir):
+        return []
+    shares = []
+    for filename in sorted(os.listdir(trustees_dir)):
+        if filename.endswith(".json"):
+            with open(os.path.join(trustees_dir, filename), "r", encoding="utf-8") as f:
+                shares.append(json.load(f))
+    return shares
 
 
 def check_server_running(url: str) -> bool:
@@ -410,7 +440,9 @@ Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente
     if os.path.isdir(keys_dir):
         for filename in os.listdir(keys_dir):
             file_path = os.path.join(keys_dir, filename)
-            if os.path.isfile(file_path) and filename != ".gitkeep":
+            if os.path.isdir(file_path):  # es. quote degli scrutatori (trustees/)
+                shutil.rmtree(file_path)
+            elif os.path.isfile(file_path) and filename != ".gitkeep":
                 os.remove(file_path)
     else:
         os.makedirs(keys_dir, exist_ok=True)
@@ -439,9 +471,12 @@ def _silent_reset_after_test() -> None:
     Reset silenzioso eseguito automaticamente dopo ogni test di sicurezza.
 
     I test sono autocontenuti e fanno il proprio teardown, ma possono lasciare
-    residui in data/ se interrotti prematuramente. Questo cleanup garantisce
-    che il sistema torni in uno stato neutro prima di tornare al menu principale,
-    senza sovrascrivere un'elezione reale già inizializzata dall'utente.
+    residui in data/ se interrotti prematuramente. Questo cleanup riporta il
+    sistema in uno stato neutro prima di tornare al menu principale.
+
+    ATTENZIONE: rimuove qualunque elezione presente in data/. Per questo
+    run_security_tests chiede una conferma esplicita prima di avviare un test
+    quando esiste già un'elezione inizializzata.
     """
     data_dir     = os.path.join(PROJECT_DIR, "data")
     keys_dir     = os.path.join(data_dir, "keys")
@@ -456,7 +491,10 @@ def _silent_reset_after_test() -> None:
     if os.path.isdir(keys_dir):
         for f in os.listdir(keys_dir):
             fp = os.path.join(keys_dir, f)
-            if os.path.isfile(fp) and f != ".gitkeep":
+            if os.path.isdir(fp):  # es. quote degli scrutatori (trustees/)
+                shutil.rmtree(fp)
+                cleaned = True
+            elif os.path.isfile(fp) and f != ".gitkeep":
                 os.remove(fp)
                 cleaned = True
     else:
@@ -502,12 +540,10 @@ def close_election() -> None:
     Questa funzione invia una richiesta POST all'AE (in esecuzione in ae.py) per chiudere le urne e avviare lo scrutinio.
     
     L'AE (in ae.py) esegue il seguente processo:
-    1. Pubblica il Merkle Root finale sul Bulletin Board
-    2. Carica la chiave privata di decifratura
-    3. Decifra tutti i voti
-    4. Verifica i seed per garantire l'integrità
-    5. Calcola il risultato aggregato
-    6. Pubblica tutto sul Bulletin Board
+    1. Verifica le quote degli scrutatori e ricostruisce la chiave di decifratura
+    2. Chiude le urne e pubblica riconciliazione e Merkle Root finale
+    3. Decifra tutte le schede pubblicando la decifratura verificabile (EM)
+    4. Calcola e pubblica il risultato aggregato
     
     Returns:
         None
@@ -531,22 +567,35 @@ Per procedere, inizializza prima una elezione dalla sezione PREPARAZIONE.
     print_header("CHIUSURA URNE E SCRUTINIO")
     print_explanation("""
 Quando le urne vengono chiuse:
-1. L'AE pubblica il Merkle Root finale
-2. Carica la chiave privata di decifratura
-3. Decifra tutti i voti
-4. Verifica i seed per garantire l'integrità
-5. Calcola il risultato aggregato
-6. Pubblica tutto sul Bulletin Board
+1. Gli scrutatori consegnano le proprie quote (ne servono 2 su 3): l'AE le
+   verifica contro gli impegni del blocco init e ricostruisce la chiave
+   privata di decifratura, che da sola non possiede
+2. L'AE chiude le urne e pubblica riconciliazione e Merkle Root finale
+3. Decifra tutte le schede e pubblica per ognuna la decifratura (EM),
+   verificabile da chiunque con la sola chiave pubblica
+4. Calcola e pubblica il risultato aggregato
     """)
     input("Premi Invio per chiudere le urne...")
     
     try:
         # Chiamata al SA per pubblicare i token emessi (Riconciliazione)
         if check_server_running(SA_URL):
-            requests.post(SA_URL + '/reconcile', timeout=10, verify=_verify_for(SA_URL))
+            requests.post(SA_URL + '/reconcile', headers=_admin_headers(), timeout=10, verify=_verify_for(SA_URL))
+
+        # Consegna delle quote degli scrutatori (simulazione PoC): la chiave di
+        # decifratura dell'AE è protetta da Shamir Secret Sharing e l'AE da sola
+        # non può ricostruirla. In un sistema reale ogni scrutatore custodisce
+        # la propria quota e la consegna solo a urne chiuse.
+        shares = _load_trustee_shares()
+        threshold = shares[0]["threshold"] if shares else 0
+        print(f"\nQuote degli scrutatori disponibili: {len(shares)} (soglia: {threshold})")
+        for share in shares[:threshold]:
+            print(f"   Scrutatore {share['trustee']} consegna la propria quota")
 
         # Invio di una richiesta POST all'endpoint /close dell'AE per chiudere le urne
-        response = requests.post(AE_URL + '/close', timeout=10, verify=_verify_for(AE_URL))
+        response = requests.post(AE_URL + '/close', headers=_admin_headers(),
+                                 json={"trustee_shares": shares[:threshold]},
+                                 timeout=30, verify=_verify_for(AE_URL))
  
         # Se il server risponde con codice 200, la chiusura e lo scrutinio sono andati a buon fine
         if response.status_code == 200:
@@ -669,13 +718,33 @@ impossibile nascondere la manomissione retroattiva di un voto.
 Un "amministratore corrotto" modifica un voto già registrato nel
 Merkle Tree. Il test verifica che:
 - La Merkle Root cambia dopo la modifica (rilevabile da chiunque).
-- La ricevuta originale dell'elettore non è più valida con la nuova root.
-- L'osservatore universale rileva immediatamente la discrepanza.
+- La ricevuta rilasciata al momento del voto (proof + root di quel
+  momento) rileva che il registro è stato riscritto.
+- Un nodo interno dell'albero non può essere spacciato per una foglia
+  (seconda preimmagine), grazie ai prefissi distinti per foglie e nodi.
 
 Non richiede server avviati — è un test offline sul Merkle Tree.
             """,
         },
         "4": {
+            "name": "Escrow a Soglia della Chiave Privata (Shamir 2-su-3)",
+            "file": "tests/security/key_escrow_test.py",
+            "description": """
+Verifica la protezione della chiave privata di decifratura dell'AE (WP3 - 3.3).
+
+La chiave è cifrata con AES-256-GCM sotto una chiave AES casuale, divisa
+con Shamir Secret Sharing in 3 quote per 3 scrutatori: ne servono 2.
+Gli impegni sulle quote sono pubblicati nel blocco init firmato.
+
+Il test verifica che nessuna informazione pubblica e nessuna singola
+quota sblocchi la chiave, che qualunque coppia di scrutatori la
+ricostruisca, e che quote manomesse, file cifrato alterato o riuso per
+un'altra elezione vengano bloccati dall'autenticazione AES-GCM.
+
+Non richiede server avviati — è un test crittografico offline.
+            """,
+        },
+        "7": {
             "name": "Attacco DoS / Flood con PoW invalida",
             "file": "tests/security/dos_attack_test.py",
             "description": """
@@ -689,7 +758,7 @@ quasi istantaneamente. Almeno il 90% delle richieste deve essere rifiutato.
 Il test avvia e termina l'AE automaticamente.
             """,
         },
-        "5": {
+        "8": {
             "name": "PoW Adattiva — Aumento e Recovery della Difficoltà",
             "file": "tests/security/pow_adaptive_test.py",
             "description": """
@@ -697,17 +766,18 @@ Verifica il meccanismo di PoW adattiva dell'AE in quattro fasi:
 
   Fase 1 — Baseline: la difficoltà a sistema a riposo deve essere
            al valore minimo (4 bit).
-  Fase 2 — Flood: si inviano 60 richieste con PoW invalida per saturare
-           la finestra di osservazione dell'AE.
-  Fase 3 — Sotto carico: la difficoltà deve essere aumentata rispetto
-           al baseline, proporzionalmente al numero di richieste in eccesso.
+  Fase 2a — Flood spazzatura: richieste con PoW invalida, rifiutate con
+           HTTP 400. La difficoltà NON deve aumentare: le PoW invalide
+           non contano, così l'attaccante non penalizza gli onesti a costo zero.
+  Fase 2b/3 — Flood valido: richieste con PoW risolta davvero. La
+           difficoltà deve aumentare, proporzionalmente alle richieste in eccesso.
   Fase 4 — Recovery: dopo la scadenza della finestra (10 secondi), la
            difficoltà deve tornare al valore minimo.
 
 Il test avvia e termina l'AE automaticamente.
             """,
         },
-        "6": {
+        "9": {
             "name": "Resilienza DoS durante la votazione",
             "file": "tests/security/dos_resilience_test.py",
             "description": """
@@ -724,7 +794,7 @@ Test in tre fasi che verifica il comportamento del sistema sotto attacco:
 Il test avvia e termina SA e AE automaticamente.
             """,
         },
-        "7": {
+        "10": {
             "name": "Double Voting / Token Replay",
             "file": "tests/security/double_voting_attack.py",
             "description": """
@@ -739,11 +809,11 @@ dopo la prima accettazione, impedendo riutilizzi successivi.
 Il test avvia e termina SA e AE automaticamente.
             """,
         },
-        "8": {
+        "12": {
             "name": "Token Hoarding & Token Scaduto",
             "file": "tests/security/token_hoarding_test.py",
             "description": """
-Verifica due proprietà della politica use-it-or-lose-it sui token:
+Verifica le proprietà della politica sui token:
 
   Test 1 — Token Hoarding: un elettore si autentica due volte presso il
            SA. Il SA deve restituire sempre lo stesso token (non emettere
@@ -757,28 +827,164 @@ Verifica due proprietà della politica use-it-or-lose-it sui token:
   Test 3 — Voto valido: si verifica che un token regolare venga
            accettato normalmente.
 
+  Test 4 — Rinnovo: un elettore il cui token è scaduto senza aver
+           votato si autentica di nuovo e riceve un token con lo STESSO
+           nonce. Può votare una volta; un secondo voto è rifiutato (409).
+
 Il test avvia e termina SA e AE automaticamente.
             """,
         },
-        "9": {
-            "name": "Elettore Malevolo — Seed Corrotto (DoS Observer)",
+        "13": {
+            "name": "Elettore Malevolo (Seed Corrotto) e Schede Annullate dall'AE",
             "file": "tests/security/malicious_voter_dos_test.py",
             "description": """
-Dimostra una vulnerabilità in cui un elettore malevolo, pur autenticato
-regolarmente, invia un enc_seed che non corrisponde al seed reale usato
-per cifrare il voto.
+Simula un elettore malevolo che, pur autenticato regolarmente, invia
+un enc_seed non coerente con il seed usato per cifrare il voto.
 
-L'AE accetta il voto senza poter verificare la correttezza del seed
-(non ha ancora la chiave privata). A urne chiuse, durante lo scrutinio,
-decifra il seed fittizio: il voto viene comunque conteggiato, ma la
-coppia (enc_vote, seed) pubblicata nel blocco scrutinio non supera la
-ricifratura di verifica.
+Lo scrutinio ricava il seed dalla decifratura della scheda stessa
+(EM = c^d mod n, pubblicato per ogni scheda), quindi l'enc_seed falso è
+irrilevante: la scheda conta per il suo contenuto reale e l'Observer
+completa la verifica universale senza che l'elezione venga bloccata.
 
-L'Observer rileva l'incongruenza e marca l'intera elezione come non
-verificabile — un singolo elettore malevolo compromette la verifica
-universale per tutti.
+Nella seconda parte un'AE corrotta dichiara nulla quella scheda e
+ri-firma lo scrutinio: poiché EM è pubblico, l'Observer ricostruisce il
+contenuto reale della scheda e rileva la falsificazione.
 
 Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
+        "11": {
+            "name": "Double Voting Concorrente (Race Condition)",
+            "file": "tests/security/concurrent_double_voting_test.py",
+            "description": """
+Variante concorrente del test di double voting: un elettore malevolo
+invia 8 schede diverse con lo STESSO token nello stesso istante.
+
+Se il server controllasse "token già usato?" e solo più tardi marcasse
+il token, tutte le richieste arrivate nel frattempo verrebbero accettate
+(race condition check-then-act). Il test verifica che:
+  - venga accettata esattamente una scheda (HTTP 200) e le altre 7
+    rifiutate con HTTP 409;
+  - 6 autenticazioni simultanee dello stesso elettore presso il SA
+    restituiscano tutte lo stesso token;
+  - AE e Bulletin Board registrino un solo voto.
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
+        "14": {
+            "name": "Verifica Individuale delle Ricevute (Merkle Proof)",
+            "file": "tests/security/receipt_verification_test.py",
+            "description": """
+Verifica end-to-end delle ricevute di voto con il codice reale del client.
+
+  Fase 1-2: 6 elettori votano; a metà votazione l'AE viene riavviata
+            (il Merkle Tree deve essere ricostruito dal Bulletin Board).
+  Fase 3:   a urne chiuse TUTTE le ricevute devono essere verificate:
+            la proof di ciascuna è relativa alla root del momento del voto.
+  Fase 3:   la chiusura con una sola quota di scrutatore è rifiutata.
+  Fase 4:   verifica universale dell'Observer; la rimozione di un blocco
+            dal registro viene rilevata dalla catena di hash.
+  Fase 5:   un'AE corrotta riscrive una scheda e RI-FIRMA la Merkle Root:
+            il Bulletin Board resta coerente, ma le ricevute di chi ha
+            votato da quel momento in poi rilevano la manomissione.
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
+        "15": {
+            "name": "Difese del SA: Brute Force, IP Falsificati, Endpoint Admin",
+            "file": "tests/security/test_rate_limiting.py",
+            "description": """
+Verifica le difese del Sistema di Autenticazione contro il brute force:
+
+  Fase 1: oltre 10 richieste al minuto dallo stesso IP → HTTP 429.
+  Fase 2: falsificare l'IP con l'header X-Forwarded-For non aggira il
+          limite (l'header è ignorato fuori dalla modalità test di carico).
+  Fase 3: dopo 5 password errate l'account viene bloccato, anche se poi
+          arriva la password corretta (ferma il brute force distribuito).
+  Fase 4: un login con username inesistente impiega quanto uno con
+          username esistente: i tempi non rivelano gli account registrati.
+  Fase 5: /reconcile e /shutdown rispondono 403 senza token amministrativo.
+
+Il test avvia e riavvia il SA automaticamente tra una fase e l'altra.
+            """,
+        },
+        "6": {
+            "name": "Pinning TLS del Client — Server AE Impostore",
+            "file": "tests/security/tls_pinning_test.py",
+            "description": """
+Un attaccante si mette al posto dell'AE: stesso indirizzo e porta, un
+certificato self-signed con lo stesso nome e gli stessi SAN di quello
+legittimo, ma generato con una propria chiave.
+
+Il test mostra che il server falso funziona (chi si fida del suo
+certificato vi si connette), ma il client reale, che si fida solo del
+certificato AE distribuito con l'elezione, rifiuta la connessione TLS:
+non ottiene la challenge PoW, non può inviare schede e all'impostore non
+arriva alcuna richiesta.
+
+Non usa i server reali: il server falso gira nel processo del test.
+            """,
+        },
+        "16": {
+            "name": "Registrazione degli Elettori (modalità solo liste)",
+            "file": "tests/security/registration_test.py",
+            "description": """
+L'elezione parte senza elettori: chi vuole votare si registra presso il SA.
+
+  Fase 1: registrazioni con dominio non istituzionale, con un dominio che
+          imita quello dell'ateneo o con campi mancanti → HTTP 400.
+  Fase 2: registrazione valida → HTTP 201; stesso username o stessa email
+          (anche scritta con maiuscole diverse) → HTTP 409.
+  Fase 3: in voters.json la password è salvata solo come hash PBKDF2
+          con salt, mai in chiaro.
+  Fase 4: l'elettore appena registrato si autentica e vota.
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
+        "17": {
+            "name": "Finestra Temporale dell'Elezione",
+            "file": "tests/security/election_window_test.py",
+            "description": """
+Apertura e chiusura delle urne sono fissate nel blocco init firmato: un
+token valido e una PoW corretta non bastano per votare fuori dalla finestra.
+
+  Scenario A: urne non ancora aperte → il voto è rifiutato (HTTP 403).
+  Scenario B: urne chiuse → voto e nuove registrazioni rifiutati (HTTP 403).
+  Scenario C: urne aperte → il voto è accettato (HTTP 200).
+
+Il test avvia e termina SA e AE automaticamente per ogni scenario.
+            """,
+        },
+        "18": {
+            "name": "Flusso Completo dell'Elezione (end-to-end)",
+            "file": "tests/test_flow.py",
+            "description": """
+Percorre l'intero ciclo di vita di un'elezione con i server reali:
+inizializzazione, autenticazione e verifica dei pin AE, voto con
+Proof of Work, ricevuta firmata, riconciliazione, consegna delle quote
+degli scrutatori e scrutinio, verifica individuale della ricevuta con
+il client reale e verifica universale con l'Observer.
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
+        "5": {
+            "name": "PoW con Challenge del Server e Difficoltà per IP",
+            "file": "tests/security/pow_challenge_test.py",
+            "description": """
+La PoW è calcolata su SHA-256(challenge || enc_vote || nonce), dove la
+challenge è emessa dall'AE, autenticata con HMAC, legata all'IP, valida
+2 minuti e utilizzabile una sola volta; la difficoltà adattiva è per IP.
+
+Il test verifica che vengano rifiutate: PoW precalcolate senza challenge,
+riuso di una challenge, challenge con difficoltà alterata, challenge di un
+altro IP o scadute. Verifica inoltre che un flood di PoW valide alzi la
+difficoltà solo per l'IP attaccante e non per gli elettori onesti.
+
+Non richiede server avviati — è un test offline sulle funzioni dell'AE.
             """,
         },
     }
@@ -795,24 +1001,33 @@ Il test avvia e termina SA e AE automaticamente.
             ANSI_DIM
         ))
 
-        print(f"\n{section_title('TEST CRITTOGRAFICI (offline — nessun server richiesto)')}")
+        print(f"\n{section_title('TEST OFFLINE (nessun server richiesto)')}")
         print(menu_option("1", TESTS["1"]["name"], available=True))
         print(menu_option("2", TESTS["2"]["name"], available=True))
         print(menu_option("3", TESTS["3"]["name"], available=True))
-
-        print(f"\n{section_title('TEST DI ATTACCO (server avviati automaticamente)')}")
         print(menu_option("4", TESTS["4"]["name"], available=True))
         print(menu_option("5", TESTS["5"]["name"], available=True))
         print(menu_option("6", TESTS["6"]["name"], available=True))
+
+        print(f"\n{section_title('TEST DI ATTACCO (server avviati automaticamente)')}")
         print(menu_option("7", TESTS["7"]["name"], available=True))
         print(menu_option("8", TESTS["8"]["name"], available=True))
         print(menu_option("9", TESTS["9"]["name"], available=True))
+        print(menu_option("10", TESTS["10"]["name"], available=True))
+        print(menu_option("11", TESTS["11"]["name"], available=True))
+        print(menu_option("12", TESTS["12"]["name"], available=True))
+        print(menu_option("13", TESTS["13"]["name"], available=True))
+        print(menu_option("14", TESTS["14"]["name"], available=True))
+        print(menu_option("15", TESTS["15"]["name"], available=True))
+        print(menu_option("16", TESTS["16"]["name"], available=True))
+        print(menu_option("17", TESTS["17"]["name"], available=True))
+        print(menu_option("18", TESTS["18"]["name"], available=True))
 
         print(f"\n{section_title('NAVIGAZIONE')}")
         print(menu_option("0", "Torna al menu principale", available=True))
         print("="*70)
 
-        choice = input("\nSeleziona un test (0-9): ").strip()
+        choice = input("\nSeleziona un test (0-18): ").strip()
 
         if choice == "0":
             break
@@ -834,6 +1049,19 @@ Il test avvia e termina SA e AE automaticamente.
         print("Il test verrà eseguito in un nuovo terminale.")
         print("Attendi la chiusura del terminale di test prima di procedere.")
         print("-"*70)
+
+        # I test creano la propria elezione in data/ e la rimuovono alla fine:
+        # un'elezione già inizializzata verrebbe sovrascritta e persa.
+        if is_election_initialized() or check_server_running(SA_URL) or check_server_running(AE_URL):
+            print(colored("\nATTENZIONE: è presente un'elezione inizializzata o un server avviato.", ANSI_BRIGHT))
+            print("Il test sovrascrive data/ (Bulletin Board, elettori, chiavi, quote degli")
+            print("scrutatori, ricevute) e la ripulisce al termine: l'elezione corrente andrà persa.")
+            print("Chiudi SA e AE prima di procedere, altrimenti il test non potrà avviare i propri server.")
+            conferma = input("Scrivere CONFERMO per procedere comunque: ").strip()
+            if conferma != "CONFERMO":
+                print("Test annullato.")
+                input("\nPremi Invio per tornare al menu dei test...")
+                continue
 
         risposta = input("\nAvviare il test? (s/n): ").strip().lower()
         if risposta != "s":
@@ -1011,7 +1239,7 @@ def stop_processes() -> None:
     # Invia richiesta di shutdown via HTTP agli endpoint /shutdown (per macOS/Linux/Windows)
     for url in (SA_URL, AE_URL):
         try:
-            requests.post(url + '/shutdown', timeout=0.5, verify=_verify_for(url))
+            requests.post(url + '/shutdown', headers=_admin_headers(), timeout=0.5, verify=_verify_for(url))
         except Exception:
             # Ignora errori di connessione (es. server già spento o non in esecuzione)
             pass

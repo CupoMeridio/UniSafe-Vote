@@ -30,7 +30,7 @@ sys.path.insert(0, TESTS_SEC_DIR)
 from test_reporter import save_report
 
 from crypto.keys import (generate_rsa_keypair, save_keypair, serialize_public_key,
-                          deserialize_public_key, save_encrypted_private_key,
+                          deserialize_public_key,
                           load_public_key, load_private_key)
 from crypto.rsa_oaep import encrypt
 from crypto.rsa_pss import sign, verify
@@ -58,7 +58,9 @@ def compute_public_key_fingerprint(pem_str: str) -> str:
 # ---------------------------------------------------------------------------
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
-from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs
+from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
+from common import create_test_election, close_payload, clean_election_state
+from common import get_pow_challenge, solve_pow as solve_pow_challenge, pow_fields
 
 BULLETIN_BOARD_PATH = os.path.join(DATA_DIR, "bulletin_board.json")
 VOTERS_PATH         = os.path.join(DATA_DIR, "voters.json")
@@ -77,6 +79,7 @@ CANDIDATES = ["Lista A", "Lista B", "Lista C"]
 
 sa_process = None
 ae_process = None
+EXPIRED_VOTER_NONCE = "e" * 32  # nonce del token già scaduto di VOTERS[2] (TEST 4)
 
 
 # ---------------------------------------------------------------------------
@@ -111,75 +114,23 @@ def setup():
     # Genera i certificati TLS self-signed se non presenti (necessari per HTTPS).
     ensure_tls_certs()
 
-    for fname in ["bulletin_board.json", "voters.json", "ae_state.json", "pins.json"]:
-        p = os.path.join(DATA_DIR, fname)
-        if os.path.exists(p):
-            os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f == ".gitkeep":
-            continue
-        os.remove(os.path.join(KEYS_DIR, f))
+    # Elezione di test creata dal modulo condiviso: stesso schema di
+    # init_election.py, chiave di decifratura protetta solo dall'escrow
+    # Shamir (nessuna copia in chiaro su disco).
+    init_data = create_test_election("token_hoarding_test", VOTERS, CANDIDATES)
 
-    # Si generano tre coppie RSA-2048: firma SA, cifratura AE e firma AE.
-    sa_sign_priv,  sa_sign_pub  = generate_rsa_keypair()
-    ae_enc_priv,   ae_enc_pub   = generate_rsa_keypair()
-    ae_sign_priv,  ae_sign_pub  = generate_rsa_keypair()
-
-    save_keypair(sa_sign_priv, sa_sign_pub,  "sa_sign")
-    save_keypair(ae_enc_priv,  ae_enc_pub,   "ae_encrypt")
-    save_keypair(ae_sign_priv, ae_sign_pub,  "ae_sign")
-
-    # L'elezione apre immediatamente e chiude tra 24 ore.
-    opening = datetime.now(UTC).isoformat()
-    closing = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
-
-    # Si compone e firma il blocco di inizializzazione del Bulletin Board.
-    init_data = {
-        "election_id":       "token_hoarding_test",
-        "candidates":        CANDIDATES,
-        "opening_time":      opening,
-        "closing_time":      closing,
-        "sa_sign_public":    serialize_public_key(sa_sign_pub),
-        "ae_encrypt_public": serialize_public_key(ae_enc_pub),
-        "ae_sign_public":    serialize_public_key(ae_sign_pub),
+    # Per il TEST 4 l'elettore VOTERS[2] risulta essersi autenticato più di
+    # 30 minuti fa senza votare: il suo token è già scaduto all'avvio del SA.
+    with open(VOTERS_PATH, "r", encoding="utf-8") as f:
+        stored = json.load(f)
+    stored[2]["token"] = {
+        "election_id": "token_hoarding_test",
+        "nonce": EXPIRED_VOTER_NONCE,
+        "issued_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+        "expires_at": (datetime.now(UTC) - timedelta(minutes=30)).isoformat(),
     }
-    init_json      = json.dumps(init_data, sort_keys=True).encode("utf-8")
-    init_signature = sign(ae_sign_priv, init_json)
-
-    bb = [{
-        "type":      "init",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "data":      init_data,
-        "signature": init_signature.hex(),
-    }]
-    with open(BULLETIN_BOARD_PATH, "w", encoding="utf-8") as f:
-        json.dump(bb, f, indent=2)
-
-    # Si calcolano le impronte delle chiavi AE e si salvano in pins.json
-    # per simulare il canale di distribuzione trusted (certificate pinning).
-    pins = {
-        "ae_encrypt_public": "sha256:" + compute_public_key_fingerprint(init_data["ae_encrypt_public"]),
-        "ae_sign_public":    "sha256:" + compute_public_key_fingerprint(init_data["ae_sign_public"]),
-    }
-    with open(os.path.join(DATA_DIR, "pins.json"), "w", encoding="utf-8") as f:
-        json.dump(pins, f, indent=2)
-
-    # La chiave privata di cifratura AE viene salvata cifrata con AES-GCM
-    # usando la firma del blocco init come IKM (WP3 §3.3).
-    save_encrypted_private_key(ae_enc_priv, "ae_encrypt", init_signature)
-
-    # Le password vengono salvate come hash Argon2, mai in chiaro.
-    voters_data = []
-    for v in VOTERS:
-        vc = v.copy()
-        vc["password"] = hash_password(vc["password"])
-        voters_data.append(vc)
     with open(VOTERS_PATH, "w", encoding="utf-8") as f:
-        json.dump(voters_data, f, indent=2)
-
-    # Si inizializza lo stato privato dell'AE con la lista dei token usati vuota.
-    with open(os.path.join(DATA_DIR, "ae_state.json"), "w", encoding="utf-8") as f:
-        json.dump({"used_tokens": []}, f, indent=2)
+        json.dump(stored, f, indent=2)
 
     # Si avvia il SA e si attende che risponda su /status.
     sa_process = subprocess.Popen(
@@ -210,7 +161,7 @@ def teardown():
     print("\n[TEARDOWN] Chiusura server...")
     for url, proc, name in [(SA_URL, sa_process, "SA"), (AE_URL, ae_process, "AE")]:
         try:
-            requests.post(f"{url}/shutdown", timeout=1,
+            requests.post(f"{url}/shutdown", headers=admin_headers(), timeout=1,
                           verify=(ae_verify() if "5002" in url else sa_verify()))
         except Exception:
             pass
@@ -225,9 +176,7 @@ def teardown():
         p = os.path.join(DATA_DIR, fname)
         if os.path.exists(p):
             os.remove(p)
-    for f in os.listdir(KEYS_DIR):
-        if f != ".gitkeep":
-            os.remove(os.path.join(KEYS_DIR, f))
+    clean_election_state()  # rimuove anche le quote in data/keys/trustees/
     print("[TEARDOWN] File di stato rimossi.")
 
 
@@ -251,46 +200,6 @@ def validate_pins(bulletin_board):
     print("    Pin trusted AE verificati con successo!")
 
 
-def solve_pow(enc_vote_hex: str, difficulty: int = 4) -> str:
-    """
-    Calcola il nonce della Proof of Work per un voto cifrato.
-    Si cerca un nonce tale che SHA-256(enc_vote || nonce) abbia
-    i primi 'difficulty' bit a zero.
-    """
-    enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-    nonce = 0
-    while True:
-        nonce_bytes = nonce.to_bytes(8, byteorder="big")
-        combined = enc_vote_bytes + nonce_bytes
-        hash_result = hashlib.sha256(combined).digest()
-        # Si verifica prima i byte interi a zero, poi i bit rimanenti.
-        required_zeros = difficulty // 8
-        required_bits = difficulty % 8
-        valid = True
-        for i in range(required_zeros):
-            if hash_result[i] != 0:
-                valid = False
-                break
-        if valid and required_bits > 0:
-            mask = (0xFF << (8 - required_bits)) & 0xFF
-            if (hash_result[required_zeros] & mask) != 0:
-                valid = False
-        if valid:
-            return nonce_bytes.hex()
-        nonce += 1
-
-
-def get_pow_difficulty() -> int:
-    """Interroga l'AE per ottenere la difficoltà PoW adattiva corrente."""
-    try:
-        response = requests.get(f"{AE_URL}/status", timeout=2, verify=ae_verify())
-        if response.status_code == 200:
-            return int(response.json().get("pow_difficulty", 4))
-    except Exception:
-        pass
-    return 4
-
-
 def create_vote_payload(token: str, token_signature: str, ae_pubkey) -> dict:
     """
     Costruisce il payload completo per un voto:
@@ -306,15 +215,13 @@ def create_vote_payload(token: str, token_signature: str, ae_pubkey) -> dict:
     enc_seed_bytes = encrypt(ae_pubkey, seed)
     enc_vote_hex = enc_vote_bytes.hex()
     enc_seed_hex = enc_seed_bytes.hex()
-    # Si risolve la PoW alla difficoltà adattiva corrente.
-    difficulty = get_pow_difficulty()
-    pow_nonce = solve_pow(enc_vote_hex, difficulty)
+    # Si risolve la PoW sulla challenge emessa dall'AE.
     return {
         "enc_vote": enc_vote_hex,
         "enc_seed": enc_seed_hex,
         "token": token,
         "token_signature": token_signature,
-        "pow_nonce": pow_nonce
+        **pow_fields(enc_vote_hex),
     }
 
 
@@ -455,6 +362,35 @@ def main():
         print("\n  [PASS] TEST 3: voto legittimo accettato e ricevuta firmata dall'AE.")
 
         # ------------------------------------------------------------------ #
+        # TEST 4 — Rinnovo del token scaduto con lo STESSO nonce              #
+        # ------------------------------------------------------------------ #
+        print("\n" + "-" * 80)
+        print("TEST 4 — Token scaduto senza aver votato: rinnovo con lo stesso nonce")
+        print("-" * 80)
+        late_voter = VOTERS[2]
+        print(f"  {late_voter['username']} si era autenticato 1 ora fa (token scaduto da 30 minuti, nonce {EXPIRED_VOTER_NONCE[:12]}...)")
+        r_renew = requests.post(f"{SA_URL}/authenticate",
+                                json={"username": late_voter["username"], "password": late_voter["password"]},
+                                verify=sa_verify())
+        renewed_token = r_renew.json()["token"]
+        renewed_obj = json.loads(renewed_token)
+        same_nonce = renewed_obj["nonce"] == EXPIRED_VOTER_NONCE
+        not_expired = datetime.fromisoformat(renewed_obj["expires_at"]) > datetime.now(UTC)
+        print(f"  Token restituito: nonce {renewed_obj['nonce'][:12]}... (stesso: {same_nonce}), "
+              f"scadenza {renewed_obj['expires_at']} (valido: {not_expired})")
+        r_first = requests.post(f"{AE_URL}/vote", json=create_vote_payload(renewed_token, r_renew.json()["signature"], ae_pubkey),
+                                verify=ae_verify())
+        print(f"  Voto con il token rinnovato:                    HTTP {r_first.status_code}")
+        r_again = requests.post(f"{SA_URL}/authenticate",
+                                json={"username": late_voter["username"], "password": late_voter["password"]},
+                                verify=sa_verify())
+        r_second = requests.post(f"{AE_URL}/vote", json=create_vote_payload(r_again.json()["token"], r_again.json()["signature"], ae_pubkey),
+                                 verify=ae_verify())
+        print(f"  Secondo voto dopo una nuova autenticazione:      HTTP {r_second.status_code} — {r_second.json().get('error')}")
+        test4_pass = same_nonce and not_expired and r_first.status_code == 200 and r_second.status_code == 409
+        print(f"\n  {'[PASS]' if test4_pass else '[FAIL]'} TEST 4: l'elettore ritardatario può votare una sola volta.")
+
+        # ------------------------------------------------------------------ #
         # Riepilogo                                                           #
         # ------------------------------------------------------------------ #
         print("\n" + "=" * 80)
@@ -463,6 +399,8 @@ def main():
         print(f"  TEST 1 — Token Hoarding:     [PASS]  stesso nonce ({token1_obj['nonce'][:16]}...)")
         print(f"  TEST 2 — Token scaduto:      [PASS]  HTTP 401 — {expired_resp.json().get('error')}")
         print(f"  TEST 3 — Voto legittimo:     [PASS]  HTTP 200 — leaf_index {receipt.get('leaf_index')}")
+        print(f"  TEST 4 — Rinnovo token:      [{'PASS' if test4_pass else 'FAIL'}]  stesso nonce, "
+              f"voto {r_first.status_code}, secondo voto {r_second.status_code}")
         print("\n  La politica use-it-or-lose-it è rispettata:")
         print("  · un elettore ottiene al massimo un token per elezione;")
         print("  · il token ha una finestra temporale di 30 minuti;")
@@ -472,7 +410,8 @@ def main():
         save_report(
             test_id="token_hoarding",
             test_name="Token Hoarding & Expired Token Exploitation (Use-it-or-Lose-it Policy)",
-            outcome="PASS",
+            # I test 1-3 interrompono l'esecuzione con assert se falliscono.
+            outcome="PASS" if test4_pass else "FAIL",
             details={
                 "voter": test_voter["username"],
                 "test1_hoarding": {
@@ -496,6 +435,13 @@ def main():
                     "leaf_index":        receipt.get("leaf_index"),
                     "merkle_proof_nodes": len(receipt.get("merkle_proof", [])),
                     "passed":            valid_resp.status_code == 200,
+                },
+                "test4_expired_token_renewal": {
+                    "same_nonce":            same_nonce,
+                    "renewed_not_expired":   not_expired,
+                    "vote_http_status":      r_first.status_code,
+                    "second_vote_http_status": r_second.status_code,
+                    "passed":                test4_pass,
                 },
             },
         )

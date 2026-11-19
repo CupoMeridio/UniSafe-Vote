@@ -28,6 +28,25 @@ def ae_verify() -> "str | bool":
     return _AE_CERT if os.path.exists(_AE_CERT) else True
 
 
+_ADMIN_TOKEN = os.path.join(_PROJECT_ROOT, "data", "keys", "admin_token")
+
+
+def admin_headers() -> dict:
+    """
+    Header per le operazioni amministrative (/close, /reconcile, /shutdown).
+
+    SA e AE creano il token in data/keys/admin_token al primo avvio: il test,
+    come il pannello di controllo, lo legge dal file e lo invia nell'header
+    X-Admin-Token. Senza token i server rispondono 403.
+    """
+    try:
+        with open(_ADMIN_TOKEN, "r", encoding="utf-8") as f:
+            token = f.read().strip()
+    except FileNotFoundError:
+        return {}
+    return {"X-Admin-Token": token} if token else {}
+
+
 def ensure_tls_certs() -> None:
     """
     Genera i certificati TLS self-signed se non esistono o se sono stati
