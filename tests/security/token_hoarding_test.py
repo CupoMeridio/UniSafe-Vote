@@ -58,7 +58,7 @@ def compute_public_key_fingerprint(pem_str: str) -> str:
 # ---------------------------------------------------------------------------
 import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
-from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
+from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_cert
 from common import create_test_election, close_payload, clean_election_state
 from common import get_pow_challenge, solve_pow as solve_pow_challenge, pow_fields
 
@@ -161,7 +161,7 @@ def teardown():
     print("\n[TEARDOWN] Chiusura server...")
     for url, proc, name in [(SA_URL, sa_process, "SA"), (AE_URL, ae_process, "AE")]:
         try:
-            requests.post(f"{url}/shutdown", headers=admin_headers(), timeout=1,
+            requests.post(f"{url}/shutdown", cert=admin_cert(), timeout=1,
                           verify=(ae_verify() if "5002" in url else sa_verify()))
         except Exception:
             pass

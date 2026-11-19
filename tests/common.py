@@ -143,7 +143,7 @@ def get_pow_challenge(ae_url: str = "https://localhost:5002", verify=None):
     """
     import requests
     if verify is None:
-        cert = os.path.join(DATA_DIR, "tls", "ae_cert.pem")
+        cert = os.path.join(DATA_DIR, "tls", "ca_cert.pem")
         verify = cert if os.path.exists(cert) else True
     body = requests.get(f"{ae_url}/pow_challenge", timeout=10, verify=verify).json()
     return body["challenge"], int(body["difficulty"])
@@ -175,7 +175,8 @@ AE_URL = "https://localhost:5002"
 
 
 def _cert(name: str):
-    path = os.path.join(DATA_DIR, "tls", f"{name}_cert.pem")
+    """Parametro verify per SA e AE: la CA dell'elezione (il nome è mantenuto per chiarezza)."""
+    path = os.path.join(DATA_DIR, "tls", "ca_cert.pem")
     return path if os.path.exists(path) else True
 
 
@@ -214,15 +215,12 @@ def stop_servers(procs: Dict) -> None:
     """Spegne i server avviati con start_servers (shutdown autenticato, poi terminate/kill)."""
     import subprocess
     import requests
-    token_path = os.path.join(KEYS_DIR, "admin_token")
-    headers = {}
-    if os.path.exists(token_path):
-        with open(token_path, "r", encoding="utf-8") as f:
-            headers = {"X-Admin-Token": f.read().strip()}
+    tls_dir = os.path.join(DATA_DIR, "tls")
+    admin = (os.path.join(tls_dir, "admin_cert.pem"), os.path.join(tls_dir, "admin_key.pem"))
     for name, proc in procs.items():
         url = SA_URL if name == "sa" else AE_URL
         try:
-            requests.post(f"{url}/shutdown", headers=headers, timeout=2, verify=_cert(name))
+            requests.post(f"{url}/shutdown", cert=admin, timeout=2, verify=_cert(name))
         except Exception:
             pass
         try:

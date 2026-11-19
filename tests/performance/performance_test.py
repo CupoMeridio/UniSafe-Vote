@@ -26,17 +26,12 @@ from crypto.merkle import MerkleTree, verify_proof, leaf_hash as merkle_leaf_has
 # Configurazione
 SA_URL = "https://localhost:5001"
 AE_URL = "https://localhost:5002"
-SA_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "sa_cert.pem")
-AE_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "ae_cert.pem")
+CA_CERT = os.path.join(PROJECT_ROOT, "data", "tls", "ca_cert.pem")  # CA dell'elezione
 NUM_ITERATIONS = 5  # Numero di iterazioni per calcolare media e deviazione standard
 
 
 def _verify_for(url: str) -> str | bool:
-    if "5001" in url:
-        return SA_CERT if os.path.exists(SA_CERT) else True
-    if "5002" in url:
-        return AE_CERT if os.path.exists(AE_CERT) else True
-    return True
+    return CA_CERT if os.path.exists(CA_CERT) else True
 
 
 def measure_size(data_dict: Dict) -> int:

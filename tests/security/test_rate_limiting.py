@@ -14,9 +14,9 @@ Fase 4 — Enumerazione degli username tramite i tempi di risposta: un login
          con username inesistente deve impiegare quanto uno con username
          esistente (PBKDF2 eseguito comunque su un hash fittizio).
 Fase 5 — Endpoint amministrativi: /reconcile e /shutdown rispondono HTTP 403
-         senza token amministrativo o con un token errato, e funzionano solo
-         con il token corretto (header X-Admin-Token). Dopo la riconciliazione
-         l'elezione è conclusa e /register risponde HTTP 403.
+         senza il certificato client del pannello e funzionano solo con quello
+         (TLS mutuo). Dopo la riconciliazione l'elezione è conclusa e
+         /register risponde HTTP 403.
 
 Il rate limit e i contatori sono in memoria: il SA viene riavviato tra una fase
 e l'altra, così ogni fase parte da una finestra pulita.
@@ -36,7 +36,7 @@ sys.path.insert(0, TESTS_SECURITY_DIR)
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 
 from test_reporter import save_report
-from tls_config import SA_URL, sa_verify, ensure_tls_certs, admin_headers
+from tls_config import SA_URL, sa_verify, ensure_tls_certs, admin_cert
 from common import clean_election_state
 
 AUTH_URL = f"{SA_URL}/authenticate"
@@ -74,7 +74,7 @@ def start_sa() -> subprocess.Popen:
 
 def stop_sa(proc: subprocess.Popen) -> None:
     try:
-        requests.post(f"{SA_URL}/shutdown", headers=admin_headers(), timeout=2, verify=sa_verify())
+        requests.post(f"{SA_URL}/shutdown", cert=admin_cert(), timeout=2, verify=sa_verify())
     except Exception:
         pass
     try:
@@ -191,18 +191,19 @@ def main():
         print("\n" + "-" * 80)
         print("FASE 5 — Protezione degli endpoint amministrativi")
         print("-" * 80)
+        # Le verifiche complete del TLS mutuo (certificati di altre CA, revocati,
+        # di un server) sono nel test dedicato; qui si controlla il SA.
         checks = [
-            ("/reconcile senza token", "reconcile", {}, 403),
-            ("/reconcile con token errato", "reconcile", {"X-Admin-Token": "0" * 64}, 403),
-            ("/shutdown senza token", "shutdown", {}, 403),
-            ("/reconcile con token corretto", "reconcile", admin_headers(), 200),
+            ("/reconcile senza certificato client", "reconcile", None, 403),
+            ("/shutdown senza certificato client", "shutdown", None, 403),
+            ("/reconcile con certificato del pannello", "reconcile", admin_cert(), 200),
         ]
         admin_results = []
-        for label, endpoint, headers, expected in checks:
-            r = requests.post(f"{SA_URL}/{endpoint}", headers=headers, timeout=10, verify=sa_verify())
+        for label, endpoint, client_cert, expected in checks:
+            r = requests.post(f"{SA_URL}/{endpoint}", cert=client_cert, timeout=10, verify=sa_verify())
             ok = r.status_code == expected
             admin_results.append({"check": label, "http_status": r.status_code, "expected": expected, "ok": ok})
-            print(f"  {label:<32} HTTP {r.status_code}  (atteso {expected})  {'✓' if ok else '✗'}")
+            print(f"  {label:<42} HTTP {r.status_code}  (atteso {expected})  {'✓' if ok else '✗'}")
         alive = requests.get(f"{SA_URL}/status", timeout=5, verify=sa_verify()).status_code == 200
         print(f"  SA ancora attivo dopo /shutdown non autorizzato: {'sì' if alive else 'no'}")
         # Dopo la riconciliazione l'elezione è conclusa: nessuna nuova registrazione.

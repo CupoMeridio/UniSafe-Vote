@@ -37,7 +37,8 @@ from crypto.keys import load_private_key, load_public_key, deserialize_public_ke
 from crypto.rsa_oaep import raw_decrypt, oaep_decode, is_valid_ciphertext, modulus_length
 from crypto.rsa_pss import sign, verify
 from crypto.merkle import MerkleTree
-from admin_auth import get_or_create_admin_token, require_admin
+from admin_auth import require_admin
+from tls_context import server_ssl_context, tls_available
 from bb_chain import link_to_previous
 
 
@@ -701,18 +702,17 @@ if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     print_server_banner()
     load_initial_data()
-    get_or_create_admin_token()
 
-    # Certificati TLS self-signed per HTTPS
-    tls_cert = os.path.join("data", "tls", "ae_cert.pem")
-    tls_key  = os.path.join("data", "tls", "ae_key.pem")
-
-    if os.path.exists(tls_cert) and os.path.exists(tls_key):
-        ssl_ctx = (tls_cert, tls_key)
-        print("[AE] TLS abilitato — in ascolto su https://localhost:5002")
-    else:
-        ssl_ctx = None
-        print("[AE] Certificati TLS non trovati — avvio in HTTP (generare i certificati con generate_tls_certs.py)")
+    # TLS con il certificato emesso dalla CA dell'elezione. Il certificato
+    # client è facoltativo (gli elettori non ne hanno) e, se presentato, viene
+    # verificato con la CA e la CRL: serve al pannello per le operazioni
+    # amministrative. Senza PKI il server non parte: in HTTP le operazioni
+    # amministrative non sarebbero autenticabili e il traffico sarebbe in chiaro.
+    if not tls_available():
+        print("[AE] PKI non trovata in data/tls/: generarla con src/generate_tls_certs.py (o inizializzare l'elezione)")
+        sys.exit(1)
+    ssl_ctx = server_ssl_context("ae")
+    print("[AE] TLS abilitato (certificato emesso dalla CA, client facoltativo) — https://localhost:5002")
 
     # Avvia il server Flask sulla porta 5002, debug disabilitato
     app.run(port=5002, debug=False, ssl_context=ssl_ctx)

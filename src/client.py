@@ -31,13 +31,16 @@ from cryptography.hazmat.primitives import serialization
 from crypto.keys import deserialize_public_key
 from crypto.rsa_oaep import encrypt, verify_raw_decryption, oaep_decode, modulus_length
 from crypto.rsa_pss import verify
+from tls_context import client_session
 from crypto.merkle import MerkleTree, verify_proof, leaf_hash as merkle_leaf_hash
 SA_URL: str = "https://localhost:5001"  # URL del Sistema di Autenticazione
 AE_URL: str = "https://localhost:5002"  # URL dell'Autorità Elettorale
 BULLETIN_BOARD_PATH: str = "data/bulletin_board.json"
 PINS_PATH: str = "data/pins.json"
-SA_CERT: str = "data/tls/sa_cert.pem"  # Certificato TLS self-signed del SA (pinning)
-AE_CERT: str = "data/tls/ae_cert.pem"  # Certificato TLS self-signed dell'AE (pinning)
+TLS_DIR: str = "data/tls"  # CA dell'elezione, CRL e pin SPKI dei server
+SECURITY_TLS_MSG = ("\nConnessione rifiutata: l'identità del server non è verificabile "
+                    "(certificato non emesso dalla CA dell'elezione, revocato o con chiave diversa "
+                    "da quella attesa). Possibile attacco Man-in-the-Middle.")
 
 
 class SecurityError(Exception):
@@ -70,6 +73,8 @@ class Client:
         self.ae_encrypt_public: Optional[RSAPublicKey] = None  # Chiave pubblica di cifratura AE
         self.ae_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica di firma AE
         self.trusted_pins: Dict[str, str] = {}
+        self._sa_http = None  # sessioni HTTPS create alla prima connessione
+        self._ae_http = None
 
         self.load_bulletin_board()
 
@@ -170,15 +175,19 @@ class Client:
         self.ae_encrypt_public = deserialize_public_key(ae_encrypt_pem)
         self.ae_sign_public = ae_sign_public
 
-    def _sa_verify(self) -> str | bool:
-        """Restituisce il parametro verify per requests verso il SA.
-        Se il certificato TLS self-signed è presente lo usa come CA bundle
-        (certificate pinning), altrimenti lascia la verifica standard."""
-        return SA_CERT if os.path.exists(SA_CERT) else True
+    @property
+    def sa_http(self):
+        """Sessione HTTPS verso il SA: catena fino alla CA, CRL e pin SPKI verificati."""
+        if self._sa_http is None:
+            self._sa_http = client_session("sa", TLS_DIR)
+        return self._sa_http
 
-    def _ae_verify(self) -> str | bool:
-        """Restituisce il parametro verify per requests verso l'AE."""
-        return AE_CERT if os.path.exists(AE_CERT) else True
+    @property
+    def ae_http(self):
+        """Sessione HTTPS verso l'AE: catena fino alla CA, CRL e pin SPKI verificati."""
+        if self._ae_http is None:
+            self._ae_http = client_session("ae", TLS_DIR)
+        return self._ae_http
 
     def get_pow_challenge(self):
         """
@@ -193,7 +202,7 @@ class Client:
             se l'AE non è raggiungibile.
         """
         try:
-            response = requests.get(f"{AE_URL}/pow_challenge", timeout=5, verify=self._ae_verify())
+            response = self.ae_http.get(f"{AE_URL}/pow_challenge", timeout=5)
             if response.status_code == 200:
                 body = response.json()
                 return body["challenge"], int(body["difficulty"])
@@ -251,7 +260,7 @@ class Client:
         """Check if urns are open by contacting AE or reading BB."""
         # First try AE status endpoint for real-time info
         try:
-            r = requests.get(f"{AE_URL}/status", timeout=2, verify=self._ae_verify())
+            r = self.ae_http.get(f"{AE_URL}/status", timeout=2)
             if r.status_code == 200:
                 return r.json().get("urn_open", True)
         except requests.exceptions.RequestException:
@@ -309,10 +318,9 @@ class Client:
         password = input("Scegli una password: ")
 
         try:
-            response = requests.post(
+            response = self.sa_http.post(
                 f"{SA_URL}/register",
-                json={"email": email, "username": username, "password": password},
-                verify=self._sa_verify()
+                json={"email": email, "username": username, "password": password}
             )
 
             if response.status_code == 201:
@@ -320,6 +328,10 @@ class Client:
                 print("Ora puoi autenticarti con le tue credenziali!")
             else:
                 print(f"\nErrore: {response.json().get('error')}")
+
+        except requests.exceptions.SSLError:
+            print(SECURITY_TLS_MSG)
+            return
 
         except requests.exceptions.ConnectionError:
             print("\nImpossibile connettersi al SA. Assicurati che sia in esecuzione.")
@@ -335,10 +347,9 @@ class Client:
         password = input("Inserisci password: ")
 
         try:
-            response = requests.post(
+            response = self.sa_http.post(
                 f"{SA_URL}/authenticate",
-                json={"username": username, "password": password},
-                verify=self._sa_verify()
+                json={"username": username, "password": password}
             )
 
             if response.status_code == 200:
@@ -349,6 +360,10 @@ class Client:
                 print("\nAutenticazione riuscita! Token ricevuto.")
             else:
                 print(f"\nErrore: {response.json().get('error')}")
+
+        except requests.exceptions.SSLError:
+            print(SECURITY_TLS_MSG)
+            return
 
         except requests.exceptions.ConnectionError:
             print("\nImpossibile connettersi al SA. Assicurati che sia in esecuzione.")
@@ -438,7 +453,7 @@ class Client:
             pow_nonce_hex = self.solve_pow(challenge_hex, enc_vote_hex, difficulty)
 
             try:
-                response = requests.post(
+                response = self.ae_http.post(
                     f"{AE_URL}/vote",
                     json={
                         "enc_vote": enc_vote_hex,
@@ -447,9 +462,11 @@ class Client:
                         "token_signature": self.token_signature,
                         "pow_challenge": challenge_hex,
                         "pow_nonce": pow_nonce_hex
-                    },
-                    verify=self._ae_verify()
+                    }
                 )
+            except requests.exceptions.SSLError:
+                print(SECURITY_TLS_MSG)
+                return
             except requests.exceptions.ConnectionError:
                 print("\nImpossibile connettersi all'AE. Assicurati che sia in esecuzione.")
                 return

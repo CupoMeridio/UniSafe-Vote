@@ -1,8 +1,14 @@
 """
 Configurazione TLS condivisa per i test.
 
-Fornisce gli URL HTTPS e il parametro `verify` corretto per ogni server,
-usando i certificati self-signed generati da generate_tls_certs.py.
+Fornisce gli URL HTTPS dei server, il parametro `verify` (la CA dell'elezione)
+e il certificato client del pannello per le operazioni amministrative, usando
+la PKI generata da src/pki.py.
+
+I test che attaccano direttamente le API usano requests con la sola verifica
+della catena fino alla CA; i test che riguardano il comportamento del client
+reale (pinning, revoca) usano le sessioni di src/tls_context.py, le stesse del
+client.
 """
 
 import os
@@ -10,69 +16,50 @@ import subprocess
 import sys
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_TLS_DIR = os.path.join(_PROJECT_ROOT, "data", "tls")
+_SRC_DIR = os.path.join(_PROJECT_ROOT, "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
 SA_URL = "https://localhost:5001"
 AE_URL = "https://localhost:5002"
 
-_SA_CERT = os.path.join(_PROJECT_ROOT, "data", "tls", "sa_cert.pem")
-_AE_CERT = os.path.join(_PROJECT_ROOT, "data", "tls", "ae_cert.pem")
+_CA_CERT = os.path.join(_TLS_DIR, "ca_cert.pem")
 
 
 def sa_verify() -> "str | bool":
-    """Restituisce il parametro verify per requests verso il SA."""
-    return _SA_CERT if os.path.exists(_SA_CERT) else True
+    """Parametro verify per requests verso il SA: la CA dell'elezione."""
+    return _CA_CERT if os.path.exists(_CA_CERT) else True
 
 
 def ae_verify() -> "str | bool":
-    """Restituisce il parametro verify per requests verso l'AE."""
-    return _AE_CERT if os.path.exists(_AE_CERT) else True
+    """Parametro verify per requests verso l'AE: la CA dell'elezione."""
+    return _CA_CERT if os.path.exists(_CA_CERT) else True
 
 
-_ADMIN_TOKEN = os.path.join(_PROJECT_ROOT, "data", "keys", "admin_token")
-
-
-def admin_headers() -> dict:
+def admin_cert() -> tuple:
     """
-    Header per le operazioni amministrative (/close, /reconcile, /shutdown).
-
-    SA e AE creano il token in data/keys/admin_token al primo avvio: il test,
-    come il pannello di controllo, lo legge dal file e lo invia nell'header
-    X-Admin-Token. Senza token i server rispondono 403.
+    Certificato client del pannello (parametro `cert` di requests) per le
+    operazioni amministrative (/close, /reconcile, /shutdown). Il server lo
+    verifica nell'handshake TLS: senza, risponde 403.
     """
-    try:
-        with open(_ADMIN_TOKEN, "r", encoding="utf-8") as f:
-            token = f.read().strip()
-    except FileNotFoundError:
-        return {}
-    return {"X-Admin-Token": token} if token else {}
+    return (os.path.join(_TLS_DIR, "admin_cert.pem"), os.path.join(_TLS_DIR, "admin_key.pem"))
 
 
 def ensure_tls_certs() -> None:
     """
-    Genera i certificati TLS self-signed se non esistono o se sono stati
-    eliminati (es. dopo un reset). Chiamare nel setup() di ogni test che
-    avvia SA o AE come sottoprocesso, prima di lanciare i server.
+    Genera la PKI (CA, certificati, CRL, pin) se manca o se CA, certificati o
+    CRL sono scaduti. Chiamare nel setup() di ogni test che avvia SA o AE.
     """
-    tls_dir = os.path.join(_PROJECT_ROOT, "data", "tls")
-    sa_cert = os.path.join(tls_dir, "sa_cert.pem")
-    ae_cert = os.path.join(tls_dir, "ae_cert.pem")
-
-    sa_key = os.path.join(tls_dir, "sa_key.pem")
-    ae_key = os.path.join(tls_dir, "ae_key.pem")
-
-    if all(os.path.exists(p) for p in [sa_cert, sa_key, ae_cert, ae_key]):
-        return  # già presenti, niente da fare
-
-    print("  [TLS] Certificati non trovati, generazione in corso...", end=" ", flush=True)
-    script = os.path.join(_PROJECT_ROOT, "src", "generate_tls_certs.py")
-    result = subprocess.run(
-        [sys.executable, script],
-        cwd=_PROJECT_ROOT,
-        capture_output=True,
-    )
+    import pki
+    if pki.pki_ready():
+        return
+    print("  [TLS] PKI assente o scaduta, generazione in corso...", end=" ", flush=True)
+    script = os.path.join(_SRC_DIR, "generate_tls_certs.py")
+    result = subprocess.run([sys.executable, script], cwd=_PROJECT_ROOT, capture_output=True)
     if result.returncode == 0:
         print("OK")
     else:
         print("ERRORE")
         print(result.stderr.decode(errors="replace"))
-        raise RuntimeError("Impossibile generare i certificati TLS self-signed")
+        raise RuntimeError("Impossibile generare la PKI dell'elezione")

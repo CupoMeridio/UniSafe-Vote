@@ -29,25 +29,28 @@ UniSafe-Vote/
 │   │   └── password.py          # Hash e verifica password (PBKDF2-HMAC-SHA256, 600k iterazioni)
 │   ├── sa.py                    # Server Sistema di Autenticazione (porta 5001)
 │   ├── ae.py                    # Server Autorità Elettorale (porta 5002)
-│   ├── admin_auth.py            # Token amministrativo per /close, /reconcile, /shutdown
+│   ├── admin_auth.py            # TLS mutuo per /close, /reconcile, /shutdown
 │   ├── bb_chain.py              # Catena di hash (prev_hash) dei blocchi del Bulletin Board
 │   ├── client.py                # Client CLI per il voto e la verifica individuale
 │   ├── observer.py              # Verifica universale
 │   ├── init_election.py         # Inizializzazione elezione interattiva
 │   ├── init_election_non_interactive.py
-│   └── generate_tls_certs.py    # Generazione certificati TLS self-signed
+│   ├── pki.py                   # Certification Authority: CSR, emissione, revoca, CRL
+│   ├── tls_context.py           # Contesti TLS: catena, CRL, pin SPKI, certificato client
+│   └── generate_tls_certs.py    # Generazione della PKI dell'elezione
 ├── data/
-│   ├── keys/                    # Chiavi RSA, chiave AE cifrata, token amministrativo
+│   ├── keys/                    # Chiavi RSA, chiave AE cifrata
 │   │   └── trustees/            # Quote Shamir degli scrutatori (simulazione PoC)
 │   ├── receipts/                # Ricevute dei votanti
-│   ├── tls/                     # Certificati TLS self-signed SA/AE
+│   ├── tls/                     # PKI: CA, certificati SA/AE/pannello, CRL, pin SPKI
+│   │   └── ca/                  # Chiave privata e registro della CA (non letti dai server)
 │   ├── bulletin_board.json      # Registro pubblico append-only (blocchi firmati e concatenati)
 │   ├── voters.json              # Lista degli aventi diritto
 │   ├── pins.json                # Impronte trusted delle chiavi AE
 │   └── ae_state.json            # Stato privato AE per prevenire token replay
 ├── tests/
 │   ├── common.py                # Creazione dell'elezione di test e helper condivisi
-│   ├── tls_config.py            # URL, certificati e token amministrativo per i test
+│   ├── tls_config.py            # URL, CA e certificato client del pannello per i test
 │   ├── test_flow.py             # Flusso completo end-to-end
 │   ├── security/                # Test di sicurezza e attacchi simulati (report JSON in tests/output/)
 │   └── performance/             # Test di performance e di carico (Locust)
@@ -106,15 +109,18 @@ Il pannello permette di:
 7. Eseguire test di sicurezza.
 8. Uscire.
 
-### 3. Canale TLS
+### 3. Canale TLS e PKI
 
-L'inizializzazione genera anche certificati TLS self-signed in `data/tls/`:
+L'inizializzazione crea una piccola PKI dell'elezione in `data/tls/` (`src/pki.py`):
 
 ```text
-data/tls/sa_cert.pem
-data/tls/sa_key.pem
-data/tls/ae_cert.pem
-data/tls/ae_key.pem
+data/tls/ca_cert.pem                  certificato della CA radice (fiducia dei client)
+data/tls/sa_cert.pem, sa_key.pem      certificato del SA (uso server), emesso su CSR
+data/tls/ae_cert.pem, ae_key.pem      certificato dell'AE (uso server), emesso su CSR
+data/tls/admin_cert.pem, admin_key.pem certificato client del pannello amministrativo
+data/tls/crl.pem                      lista dei certificati revocati, firmata dalla CA
+data/tls/tls_pins.json                impronte SPKI delle chiavi di SA e AE
+data/tls/ca/                          chiave privata e registro della CA
 ```
 
 SA e AE vengono raggiunti tramite HTTPS:
@@ -124,7 +130,14 @@ https://localhost:5001
 https://localhost:5002
 ```
 
-I client locali usano i certificati self-signed come CA bundle tramite il parametro `verify` di `requests`. In un sistema reale questi certificati dovrebbero essere rilasciati da una CA riconosciuta.
+Il client si connette solo se il certificato del server è emesso dalla CA dell'elezione, non è revocato e la chiave corrisponde al pin SPKI. Il pannello si autentica presso i server con il proprio certificato client (TLS mutuo). Per revocare un certificato e ripubblicare la CRL:
+
+```bash
+python src/pki.py status          # certificati emessi e revocati
+python src/pki.py revoke ae       # revoca il certificato dell'AE
+```
+
+I server rileggono la CRL al riavvio, i client a ogni nuova connessione.
 
 ### 4. Modalità di Inizializzazione
 
@@ -133,7 +146,7 @@ Durante l'inizializzazione è possibile scegliere tra:
 1. **Sistema preconfigurato**: liste stock ed elettori già registrati.
 2. **Solo liste di voto**: configurazione personalizzata delle liste, con registrazione utenti abilitata successivamente tramite SA.
 
-L'inizializzazione genera anche i certificati TLS self-signed usati dai client locali per verificare le connessioni HTTPS verso SA e AE.
+L'inizializzazione genera anche la PKI (CA, certificati, CRL e pin) usata per le connessioni HTTPS verso SA e AE.
 
 Credenziali preconfigurate nella modalità demo:
 
@@ -159,7 +172,8 @@ ire.silv      / pass_iS95
 - **Verifica universale**: per ogni scheda l'AE pubblica la decifratura `EM = c^d mod n`; chiunque verifica che `EM^e mod n == c` e ricostruisce il contenuto di ogni scheda, nulle comprese.
 - **Anti-DoS e anti-brute force**: Proof of Work su una challenge del server (autenticata, legata all'IP, con scadenza, monouso) con difficoltà adattiva per IP; rate limit per IP e blocco per account sul SA; tempi di risposta uguali per username esistenti e inesistenti.
 - **Concorrenza**: le sezioni critiche di SA e AE sono protette da lock (nessun doppio voto con richieste simultanee).
-- **Operazioni amministrative**: `/close`, `/reconcile` e `/shutdown` richiedono il token in `data/keys/admin_token`.
+- **Canale e identità dei server**: TLS con certificati emessi dalla CA dell'elezione; il client verifica catena, revoca (CRL) e chiave del server (pin SPKI).
+- **Operazioni amministrative**: `/close`, `/reconcile` e `/shutdown` richiedono il certificato client del pannello, emesso dalla CA e verificato con TLS mutuo.
 
 ## Test di Sicurezza
 
@@ -174,7 +188,7 @@ Test offline (nessun server reale richiesto):
 3. Manomissione del Bulletin Board, ricevute al momento del voto e attacco di seconda preimmagine sul Merkle Tree.
 4. Escrow a soglia della chiave privata AE (Shamir 2-su-3).
 5. Proof of Work con challenge del server e difficoltà per IP.
-6. Pinning TLS del client contro un server AE impostore.
+6. PKI lato client: impostori dell'AE (self-signed, altra CA, CA compromessa), pinning SPKI e revoca dopo il furto della chiave.
 
 Test con server avviati automaticamente:
 
@@ -190,6 +204,7 @@ Test con server avviati automaticamente:
 16. Registrazione degli elettori (modalità solo liste).
 17. Finestra temporale dell'elezione.
 18. Flusso completo dell'elezione (end-to-end).
+19. TLS mutuo per le operazioni amministrative.
 
 ## Test di Performance
 
@@ -215,20 +230,20 @@ python src/sa.py
 python src/ae.py
 ```
 
-Con i certificati TLS presenti in `data/tls/`, i server ascoltano su HTTPS. Al primo avvio generano il token amministrativo in `data/keys/admin_token`.
+I server richiedono la PKI in `data/tls/` (generata all'inizializzazione o con `python src/generate_tls_certs.py`) e ascoltano solo su HTTPS.
 
 ## Chiusura Urne e Shutdown
 
-La chiusura delle urne richiede il token amministrativo e le quote di almeno due scrutatori: va eseguita dal pannello principale (opzione 5), che simula la consegna delle quote da `data/keys/trustees/`.
+La chiusura delle urne richiede il certificato client del pannello e le quote di almeno due scrutatori: va eseguita dal pannello principale (opzione 5), che simula la consegna delle quote da `data/keys/trustees/`.
 
 Per spegnere i server:
 
 ```bash
-curl -X POST https://localhost:5001/shutdown --cacert data/tls/sa_cert.pem -H "X-Admin-Token: $(cat data/keys/admin_token)"
-curl -X POST https://localhost:5002/shutdown --cacert data/tls/ae_cert.pem -H "X-Admin-Token: $(cat data/keys/admin_token)"
+curl -X POST https://localhost:5001/shutdown --cacert data/tls/ca_cert.pem --cert data/tls/admin_cert.pem --key data/tls/admin_key.pem
+curl -X POST https://localhost:5002/shutdown --cacert data/tls/ca_cert.pem --cert data/tls/admin_cert.pem --key data/tls/admin_key.pem
 ```
 
-Se `curl` non è disponibile su Windows, usare PowerShell o un client HTTP che consenta di specificare il certificato CA self-signed e l'header `X-Admin-Token`.
+Se `curl` non è disponibile su Windows, usare un client HTTP che consenta di specificare la CA (`ca_cert.pem`) e il certificato client del pannello.
 
 ## Limiti Noti
 
@@ -237,5 +252,6 @@ Il progetto è un proof of concept: alcuni limiti sono intrinseci al protocollo 
 - **Anonimato basato sulla fiducia**: se SA e AE colludono possono collegare token e identità. La soluzione sono le firme cieche (RFC 9474).
 - **Riempimento delle urne**: AE o SA possono aggiungere schede fino al numero di token emessi senza che l'Observer possa contestarle (anche questo si risolve con le firme cieche, che rendono pubblicabile il token).
 - **Nessuna resistenza alla coercizione**: l'elettore conosce il seed e può dimostrare a terzi il proprio voto (servirebbero ElGamal omomorfico o mixnet).
-- **Bulletin Board, pin e quote degli scrutatori su disco locale**: in un sistema reale il registro sarebbe distribuito e ogni quota custodita dal proprio scrutatore.
+- **Bulletin Board, pin, quote degli scrutatori e chiave della CA su disco locale**: in un sistema reale il registro sarebbe distribuito, ogni quota custodita dal proprio scrutatore e la chiave della CA conservata offline da un ente distinto dal gestore dei server.
+- **Revoca letta all'avvio**: i server caricano la CRL all'avvio; una revoca pubblicata durante l'elezione diventa effettiva lato server solo al riavvio (i client la rileggono a ogni connessione).
 - **Registrazione senza verifica dell'email**: il dominio è controllato, ma non il possesso della casella.

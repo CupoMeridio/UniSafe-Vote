@@ -34,8 +34,8 @@ SA_URL = "https://localhost:5001"  # URL di base per connettersi al server SA
 AE_URL = "https://localhost:5002"  # URL di base per connettersi al server AE
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))  # Percorso assoluto della cartella del progetto
 
-SA_CERT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tls", "sa_cert.pem")
-AE_CERT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tls", "ae_cert.pem")
+CA_CERT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tls", "ca_cert.pem")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 ANSI_RESET = "\033[0m"
 ANSI_BRIGHT = "\033[1m"
@@ -108,29 +108,20 @@ def clear_screen() -> None:
 
 
 def _verify_for(url: str) -> str | bool:
-    """Restituisce il parametro verify corretto per una chiamata requests.
-    Usa il certificato self-signed come CA bundle se disponibile."""
-    if url.startswith(SA_URL):
-        return SA_CERT if os.path.exists(SA_CERT) else True
-    if url.startswith(AE_URL):
-        return AE_CERT if os.path.exists(AE_CERT) else True
-    return True
+    """Parametro verify per le richieste di stato: la CA dell'elezione."""
+    return CA_CERT if os.path.exists(CA_CERT) else True
 
 
-def _admin_headers() -> dict:
+def _admin_session(server: str):
     """
-    Header per le operazioni amministrative (/close, /reconcile, /shutdown).
+    Sessione HTTPS per le operazioni amministrative (/close, /reconcile, /shutdown).
 
-    SA e AE generano il token in data/keys/admin_token al primo avvio; il
-    pannello di controllo, che gira sulla stessa macchina, lo legge dal file.
+    Il pannello si autentica presso SA e AE con il proprio certificato client,
+    emesso dalla CA dell'elezione (TLS mutuo); la connessione verifica a sua
+    volta catena, revoca e chiave (pin SPKI) del server.
     """
-    token_path = os.path.join(PROJECT_DIR, "data", "keys", "admin_token")
-    try:
-        with open(token_path, "r", encoding="utf-8") as f:
-            token = f.read().strip()
-    except FileNotFoundError:
-        return {}
-    return {"X-Admin-Token": token} if token else {}
+    from tls_context import client_session
+    return client_session(server, admin=True)
 
 
 def _load_trustee_shares() -> list:
@@ -420,7 +411,7 @@ def reset_election() -> None:
     print_header("RESET CONFIGURAZIONE ELEZIONE")
     print_explanation("""
 Questa operazione elimina i file di configurazione dell'elezione, le chiavi RSA,
-lo stato privato dell'Autorità Elettorale, i pin trusted AE, i certificati TLS
+lo stato privato dell'Autorità Elettorale, i pin trusted AE, la PKI (CA e certificati TLS)
 e le ricevute JSON dei voti delle elezioni passate.
 Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente nuove.
     """)
@@ -456,12 +447,10 @@ Dopo il reset sarà possibile creare una nuova elezione con chiavi completamente
             if os.path.isfile(file_path) and filename.lower().endswith(".json"):
                 os.remove(file_path)
 
-    # Rimuovi i certificati TLS generati per questa elezione
+    # Rimuovi la PKI generata per questa elezione: CA (chiave e registro),
+    # certificati, CRL e pin SPKI
     if os.path.isdir(tls_dir):
-        for filename in os.listdir(tls_dir):
-            file_path = os.path.join(tls_dir, filename)
-            if os.path.isfile(file_path) and filename.endswith(".pem"):
-                os.remove(file_path)
+        shutil.rmtree(tls_dir)
 
     print("Configurazione elezione rimossa. È ora possibile inizializzare una nuova elezione.")
 
@@ -580,7 +569,7 @@ Quando le urne vengono chiuse:
     try:
         # Chiamata al SA per pubblicare i token emessi (Riconciliazione)
         if check_server_running(SA_URL):
-            requests.post(SA_URL + '/reconcile', headers=_admin_headers(), timeout=10, verify=_verify_for(SA_URL))
+            _admin_session("sa").post(SA_URL + '/reconcile', timeout=10)
 
         # Consegna delle quote degli scrutatori (simulazione PoC): la chiave di
         # decifratura dell'AE è protetta da Shamir Secret Sharing e l'AE da sola
@@ -593,9 +582,9 @@ Quando le urne vengono chiuse:
             print(f"   Scrutatore {share['trustee']} consegna la propria quota")
 
         # Invio di una richiesta POST all'endpoint /close dell'AE per chiudere le urne
-        response = requests.post(AE_URL + '/close', headers=_admin_headers(),
-                                 json={"trustee_shares": shares[:threshold]},
-                                 timeout=30, verify=_verify_for(AE_URL))
+        response = _admin_session("ae").post(AE_URL + '/close',
+                                             json={"trustee_shares": shares[:threshold]},
+                                             timeout=30)
  
         # Se il server risponde con codice 200, la chiusura e lo scrutinio sono andati a buon fine
         if response.status_code == 200:
@@ -905,26 +894,30 @@ Verifica le difese del Sistema di Autenticazione contro il brute force:
           arriva la password corretta (ferma il brute force distribuito).
   Fase 4: un login con username inesistente impiega quanto uno con
           username esistente: i tempi non rivelano gli account registrati.
-  Fase 5: /reconcile e /shutdown rispondono 403 senza token amministrativo.
+  Fase 5: /reconcile e /shutdown rispondono 403 senza il certificato client
+          del pannello; dopo la riconciliazione le registrazioni sono chiuse.
 
 Il test avvia e riavvia il SA automaticamente tra una fase e l'altra.
             """,
         },
         "6": {
-            "name": "Pinning TLS del Client — Server AE Impostore",
+            "name": "PKI lato Client: Impostori dell'AE, Pinning e Revoca",
             "file": "tests/security/tls_pinning_test.py",
             "description": """
-Un attaccante si mette al posto dell'AE: stesso indirizzo e porta, un
-certificato self-signed con lo stesso nome e gli stessi SAN di quello
-legittimo, ma generato con una propria chiave.
+Il client si connette all'AE solo se il certificato è emesso dalla CA
+dell'elezione, non è revocato (CRL) e la chiave pubblica corrisponde al
+pin SPKI distribuito ai client. Sequenza di impostori:
 
-Il test mostra che il server falso funziona (chi si fida del suo
-certificato vi si connette), ma il client reale, che si fida solo del
-certificato AE distribuito con l'elezione, rifiuta la connessione TLS:
-non ottiene la challenge PoW, non può inviare schede e all'impostore non
-arriva alcuna richiesta.
+  1. AE legittimo                                  → accettato
+  2. certificato self-signed con lo stesso nome    → rifiutato (catena)
+  3. certificato emesso da un'altra CA             → rifiutato (catena)
+  4. certificato emesso dalla CA vera (CA
+     compromessa)                                  → rifiutato dal pin SPKI
+  5. chiave dell'AE rubata: accettata finché il certificato è valido;
+     dopo revoca e riemissione l'impostore è rifiutato (CRL) e l'AE con
+     il nuovo certificato è accettato.
 
-Non usa i server reali: il server falso gira nel processo del test.
+Usa una PKI temporanea generata con lo stesso codice dell'elezione.
             """,
         },
         "16": {
@@ -987,6 +980,25 @@ difficoltà solo per l'IP attaccante e non per gli elettori onesti.
 Non richiede server avviati — è un test offline sulle funzioni dell'AE.
             """,
         },
+        "19": {
+            "name": "TLS Mutuo per le Operazioni Amministrative",
+            "file": "tests/security/admin_mtls_test.py",
+            "description": """
+Chiudere le urne, riconciliare e spegnere i server è riservato al
+pannello, che presenta un certificato client emesso dalla CA dell'elezione.
+Il test tenta l'accesso amministrativo ai server reali:
+
+  1. senza certificato client                 → HTTP 403, urne aperte
+  2. con un certificato di un'altra CA        → handshake TLS rifiutato
+  3. con un certificato del pannello revocato → handshake rifiutato (CRL)
+  4. con il certificato del server SA         → rifiutato (non è un
+                                                certificato client)
+  5. con il certificato del pannello valido   → riconciliazione e
+                                                chiusura riuscite
+
+Il test avvia e termina SA e AE automaticamente.
+            """,
+        },
     }
 
     while True:
@@ -1022,12 +1034,13 @@ Non richiede server avviati — è un test offline sulle funzioni dell'AE.
         print(menu_option("16", TESTS["16"]["name"], available=True))
         print(menu_option("17", TESTS["17"]["name"], available=True))
         print(menu_option("18", TESTS["18"]["name"], available=True))
+        print(menu_option("19", TESTS["19"]["name"], available=True))
 
         print(f"\n{section_title('NAVIGAZIONE')}")
         print(menu_option("0", "Torna al menu principale", available=True))
         print("="*70)
 
-        choice = input("\nSeleziona un test (0-18): ").strip()
+        choice = input("\nSeleziona un test (0-19): ").strip()
 
         if choice == "0":
             break
@@ -1237,9 +1250,9 @@ def stop_processes() -> None:
     global SA_PROCESS, AE_PROCESS
     
     # Invia richiesta di shutdown via HTTP agli endpoint /shutdown (per macOS/Linux/Windows)
-    for url in (SA_URL, AE_URL):
+    for server, url in (("sa", SA_URL), ("ae", AE_URL)):
         try:
-            requests.post(url + '/shutdown', headers=_admin_headers(), timeout=0.5, verify=_verify_for(url))
+            _admin_session(server).post(url + '/shutdown', timeout=0.5)
         except Exception:
             # Ignora errori di connessione (es. server già spento o non in esecuzione)
             pass

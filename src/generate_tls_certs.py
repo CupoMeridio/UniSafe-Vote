@@ -1,18 +1,17 @@
 """
-Generazione dei certificati TLS self-signed per SA e AE.
+Generazione del materiale TLS dell'elezione tramite la PKI (src/pki.py).
 
-Questo script genera due coppie certificato/chiave RSA-2048 self-signed
-per abilitare HTTPS su SA (porta 5001) e AE (porta 5002).
+Lo script crea la Certification Authority dell'elezione e, tramite richieste di
+certificato (CSR), i certificati di SA e AE (uso server) e del pannello
+amministrativo (uso client), oltre alla CRL e alle impronte SPKI dei server.
+Tutto il materiale è salvato in data/tls/ (la chiave della CA in data/tls/ca/).
 
-I certificati vengono salvati in data/tls/:
-  - sa_cert.pem  / sa_key.pem
-  - ae_cert.pem  / ae_key.pem
-
-In un sistema reale i certificati sarebbero rilasciati da una CA riconosciuta.
-Qui usiamo certificati self-signed a scopo didattico/locale.
+La funzione generate_self_signed_cert() resta disponibile per i test, che la
+usano per simulare un server impostore con un certificato self-signed.
 """
 
 import os
+import sys
 import datetime
 from cryptography import x509
 from cryptography.x509.oid import NameOID
@@ -83,28 +82,24 @@ def generate_self_signed_cert(common_name: str, cert_path: str, key_path: str) -
 
 
 def main() -> None:
-    print("\n=== GENERAZIONE CERTIFICATI TLS SELF-SIGNED ===\n")
+    import pki
 
-    os.makedirs(TLS_DIR, exist_ok=True)
-
-    generate_self_signed_cert(
-        common_name="UniSafe-Vote SA",
-        cert_path=os.path.join(TLS_DIR, "sa_cert.pem"),
-        key_path=os.path.join(TLS_DIR, "sa_key.pem"),
-    )
-
-    generate_self_signed_cert(
-        common_name="UniSafe-Vote AE",
-        cert_path=os.path.join(TLS_DIR, "ae_cert.pem"),
-        key_path=os.path.join(TLS_DIR, "ae_key.pem"),
-    )
-
-    print("\nCertificati salvati in data/tls/")
-    print("SA: https://localhost:5001")
+    print("\n=== GENERAZIONE PKI DELL'ELEZIONE (CA, CERTIFICATI, CRL) ===\n")
+    pki.init_pki()
+    print("Materiale salvato in data/tls/:")
+    print("  ca_cert.pem              certificato della CA radice (fiducia dei client)")
+    print("  sa_cert.pem / ae_cert.pem certificati dei server, emessi dalla CA su CSR")
+    print("  admin_cert.pem           certificato client del pannello amministrativo")
+    print("  crl.pem                  lista dei certificati revocati (vuota)")
+    print("  tls_pins.json            impronte SPKI delle chiavi di SA e AE")
+    print("  ca/                      chiave privata e registro della CA (non letti dai server)\n")
+    print(pki.status())
+    print("\nSA: https://localhost:5001")
     print("AE: https://localhost:5002\n")
 
 
 if __name__ == "__main__":
     # Esegui sempre dalla root del progetto
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     main()

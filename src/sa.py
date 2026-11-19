@@ -32,14 +32,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from crypto.keys import load_private_key
 from crypto.rsa_pss import sign
 from crypto.password import hash_password, verify_password
-from admin_auth import get_or_create_admin_token, require_admin
+from admin_auth import require_admin
+from tls_context import server_ssl_context, tls_available
 from bb_chain import link_to_previous
 
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # Limita le richieste a 1 MB per prevenire DoS Memory Exhaustion
-# Le operazioni amministrative (/reconcile, /shutdown) richiedono il token
-# amministrativo (header X-Admin-Token, vedi admin_auth.py).
+# Le operazioni amministrative (/reconcile, /shutdown) richiedono il certificato
+# client del pannello, verificato con TLS mutuo (vedi admin_auth.py).
 
 # Stato interno del server (in memoria)
 issued_tokens: Set[str] = set()  # ID elettori a cui è già stato rilasciato un token
@@ -562,21 +563,20 @@ if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     print_server_banner()
     load_initial_data()
-    get_or_create_admin_token()
     if TRUST_PROXY_HEADERS:
         print("[SA] ATTENZIONE: X-Forwarded-For considerato attendibile (modalità test di carico)")
 
-    # Certificati TLS self-signed per HTTPS
-    tls_cert = os.path.join("data", "tls", "sa_cert.pem")
-    tls_key  = os.path.join("data", "tls", "sa_key.pem")
+    # TLS con il certificato emesso dalla CA dell'elezione. Il certificato
+    # client è facoltativo (gli elettori non ne hanno) e, se presentato, viene
+    # verificato con la CA e la CRL: serve al pannello per le operazioni
+    # amministrative. Senza PKI il server non parte: in HTTP le operazioni
+    # amministrative non sarebbero autenticabili e il traffico sarebbe in chiaro.
+    if not tls_available():
+        print("[SA] PKI non trovata in data/tls/: generarla con src/generate_tls_certs.py (o inizializzare l'elezione)")
+        sys.exit(1)
+    ssl_ctx = server_ssl_context("sa")
+    print("[SA] TLS abilitato (certificato emesso dalla CA, client facoltativo) — https://localhost:5001")
 
-    if os.path.exists(tls_cert) and os.path.exists(tls_key):
-        ssl_ctx = (tls_cert, tls_key)
-        print("[SA] TLS abilitato — in ascolto su https://localhost:5001")
-    else:
-        ssl_ctx = None
-        print("[SA] Certificati TLS non trovati — avvio in HTTP (generare i certificati con generate_tls_certs.py)")
-
-    # Avvia il server Flask sulla porta 5001, debug disabilitato per sicurezza
+    # Avvia il server Flask sulla porta 5001, debug disabilitato
     app.run(port=5001, debug=False, ssl_context=ssl_ctx)
 

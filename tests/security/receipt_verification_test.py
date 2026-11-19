@@ -43,7 +43,7 @@ sys.path.insert(0, TESTS_SEC_DIR)
 # con SA e AE come sottoprocessi); si aggiungono elettori per avere più voti.
 import double_voting_attack as base
 from test_reporter import save_report
-from tls_config import AE_URL, SA_URL, ae_verify, sa_verify, admin_headers
+from tls_config import AE_URL, SA_URL, ae_verify, sa_verify, admin_cert
 from common import close_payload
 
 from client import Client
@@ -106,7 +106,7 @@ def verify_receipt(voter: dict) -> tuple:
 def restart_ae() -> None:
     """Spegne l'AE e la riavvia come nuovo processo, a urne aperte."""
     try:
-        requests.post(f"{AE_URL}/shutdown", headers=admin_headers(), timeout=2, verify=ae_verify())
+        requests.post(f"{AE_URL}/shutdown", cert=admin_cert(), timeout=2, verify=ae_verify())
     except Exception:
         pass
     if base.ae_process:
@@ -195,7 +195,7 @@ def main():
         print("-" * 80)
         # La chiave di decifratura è protetta da Shamir 2-su-3: con una sola
         # quota l'AE deve rifiutare la chiusura e lasciare le urne aperte.
-        early = requests.post(f"{AE_URL}/close", headers=admin_headers(), json=close_payload(1),
+        early = requests.post(f"{AE_URL}/close", cert=admin_cert(), json=close_payload(1),
                               timeout=30, verify=ae_verify())
         still_open = requests.get(f"{AE_URL}/status", timeout=5, verify=ae_verify()).json()["urn_open"]
         one_share_rejected = early.status_code == 400 and still_open
@@ -203,8 +203,8 @@ def main():
               f"{early.json().get('error')}  (urne ancora aperte: {still_open})")
         print(f"  {'[PASS]' if one_share_rejected else '[FAIL]'} Una quota non basta per decifrare\n")
 
-        requests.post(f"{SA_URL}/reconcile", headers=admin_headers(), timeout=10, verify=sa_verify()).raise_for_status()
-        close = requests.post(f"{AE_URL}/close", headers=admin_headers(), json=close_payload(), timeout=60, verify=ae_verify())
+        requests.post(f"{SA_URL}/reconcile", cert=admin_cert(), timeout=10, verify=sa_verify()).raise_for_status()
+        close = requests.post(f"{AE_URL}/close", cert=admin_cert(), json=close_payload(), timeout=60, verify=ae_verify())
         close.raise_for_status()
         print(f"  Scrutinio: {close.json()['result']}")
         with open(base.BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:

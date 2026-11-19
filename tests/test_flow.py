@@ -27,7 +27,7 @@ sys.path.insert(0, SRC_DIR)
 sys.path.insert(0, TESTS_DIR)
 sys.path.insert(0, os.path.join(TESTS_DIR, "security"))
 
-from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
+from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_cert
 from common import (create_test_election, close_payload, clean_election_state, pow_fields,
                     compute_public_key_fingerprint, DATA_DIR, BULLETIN_BOARD_PATH)
 from test_reporter import save_report
@@ -104,8 +104,8 @@ def main():
 
         # 4 -----------------------------------------------------------------
         print("\n[4] Riconciliazione, consegna delle quote degli scrutatori e scrutinio...")
-        requests.post(f"{SA_URL}/reconcile", headers=admin_headers(), timeout=10, verify=sa_verify()).raise_for_status()
-        r = requests.post(f"{AE_URL}/close", headers=admin_headers(), json=close_payload(),
+        requests.post(f"{SA_URL}/reconcile", cert=admin_cert(), timeout=10, verify=sa_verify()).raise_for_status()
+        r = requests.post(f"{AE_URL}/close", cert=admin_cert(), json=close_payload(),
                           timeout=60, verify=ae_verify())
         r.raise_for_status()
         result = r.json()["result"]
@@ -138,7 +138,7 @@ def main():
         print("\nSpegnimento dei server e pulizia...")
         for url, proc, verify in [(SA_URL, sa_proc, sa_verify()), (AE_URL, ae_proc, ae_verify())]:
             try:
-                requests.post(f"{url}/shutdown", headers=admin_headers(), timeout=2, verify=verify)
+                requests.post(f"{url}/shutdown", cert=admin_cert(), timeout=2, verify=verify)
             except Exception:
                 pass
             if proc:
