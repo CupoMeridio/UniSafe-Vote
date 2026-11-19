@@ -834,6 +834,8 @@ delle decifrature, la catena di hash tra i blocchi e la firma di ogni blocco
     numero di token emessi senza violare la riconciliazione.
   \item \textbf{Idoneità degli elettori:} la registrazione verifica il dominio
     istituzionale dell'indirizzo email ma non il possesso della casella.
+  \item \textbf{PKI locale:} la chiave della CA risiede sulla stessa macchina dei server
+    e la CRL è letta dai server all'avvio (Sezione~\ref{sec:mod42}).
 \end{itemize}
 
 \newpage
@@ -1018,7 +1020,7 @@ Questo avversario monitora passivamente le comunicazioni tra gli attori, senza p
 Questo avversario può modificare, ritardare o eliminare messaggi in transito, lanciare attacchi replay e sovraccaricare i server.
 
 \begin{itemize}
-  \item \textbf{Man-in-the-Middle:} il canale TLS con certificati X.509 mitiga gli attacchi MitM classici. Un attacco di key substitution (sostituzione della chiave pubblica dell'AE) è mitigato dall'autenticità dei parametri distribuiti tramite TLS, ma non è escluso crittograficamente in caso di compromissione della PKI. La mitigazione complementare tramite certificate pinning è discussa nella Sezione~\ref{sec:mod34}.
+  \item \textbf{Man-in-the-Middle:} il canale TLS con certificati X.509 mitiga gli attacchi MitM classici. Un attacco di key substitution (sostituzione della chiave pubblica dell'AE) è mitigato dall'autenticità dei parametri distribuiti tramite TLS, ma non è escluso crittograficamente in caso di compromissione della PKI. La mitigazione complementare tramite certificate pinning è discussa nella Sezione~\ref{sec:mod34}; la PKI dell'elezione, con revoca e pinning SPKI dei server, nella Sezione~\ref{sec:mod42}.
   \item \textbf{Replay di messaggi:} la validità temporale del token e il controllo di unicità da parte dell'AE neutralizzano i replay. Un token già usato viene rifiutato; un token scaduto viene rifiutato per validità temporale.
   \item \textbf{Modifica di una scheda in transito:} il canale TLS protegge l'integrità dei messaggi. Una modifica della scheda produrrebbe una scheda con PoW non valida o con firma del token non corrispondente, causando il rifiuto da parte dell'AE.
   \item \textbf{Attacchi DDoS e Brute-Force:} il protocollo mitiga gli attacchi di saturazione utilizzando difese specifiche per ciascun nodo.
@@ -1113,7 +1115,7 @@ In questa sezione vengono identificate modifiche al protocollo di WP2 che apport
       \item Il costo implementativo è minimo: il fingerprint è un valore statico incluso nella configurazione del client al momento della distribuzione.
       \item Nessuna proprietà risulta indebolita.
     \end{itemize}
-  \item[Implementazione:] il pinning opera su due livelli. Le impronte delle chiavi pubbliche dell'AE sono distribuite in \texttt{data/pins.json}, separato dal registro, e confrontate dal client prima di usare le chiavi; a livello di trasporto il client accetta per l'AE solo il certificato TLS distribuito con l'elezione, rifiutando un server che presenti un certificato diverso anche se con lo stesso nome.
+  \item[Implementazione:] il pinning opera su due livelli. Le impronte delle chiavi pubbliche applicative dell'AE (firma e cifratura) sono distribuite in \texttt{data/pins.json}, separato dal registro, e confrontate dal client prima di usare le chiavi. A livello di trasporto il client verifica la catena del certificato TLS fino alla CA dell'elezione e, in più, l'impronta della chiave pubblica del server (pin SPKI), come descritto nella Sezione~\ref{sec:mod42}.
 \end{description}
 
 \subsubsection{Decifratura Verificabile delle Schede}
@@ -1191,12 +1193,35 @@ In questa sezione vengono identificate modifiche al protocollo di WP2 che apport
 \label{sec:mod41}
 
 \begin{description}
-  \item[Descrizione:] I server elaborano le richieste in parallelo. Le sezioni critiche (controllo e marcatura del token, inserimento nel Merkle Tree e nel registro, emissione del token, registrazione degli elettori, chiusura delle urne) sono eseguite in modo atomico. Le operazioni amministrative (chiusura delle urne, riconciliazione, spegnimento) richiedono un token amministrativo generato all'avvio dei server e confrontato a tempo costante.
+  \item[Descrizione:] I server elaborano le richieste in parallelo. Le sezioni critiche (controllo e marcatura del token, inserimento nel Merkle Tree e nel registro, emissione del token, registrazione degli elettori, chiusura delle urne) sono eseguite in modo atomico. Le operazioni amministrative (chiusura delle urne, riconciliazione, spegnimento) richiedono il certificato client del pannello, verificato con TLS mutuo (Sezione~\ref{sec:mod42}).
   \item[Benefici:] \
     \begin{itemize}
       \item Senza atomicità più richieste simultanee con lo stesso token supererebbero tutte il controllo di unicità, producendo voti multipli; con le sezioni critiche viene accettata una sola scheda.
       \item Nessun soggetto esterno può chiudere le urne in anticipo o interrompere la votazione.
     \end{itemize}
+\end{description}
+
+\subsubsection{PKI dell'Elezione: Certification Authority, Revoca e TLS Mutuo}
+\label{sec:mod42}
+
+\begin{description}
+  \item[Descrizione:] Invece di due certificati self-signed indipendenti, il sistema dispone di una piccola infrastruttura a chiave pubblica con le operazioni fondamentali di una Certification Authority.
+    \begin{itemize}
+      \item \textit{CA radice:} certificato self-signed con \texttt{BasicConstraints} CA:TRUE (lunghezza del percorso 0) e \texttt{KeyUsage} limitato alla firma di certificati e CRL; la chiave privata è conservata separatamente e non è mai letta dai server.
+      \item \textit{Richiesta ed emissione:} SA, AE e pannello amministrativo generano la propria coppia di chiavi e inviano alla CA una CSR firmata con la chiave privata (prova di possesso). La CA verifica la CSR ed emette certificati con CA:FALSE, validità breve, SAN per i server e uso esteso distinto: \texttt{serverAuth} per SA e AE, \texttt{clientAuth} per il pannello. Le chiavi private non transitano mai dalla CA.
+      \item \textit{Revoca:} la CA mantiene il registro dei certificati emessi e pubblica una CRL firmata, con data di prossimo aggiornamento; revocare un certificato significa aggiungerne il seriale alla CRL.
+      \item \textit{Verifica lato client:} catena fino alla sola CA dell'elezione, corrispondenza del nome, assenza dalla CRL e pin SPKI della chiave del server.
+      \item \textit{TLS mutuo per l'amministrazione:} i server richiedono un certificato client in modo facoltativo (gli elettori non ne hanno); se presentato ne verificano catena e revoca nell'handshake, e gli endpoint amministrativi accettano solo il certificato \texttt{clientAuth} del pannello.
+    \end{itemize}
+  \item[Benefici:] \
+    \begin{itemize}
+      \item Rende concreto il modello di fiducia X.509 richiamato in WP2, con un unico punto di fiducia per i client e la possibilità di rinnovare i certificati dei server senza ridistribuire nulla.
+      \item La revoca neutralizza il furto della chiave di un server: finché il certificato è valido un impostore con la chiave rubata supera sia la catena sia il pin; dopo la revoca e la riemissione viene rifiutato.
+      \item Il TLS mutuo sostituisce un segreto condiviso con un meccanismo standard di autenticazione da remoto: il pannello dimostra il possesso della propria chiave privata firmando nell'handshake, senza mai trasmetterla.
+    \end{itemize}
+  \item[Compromesso tra fiducia nella CA e pinning:] verificare la sola catena significa accettare qualunque certificato firmato dalla CA, quindi la sicurezza della connessione coincide con quella della CA e del suo processo di emissione (compromissione della chiave, emissione per errore). Il pin SPKI riduce la fiducia alla specifica chiave del server: un impostore con un certificato emesso dalla CA viene comunque rifiutato. Il costo è una minore flessibilità: se il server cambia chiave, i pin vanno ridistribuiti; in un'elezione, con pochi server e durata breve, il costo è trascurabile. Senza pin, un impostore con certificato valido riceverebbe il token di voto dell'elettore, che è un bearer token utilizzabile per votare al suo posto: per questo la verifica della catena non basta da sola.
+  \item[Compromesso tra revoca e disponibilità:] con il controllo di revoca attivo, una CRL mancante o scaduta fa rifiutare tutte le connessioni. La CRL viene quindi pubblicata, anche vuota, già alla creazione della CA, con validità pari a quella dei certificati.
+  \item[Limiti del prototipo:] la chiave della CA risiede sulla stessa macchina dei server; i server caricano la CRL all'avvio, quindi una revoca pubblicata a elezione in corso diventa effettiva lato server solo al riavvio (i client la rileggono a ogni connessione); la CRL è distribuita come file locale e non scaricata da un punto di distribuzione.
 \end{description}
 
 \subsubsection{Riepilogo delle Modifiche Migliorative}
@@ -1230,6 +1255,8 @@ PoW su challenge, difficoltà per IP (\S\ref{sec:mod38}) & Disponibilità & Ness
 Difese del SA contro il brute force (\S\ref{sec:mod39}) & Autenticità, Disponibilità & Disponibilità del singolo account (blocco) & Minima \\
 \midrule
 Atomicità e operazioni amministrative (\S\ref{sec:mod41}) & Unicità, Disponibilità & Nessuna & Minima \\
+\midrule
+PKI dell'elezione, revoca e TLS mutuo (\S\ref{sec:mod42}) & Autenticità, Segretezza & Nessuna & Moderata (CA, CRL, pin SPKI, certificato client) \\
 \bottomrule
 \end{tabularx}
 \caption{Riepilogo delle modifiche migliorative}
@@ -1270,7 +1297,7 @@ L'analisi condotta in questo work package ha verificato che il protocollo defini
 
 Le proprietà di autenticità, integrità e verificabilità universale risultano robustamente garantite dai meccanismi crittografici adottati (RSA-PSS, RSA-OAEP, Merkle Tree). La segretezza del voto è garantita in modo condizionato, dipendendo dall'assenza di collusione tra SA e AE e dall'assenza di analisi del traffico a livello di rete. La verificabilità individuale è garantita, con il noto compromesso sulla receipt-freeness.
 
-Sono state identificate e implementate dieci modifiche migliorative. Le prime quattro sono il commitment pubblico del numero di token emessi, il timestamp firmato nella ricevuta, l'escrow a soglia della chiave privata di decifratura (che rende crittografico il vincolo sulla segretezza durante la raccolta) e il certificate pinning delle chiavi e del certificato dell'AE. Le altre sei rafforzano in particolare la verificabilità: la decifratura verificabile di ogni scheda, la ricevuta vincolata alla radice del momento del voto, la catena di hash e la separazione di dominio nel registro, la PoW su challenge del server con difficoltà per IP, le difese del SA contro il brute force e l'atomicità delle operazioni critiche con l'autenticazione di quelle amministrative. Solo le difese del SA introducono un costo, il possibile blocco temporaneo di un account, dichiarato tra i compromessi.
+Sono state identificate e implementate undici modifiche migliorative. Le prime quattro sono il commitment pubblico del numero di token emessi, il timestamp firmato nella ricevuta, l'escrow a soglia della chiave privata di decifratura (che rende crittografico il vincolo sulla segretezza durante la raccolta) e il certificate pinning delle chiavi e del certificato dell'AE. Le altre sei rafforzano in particolare la verificabilità: la decifratura verificabile di ogni scheda, la ricevuta vincolata alla radice del momento del voto, la catena di hash e la separazione di dominio nel registro, la PoW su challenge del server con difficoltà per IP, le difese del SA contro il brute force, l'atomicità delle operazioni critiche e la PKI dell'elezione, con revoca dei certificati, pinning SPKI dei server e autenticazione del pannello tramite TLS mutuo. Solo le difese del SA introducono un costo, il possibile blocco temporaneo di un account, dichiarato tra i compromessi.
 
 I compromessi dichiarati (receipt-freeness, anonimato di rete, collusione SA-AE, riempimento delle urne fino ai token emessi, idoneità degli elettori, disponibilità) sono motivati dalla scelta progettuale di privilegiare semplicità, verificabilità e praticabilità in un contesto universitario, in accordo con i principi di \textit{Economy of Mechanism} e \textit{Psychological Acceptability} richiamati in WP1.
 
@@ -1286,7 +1313,7 @@ La tabella~\ref{tab:stride_threats} sintetizza l'analisi delle minacce condotta 
 \toprule
 \textbf{Categoria STRIDE} & \textbf{Proprietà coinvolta} & \textbf{Scenario di attacco} & \textbf{Meccanismi di mitigazione nel protocollo} \\
 \midrule
-Spoofing & Autenticità & Creazione di token falsi, impersonificazione di SA/AE, sostituzione delle chiavi AE & Autenticazione istituzionale, token firmati RSA-PSS, TLS, pinning di chiavi e certificato AE, blocco per account \\
+Spoofing & Autenticità & Creazione di token falsi, impersonificazione di SA/AE, sostituzione delle chiavi AE & Autenticazione istituzionale, token firmati RSA-PSS, PKI con revoca, pin SPKI dei server e pinning delle chiavi AE, blocco per account \\
 \midrule
 Tampering & Integrità & Alterazione, rimozione o riordino di schede e blocchi del registro & Merkle Tree con separazione di dominio, catena di hash, firma di ogni blocco, ricevuta con radice del momento del voto \\
 \midrule
@@ -1296,7 +1323,7 @@ Information Disclosure & Segretezza & Correlazione identità–voto, lettura ant
 \midrule
 Denial of Service & Disponibilità & Saturazione di SA o AE con richieste massive & Rate limiting per IP reale, PoW su challenge con difficoltà per IP, separazione dei componenti \\
 \midrule
-Elevation of Privilege & Autenticità / Unicità & Voti senza token valido o multipli con lo stesso token, operazioni amministrative non autorizzate & Verifica del token, registro dei token usati con sezioni critiche atomiche, token amministrativo \\
+Elevation of Privilege & Autenticità / Unicità & Voti senza token valido o multipli con lo stesso token, operazioni amministrative non autorizzate & Verifica del token, registro dei token usati con sezioni critiche atomiche, certificato client del pannello (TLS mutuo) \\
 \bottomrule
 \end{tabularx}
 \caption{Analisi delle minacce secondo il framework STRIDE}
@@ -1332,7 +1359,7 @@ Questo riepilogo evidenzia come le principali classi di minaccia individuate dal
   \item \textbf{Sistema di Autenticazione (\texttt{sa.py}):} Nodo dedicato esclusivamente alla validazione delle credenziali istituzionali e all'emissione di token univoci firmati digitalmente, garantendo l'anonimato rispetto al contenuto del voto.
   \item \textbf{Autorità Elettorale (\texttt{ae.py}):} Gestisce l'urna elettronica: emette le challenge della Proof of Work, verifica i pacchetti ricevuti, aggiorna il registro concatenato e il Merkle Tree e, a urne chiuse, ricostruisce la chiave di decifratura con le quote degli scrutatori per eseguire lo scrutinio.
   \item \textbf{Verificatore Indipendente (\texttt{observer.py}):} Modulo isolato per la validazione universale post-elettorale, incaricato di ispezionare il registro pubblico per attestare la correttezza dell'intero processo di computazione.
-  \item \textbf{Moduli di supporto:} \texttt{crypto/} raccoglie le primitive e gli schemi (\texttt{rsa\_oaep.py}, \texttt{rsa\_pss.py}, \texttt{merkle.py}, \texttt{shamir.py}, \texttt{keys.py}, \texttt{password.py}); \texttt{bb\_chain.py} gestisce la catena di hash del registro; \texttt{admin\_auth.py} il token per le operazioni amministrative.
+  \item \textbf{Moduli di supporto:} \texttt{crypto/} raccoglie le primitive e gli schemi (\texttt{rsa\_oaep.py}, \texttt{rsa\_pss.py}, \texttt{merkle.py}, \texttt{shamir.py}, \texttt{keys.py}, \texttt{password.py}); \texttt{bb\_chain.py} gestisce la catena di hash del registro; \texttt{pki.py} la Certification Authority; \texttt{tls\_context.py} i contesti TLS di client e server; \texttt{admin\_auth.py} l'autenticazione del pannello tramite certificato client.
 \end{itemize}
 
 Questa suddivisione funzionale assicura una rigorosa separazione dei compiti, impedendo a ogni singolo attore di compromettere la riservatezza o la correttezza della consultazione.
@@ -1347,7 +1374,7 @@ L'architettura di sicurezza integra algoritmi consolidati per soddisfare i requi
   \item \textbf{Protezione della Chiave di Decifratura:} la chiave privata RSA dell'AE è cifrata con AES-256-GCM sotto una chiave casuale, divisa in tre quote con lo schema di Shamir su $\mathrm{GF}(2^{521}-1)$ (soglia 2); gli impegni SHA-256 sulle quote sono pubblicati nel blocco iniziale.
   \item \textbf{Credenziali e Proof of Work:} le password sono salvate con PBKDF2-HMAC-SHA256 (600.000 iterazioni, salt casuale) e verificate a tempo costante; le challenge della PoW sono autenticate con HMAC-SHA256.
   \item \textbf{Firme Digitali e Token:} Per validare l'autenticità dei pacchetti e neutralizzare tentativi di alterazione, il SA emette token firmati digitalmente in formato RSA-PSS. Tale schema, basato su \textit{Probabilistic Signature Scheme}, offre robuste garanzie contro la manipolazione dei dati. La medesima tecnologia è impiegata dall'AE per sigillare le ricevute elettroniche e blindare l'integrità del registro pubblico.
-  \item \textbf{Canale di Comunicazione (TLS e Certificate Pinning):} In questa fase di prototipazione, finalizzata alla convalida delle logiche di sicurezza, si è optato per l'integrazione nativa del protocollo HTTPS attraverso l'impiego di certificati X.509 autogenerati (self-signed), prescindendo temporaneamente dall'adozione di una Certification Authority (CA) commerciale o istituzionale centralizzata. Sebbene l'infrastruttura sia testata in ambiente localhost, l'iniezione dei contesti SSL obbliga i client e i server a comunicare esclusivamente su canali cifrati point-to-point. Questa scelta progettuale non solo protegge l'intercettazione passiva del traffico, ma ha consentito di implementare e validare efficacemente difese applicative avanzate contro gli attacchi Man-in-the-Middle (MitM), delegando al client la verifica rigorosa dell'identità dei server tramite meccanismi di \textit{Certificate Pinning}.
+  \item \textbf{Canale di Comunicazione e PKI:} le comunicazioni avvengono esclusivamente su HTTPS con certificati X.509 emessi dalla Certification Authority dell'elezione (\texttt{pki.py}), su richiesta di ciascun ente tramite CSR. Il client accetta solo la CA dell'elezione (non quelle pubbliche del sistema), controlla la revoca tramite la CRL firmata dalla CA e confronta l'impronta SPKI della chiave del server con il pin distribuito. Il pannello si autentica presso i server con un certificato client (TLS mutuo). La configurazione TLS è centralizzata in \texttt{tls\_context.py}: il materiale è prodotto con la libreria \texttt{cryptography}, le connessioni sono gestite dal modulo \texttt{ssl} della libreria standard, a cui \texttt{requests} viene collegato tramite un adattatore che fornisce il contesto TLS configurato.
 \end{itemize}
 
 % ----
@@ -1402,7 +1429,7 @@ I diagrammi di sequenza che seguono illustrano il flusso del protocollo di WP2; 
 \end{figure}
 
 \begin{itemize}
-  \item \textbf{Scrutinio:} Durante l'apertura delle urne, l'AE non detiene la chiave privata di decifratura e non può ricostruirla. L'endpoint \texttt{/close}, che richiede il token amministrativo, riceve le quote di almeno due scrutatori, le verifica contro gli impegni del blocco iniziale e ricostruisce la chiave; con meno quote valide la chiusura è rifiutata e le urne restano aperte. Solo allora l'AE chiude le urne, pubblica riconciliazione e radice finale dell'albero di Merkle ed esegue la decifratura di tutti i record, pubblicando per ciascuno voto, seed e $\mathtt{EM}$ e i totali per candidato in un blocco di tipo ``scrutinio''.
+  \item \textbf{Scrutinio:} Durante l'apertura delle urne, l'AE non detiene la chiave privata di decifratura e non può ricostruirla. L'endpoint \texttt{/close}, che richiede il certificato client del pannello, riceve le quote di almeno due scrutatori, le verifica contro gli impegni del blocco iniziale e ricostruisce la chiave; con meno quote valide la chiusura è rifiutata e le urne restano aperte. Solo allora l'AE chiude le urne, pubblica riconciliazione e radice finale dell'albero di Merkle ed esegue la decifratura di tutti i record, pubblicando per ciascuno voto, seed e $\mathtt{EM}$ e i totali per candidato in un blocco di tipo ``scrutinio''.
 \end{itemize}
 
 \begin{figure}[H]
@@ -1426,7 +1453,7 @@ I diagrammi di sequenza che seguono illustrano il flusso del protocollo di WP2; 
 % ----
 \subsection{Strategia di Testing e Analisi dei Casi d'Uso}
 
-La solidità è stata validata attraverso una suite di 18 test automatici, eseguibili dal pannello di controllo (\texttt{main.py}), mirati sia ai casi di operatività normale sia alle minacce descritte nel WP3. Ogni test crea la propria elezione con lo stesso schema dell'inizializzazione reale (modulo condiviso \texttt{tests/common.py}), mette in scena l'attacco contro il sistema stampando le fasi in forma leggibile e salva un report JSON datato in \texttt{tests/output/}. I test sono di due tipi: \emph{offline}, che esercitano direttamente le funzioni crittografiche e del client, e \emph{con server}, che avviano SA e AE come processi separati e li attaccano attraverso le loro interfacce HTTPS.
+La solidità è stata validata attraverso una suite di 19 test automatici, eseguibili dal pannello di controllo (\texttt{main.py}), mirati sia ai casi di operatività normale sia alle minacce descritte nel WP3. Ogni test crea la propria elezione con lo stesso schema dell'inizializzazione reale (modulo condiviso \texttt{tests/common.py}), mette in scena l'attacco contro il sistema stampando le fasi in forma leggibile e salva un report JSON datato in \texttt{tests/output/}. I test sono di due tipi: \emph{offline}, che esercitano direttamente le funzioni crittografiche e del client, e \emph{con server}, che avviano SA e AE come processi separati e li attaccano attraverso le loro interfacce HTTPS.
 
 \begin{itemize}
   \item \textbf{Scenario Nominale (Happy Path):} lo script \texttt{test\_flow.py} percorre l'intero ciclo di vita dell'elezione con i server reali: autenticazione e verifica dei pin, voto con Proof of Work, ricevuta, riconciliazione, consegna delle quote e scrutinio, verifica della ricevuta con il client reale e verifica universale con \texttt{observer.py}.
@@ -1441,7 +1468,7 @@ La solidità è stata validata attraverso una suite di 18 test automatici, esegu
   \item \textbf{Manomissione del Registro (\texttt{ledger\_tampering\_test.py}):} un amministratore corrotto modifica una scheda già registrata; la ricevuta rilasciata al momento del voto rileva la riscrittura tramite la consistenza del prefisso del registro, e un nodo interno presentato come foglia (seconda preimmagine) viene rifiutato grazie alla separazione di dominio.
   \item \textbf{Escrow a Soglia della Chiave Privata (\texttt{key\_escrow\_test.py}):} con accesso al file cifrato e all'intero registro, nessun dato pubblico e nessuna singola quota sbloccano la chiave; qualunque coppia di scrutatori la ricostruisce; quote manomesse, file alterato e riuso per un'altra elezione sono bloccati dall'autenticazione AES-GCM.
   \item \textbf{Proof of Work su Challenge (\texttt{pow\_challenge\_test.py}):} vengono rifiutate PoW precalcolate senza challenge, riuso di una challenge, challenge con difficoltà alterata, di un altro IP o scadute; un flood di PoW valide alza la difficoltà solo per l'IP attaccante.
-  \item \textbf{Pinning TLS contro un AE Impostore (\texttt{tls\_pinning\_test.py}):} un server falso sulla porta dell'AE presenta un certificato con lo stesso nome e gli stessi SAN di quello legittimo; il client rifiuta la connessione TLS e all'impostore non arriva alcuna richiesta.
+  \item \textbf{PKI lato Client (\texttt{tls\_pinning\_test.py}):} su una PKI temporanea generata con lo stesso codice dell'elezione, una sequenza di impostori dell'AE: un certificato self-signed con lo stesso nome e uno emesso da un'altra CA sono rifiutati dalla catena; un certificato emesso dalla CA vera (CA compromessa) è rifiutato dal pin SPKI; un impostore con la chiave rubata dell'AE viene accettato finché il certificato è valido e rifiutato dopo revoca e riemissione, mentre l'AE con il nuovo certificato è accettato.
 \end{itemize}
 
 \textbf{Test con server.}
@@ -1456,6 +1483,7 @@ La solidità è stata validata attraverso una suite di 18 test automatici, esegu
   \item \textbf{Verifica Individuale delle Ricevute (\texttt{receipt\_verification\_test.py}):} sei elettori votano con un riavvio dell'AE a metà votazione; la chiusura con una sola quota è rifiutata; tutte le ricevute vengono verificate; la rimozione di un blocco è rilevata dalla catena di hash; un'AE che riscrive una scheda e ri-firma la radice è smascherata dalle ricevute di chi ha votato da quel momento in poi.
   \item \textbf{Difese del SA (\texttt{test\_rate\_limiting.py}):} rate limit per IP, inefficacia degli IP falsificati tramite \texttt{X-Forwarded-For}, blocco per account, tempi di login indistinguibili per username esistenti e inesistenti, endpoint amministrativi protetti e registrazioni chiuse dopo la riconciliazione.
   \item \textbf{Registrazione degli Elettori (\texttt{registration\_test.py}):} domini non istituzionali o che imitano quello dell'ateneo e campi mancanti sono rifiutati; i duplicati (anche con email in maiuscolo) sono rifiutati; la password è salvata solo come hash; l'elettore registrato vota.
+  \item \textbf{TLS Mutuo per l'Amministrazione (\texttt{admin\_mtls\_test.py}):} contro i server reali, l'accesso amministrativo senza certificato client riceve 403 e le urne restano aperte; certificati emessi da un'altra CA, revocati o appartenenti a un server sono rifiutati già nell'handshake; con il certificato del pannello riconciliazione e chiusura riescono.
   \item \textbf{Finestra Temporale (\texttt{election\_window\_test.py}):} il voto è rifiutato prima dell'apertura e dopo la chiusura (insieme alle nuove registrazioni) ed è accettato dentro la finestra.
 \end{itemize}
 
@@ -1481,7 +1509,7 @@ La tabella~\ref{tab:esiti_test} sintetizza l'esito delle simulazioni di attacco,
 \url{ledger_tampering_test.py} & Riscrittura del registro, seconda preimmagine & Ricevuta al voto, separazione di dominio & PASS \\
 \url{key_escrow_test.py} & Decifratura anticipata & Escrow Shamir 2-su-3 & PASS \\
 \url{pow_challenge_test.py} & Precalcolo e amplificazione della PoW & Challenge del server, difficoltà per IP & PASS \\
-\url{tls_pinning_test.py} & AE impostore & Pinning del certificato TLS & PASS \\
+\url{tls_pinning_test.py} & AE impostori, CA compromessa, chiave rubata & Catena, pin SPKI, revoca (CRL) & PASS \\
 \url{dos_attack_test.py} & Spam volumetrico & Scarto preventivo PoW & PASS \\
 \url{pow_adaptive_test.py} & Flood con PoW risolte & Difficoltà adattiva & PASS \\
 \url{dos_resilience_test.py} & Sovraccarico misto & Liveness degli onesti & PASS \\
@@ -1493,6 +1521,7 @@ La tabella~\ref{tab:esiti_test} sintetizza l'esito delle simulazioni di attacco,
 \url{test_rate_limiting.py} & Brute force, IP falsi, enumerazione & Rate limit, blocco account, tempi costanti & PASS \\
 \url{registration_test.py} & Registrazioni non ammesse, duplicati & Controlli del SA, hash delle password & PASS \\
 \url{election_window_test.py} & Voto fuori dalla finestra & Parametri temporali firmati & PASS \\
+\url{admin_mtls_test.py} & Operazioni amministrative non autorizzate & TLS mutuo con certificato client & PASS \\
 \url{test_flow.py} & Flusso nominale & Intero protocollo & PASS \\
 \bottomrule
 \end{tabularx}
@@ -1508,7 +1537,8 @@ I report generati durante le esecuzioni forniscono parametri misurabili sull'eff
 \begin{itemize}
   \item \textbf{Sicurezza Semantica (Attacco Dizionario):} cifrature ripetute dei candidati del dominio (``Lista A'', ``Lista B'', ``Lista C'') hanno prodotto ciphertext sempre distinti; il confronto con il ciphertext bersaglio non ha mai avuto successo.
   \item \textbf{Prevenzione MitM (Sostituzione Chiavi):} le chiavi contraffatte (impronte \texttt{f3a8c5ae...} e \texttt{80503364...}) sono state inserite nel registro con il blocco iniziale ri-firmato dall'attaccante. La firma risultava quindi valida e il client si è arrestato proprio sul confronto con le impronte attese (\texttt{ff8fbdcc...} e \texttt{cec7204f...}), con il messaggio ``Impronta della chiave pubblica di cifratura AE non corrispondente''.
-  \item \textbf{Pinning TLS:} il certificato dell'impostore aveva nome e SAN identici a quello legittimo (\texttt{CN=UniSafe-Vote AE}, SAN \texttt{localhost}, \texttt{127.0.0.1}) ma impronta diversa; il server falso rispondeva regolarmente a chi si fidava del suo certificato, mentre il client ha interrotto l'handshake (\texttt{certificate verify failed}) e all'impostore sono arrivate 0 richieste.
+  \item \textbf{PKI lato Client:} l'AE legittimo è stato accettato; l'impostore con certificato self-signed (stesso \texttt{CN=UniSafe-Vote AE} e stessi SAN) è stato rifiutato perché non emesso dalla CA, quello con certificato di un'altra CA perché emesso da una CA non riconosciuta. L'impostore con certificato emesso dalla CA vera è stato accettato da un client privo di pin e rifiutato dal client reale per pin SPKI non corrispondente, senza ricevere alcuna richiesta. L'impostore con la chiave rubata dell'AE è stato accettato finché il certificato era valido; dopo la revoca e la riemissione è stato rifiutato per certificato revocato, anche con il solo controllo della CRL, e l'AE con il nuovo certificato è stato accettato.
+  \item \textbf{TLS Mutuo:} senza certificato client \texttt{/close} e \texttt{/reconcile} hanno risposto 403 e le urne sono rimaste aperte; i certificati emessi da un'altra CA, revocati o appartenenti al server SA sono stati rifiutati nell'handshake (rispettivamente per CA sconosciuta, revoca e uso del certificato non ammesso); con il certificato del pannello riconciliazione e chiusura sono riuscite.
   \item \textbf{Immutabilità del Registro (Merkle Tree):} modificando la foglia di indice 3 in un albero di 8 foglie la radice è passata da \texttt{4638a4ff...} a \texttt{407fe5ca...}. La ricevuta rilasciata al momento del voto (4 foglie, radice \texttt{88a0a679...}) resta valida contro la radice di quel momento, mentre il prefisso del registro manomesso non la riproduce più: la riscrittura è rilevata. Il dato inventato ottenuto concatenando i figli di un nodo interno non viene accettato come foglia.
   \item \textbf{Escrow a Soglia:} con una sola quota la ricostruzione fallisce sempre (\texttt{InvalidTag}); le coppie 1+2, 1+3, 2+3 e la terna completa ricostruiscono la chiave originale (impronte del modulo coincidenti). Una quota alterata non corrisponde ad alcun impegno pubblicato e, se usata, fa fallire AES-GCM; lo stesso accade per il file cifrato con un bit alterato e per il riuso con un altro identificativo di elezione. A livello di sistema, l'AE ha rifiutato la chiusura con una sola quota lasciando le urne aperte.
   \item \textbf{Decifratura Verificabile:} la scheda con seed cifrato incoerente è stata conteggiata per il suo contenuto reale (``Lista A''), con il seed pubblicato pari a quello effettivamente usato, e l'Observer ha completato la verifica. Un'AE che dichiarava nulla quella scheda e ri-firmava lo scrutinio è stata smascherata: l'Observer ha segnalato ``l'AE dichiara `Scheda nulla' ma la scheda contiene `Lista A'\,''.
@@ -1519,7 +1549,7 @@ I report generati durante le esecuzioni forniscono parametri misurabili sull'eff
 \begin{itemize}
   \item \textbf{Double Voting:} il primo voto con il token è stato accettato (HTTP 200), il secondo rifiutato (HTTP 409). Con 8 schede diverse inviate nello stesso istante con lo stesso token, 1 è stata accettata e 7 rifiutate (409); 6 autenticazioni simultanee dello stesso elettore hanno restituito un unico nonce e il registro conteneva un solo voto.
   \item \textbf{Token Hoarding, Scadenza e Rinnovo:} autenticazioni ripetute hanno restituito lo stesso token (stesso nonce); un token con firma valida ma scaduto è stato rifiutato (HTTP 401). Un elettore con token scaduto da 30 minuti senza aver votato ha ricevuto un token rinnovato con lo stesso nonce, ha votato (HTTP 200) e il secondo voto è stato rifiutato (HTTP 409).
-  \item \textbf{Difese del SA:} il rate limit ha restituito HTTP 429 all'undicesima richiesta, anche dichiarando un indirizzo diverso a ogni richiesta tramite \texttt{X-Forwarded-For}. Dopo 5 password errate l'account è stato bloccato (HTTP 429 anche con la password corretta). Il tempo mediano di risposta a un login errato è stato di 375,5~ms per username esistenti e 371,8~ms per inesistenti (rapporto 0,99). Senza token amministrativo \texttt{/reconcile} e \texttt{/shutdown} hanno risposto 403, e dopo la riconciliazione \texttt{/register} ha risposto 403.
+  \item \textbf{Difese del SA:} il rate limit ha restituito HTTP 429 all'undicesima richiesta, anche dichiarando un indirizzo diverso a ogni richiesta tramite \texttt{X-Forwarded-For}. Dopo 5 password errate l'account è stato bloccato (HTTP 429 anche con la password corretta). Il tempo mediano di risposta a un login errato è stato di 375,5~ms per username esistenti e 371,8~ms per inesistenti (rapporto 0,99). Senza il certificato client del pannello \texttt{/reconcile} e \texttt{/shutdown} hanno risposto 403, e dopo la riconciliazione \texttt{/register} ha risposto 403.
   \item \textbf{Registrazione e Finestra Temporale:} indirizzi \texttt{@gmail.com}, \texttt{@fakeunisa.it} e richieste senza username sono stati rifiutati (400), i duplicati di username ed email (anche in maiuscolo) rifiutati (409); la password risulta salvata come \texttt{pbkdf2\_sha256} a 600.000 iterazioni. Con le urne non ancora aperte e con le urne chiuse il voto è stato rifiutato (403) pur con token valido; con le urne aperte è stato accettato.
 \end{itemize}
 
