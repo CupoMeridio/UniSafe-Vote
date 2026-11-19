@@ -88,6 +88,7 @@ import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
 from common import create_test_election, close_payload, clean_election_state
+from common import get_pow_challenge, solve_pow as solve_pow_challenge, pow_fields
 DATA_DIR           = os.path.join(PROJECT_ROOT, "data")
 KEYS_DIR           = os.path.join(DATA_DIR, "keys")
 RECEIPTS_DIR       = os.path.join(DATA_DIR, "receipts")
@@ -132,21 +133,6 @@ def compute_fingerprint(pem_str: str) -> str:
         format=serialization.PublicFormat.SubjectPublicKeyInfo
     )
     return "sha256:" + hashlib.sha256(der).hexdigest()
-
-
-def solve_pow(enc_vote_bytes: bytes, difficulty: int) -> str:
-    """Trova un nonce tale che SHA-256(enc_vote || nonce) abbia i primi
-    'difficulty' bit a zero. Restituisce il nonce come stringa hex."""
-    required_bytes = difficulty // 8
-    required_bits  = difficulty % 8
-    mask = (0xFF << (8 - required_bits)) & 0xFF if required_bits else 0
-    for nonce_int in range(2 ** 64):
-        nb = struct.pack(">Q", nonce_int)
-        h  = hashlib.sha256(enc_vote_bytes + nb).digest()
-        if all(h[i] == 0 for i in range(required_bytes)):
-            if required_bits == 0 or (h[required_bytes] & mask) == 0:
-                return nb.hex()
-    raise RuntimeError("Nonce non trovato")
 
 
 def get_pow_difficulty() -> int:
@@ -305,8 +291,8 @@ def vote_user(user: dict, token: str, token_sig: str,
         t0           = time.perf_counter()
 
         for attempt in range(1, MAX_POW_RETRIES + 1):
-            difficulty = get_pow_difficulty()
-            pow_nonce  = solve_pow(enc_vote, difficulty)
+            challenge, difficulty = get_pow_challenge(AE_URL, ae_verify())
+            pow_nonce  = solve_pow_challenge(challenge, enc_vote_hex, difficulty)
 
             r = requests.post(
                 f"{AE_URL}/vote",
@@ -315,6 +301,7 @@ def vote_user(user: dict, token: str, token_sig: str,
                     "enc_seed":        enc_seed.hex(),
                     "token":           token,
                     "token_signature": token_sig,
+                    "pow_challenge":   challenge,
                     "pow_nonce":       pow_nonce,
                 },
                 timeout=60,
@@ -440,14 +427,15 @@ class ValidFlood:
     def _worker(self) -> None:
         while self.running:
             try:
-                difficulty   = get_pow_difficulty()
+                challenge, difficulty = get_pow_challenge(AE_URL, ae_verify())
                 enc_vote_hex = os.urandom(32).hex()
-                pow_nonce    = solve_pow(bytes.fromhex(enc_vote_hex), difficulty)
+                pow_nonce    = solve_pow_challenge(challenge, enc_vote_hex, difficulty)
                 payload = {
                     "enc_vote":        enc_vote_hex,
                     "enc_seed":        os.urandom(256).hex(),
                     "token":           '{"nonce":"dead","expires_at":"2100-01-01T00:00:00+00:00"}',
                     "token_signature": os.urandom(256).hex(),  # firma falsa → rifiutato a step 2
+                    "pow_challenge":   challenge,
                     "pow_nonce":       pow_nonce,
                 }
                 r = requests.post(f"{AE_URL}/vote", json=payload, timeout=10, verify=ae_verify())

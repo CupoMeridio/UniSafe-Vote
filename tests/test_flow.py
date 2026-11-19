@@ -31,7 +31,7 @@ sys.path.insert(0, TESTS_DIR)
 sys.path.insert(0, os.path.join(TESTS_DIR, "security"))
 
 from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
-from common import (create_test_election, close_payload, clean_election_state,
+from common import (create_test_election, close_payload, clean_election_state, pow_fields,
                     compute_public_key_fingerprint, DATA_DIR, BULLETIN_BOARD_PATH)
 from test_reporter import save_report
 from crypto.keys import deserialize_public_key
@@ -40,20 +40,6 @@ from crypto.rsa_oaep import encrypt
 VOTER = {"id": "v001", "email": "v.postiglione7@studenti.unisa.it",
          "username": "vitto.posti", "password": "password123"}
 RECEIPTS_DIR = os.path.join(DATA_DIR, "receipts")
-
-
-def solve_pow(enc_vote_hex: str, difficulty: int = 4) -> str:
-    """Trova un nonce tale che SHA-256(enc_vote || nonce) inizi con `difficulty` bit a zero."""
-    import hashlib
-    enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-    nonce = 0
-    while True:
-        nonce_bytes = nonce.to_bytes(8, "big")
-        digest = hashlib.sha256(enc_vote_bytes + nonce_bytes).digest()
-        value = int.from_bytes(digest, "big")
-        if value >> (256 - difficulty) == 0:
-            return nonce_bytes.hex()
-        nonce += 1
 
 
 def wait_server(url: str, verify) -> bool:
@@ -107,10 +93,9 @@ def main():
         seed = os.urandom(32)
         enc_vote = encrypt(ae_encrypt_public, (0).to_bytes(1, "big"), seed=seed).hex()
         enc_seed = encrypt(ae_encrypt_public, seed).hex()
-        difficulty = int(requests.get(f"{AE_URL}/status", timeout=5, verify=ae_verify()).json()["pow_difficulty"])
         r = requests.post(f"{AE_URL}/vote", json={
             "enc_vote": enc_vote, "enc_seed": enc_seed, "token": token,
-            "token_signature": token_signature, "pow_nonce": solve_pow(enc_vote, difficulty),
+            "token_signature": token_signature, **pow_fields(enc_vote),
         }, timeout=10, verify=ae_verify())
         r.raise_for_status()
         receipt = r.json()

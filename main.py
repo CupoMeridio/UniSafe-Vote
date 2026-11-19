@@ -916,6 +916,22 @@ il client reale e verifica universale con l'Observer.
 Il test avvia e termina SA e AE automaticamente.
             """,
         },
+        "15": {
+            "name": "PoW con Challenge del Server e Difficoltà per IP",
+            "file": "tests/security/pow_challenge_test.py",
+            "description": """
+La PoW è calcolata su SHA-256(challenge || enc_vote || nonce), dove la
+challenge è emessa dall'AE, autenticata con HMAC, legata all'IP, valida
+2 minuti e utilizzabile una sola volta; la difficoltà adattiva è per IP.
+
+Il test verifica che vengano rifiutate: PoW precalcolate senza challenge,
+riuso di una challenge, challenge con difficoltà alterata, challenge di un
+altro IP o scadute. Verifica inoltre che un flood di PoW valide alzi la
+difficoltà solo per l'IP attaccante e non per gli elettori onesti.
+
+Non richiede server avviati — è un test offline sulle funzioni dell'AE.
+            """,
+        },
     }
 
     while True:
@@ -935,6 +951,7 @@ Il test avvia e termina SA e AE automaticamente.
         print(menu_option("2", TESTS["2"]["name"], available=True))
         print(menu_option("3", TESTS["3"]["name"], available=True))
         print(menu_option("4", TESTS["4"]["name"], available=True))
+        print(menu_option("15", TESTS["15"]["name"], available=True))
 
         print(f"\n{section_title('TEST DI ATTACCO (server avviati automaticamente)')}")
         print(menu_option("5", TESTS["5"]["name"], available=True))
@@ -952,7 +969,7 @@ Il test avvia e termina SA e AE automaticamente.
         print(menu_option("0", "Torna al menu principale", available=True))
         print("="*70)
 
-        choice = input("\nSeleziona un test (0-14): ").strip()
+        choice = input("\nSeleziona un test (0-15): ").strip()
 
         if choice == "0":
             break

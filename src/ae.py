@@ -21,6 +21,7 @@ a chiunque di verificare l'integrità delle operazioni.
 import os
 import json
 import hashlib
+import hmac
 import time
 import threading
 from collections import deque
@@ -64,39 +65,90 @@ ae_state_path: str = "data/ae_state.json"  # Percorso dello stato privato AE
 opening_time: Optional[datetime] = None  # Istante di apertura delle urne (da init)
 closing_time: Optional[datetime] = None  # Istante di chiusura delle urne (da init)
 
-# --- Proof of Work adattiva globale (mitigazione DoS) ---
+# --- Proof of Work adattiva per IP, legata a una challenge del server ---
 POW_MIN_DIFFICULTY: int = 4   # Difficoltà minima (operatività standard, ~0.1s)
 POW_MAX_DIFFICULTY: int = 24  # Tetto massimo per evitare di bloccare elettori onesti
 POW_WINDOW_SECONDS: float = 10.0  # Finestra di osservazione del traffico
 POW_RATE_THRESHOLD: int = 5  # Richieste/finestra oltre cui si considera traffico anomalo
-request_timestamps: Deque[float] = deque()  # Timestamp delle richieste recenti
+POW_CHALLENGE_TTL_SECONDS: int = 120  # Validità di una challenge emessa dal server
+POW_MAX_TRACKED_IPS: int = 10000  # Oltre questa soglia si eliminano gli IP inattivi
+
+# Timestamp delle PoW valide recenti, separati per IP. Con una difficoltà
+# GLOBALE un attaccante che risolve PoW facili a raffica alzerebbe il costo per
+# tutti gli elettori onesti (DoS per amplificazione): per IP, il costo cresce
+# solo per chi genera il traffico anomalo.
+request_timestamps: Dict[str, Deque[float]] = {}
+
+# Chiave segreta con cui l'AE autentica le challenge (HMAC): le challenge sono
+# verificabili senza memorizzarle, ma non falsificabili dal client. Una nuova
+# chiave a ogni avvio invalida le challenge emesse prima del riavvio.
+POW_SECRET: bytes = os.urandom(32)
+# Challenge già usate, con la loro scadenza: ogni challenge vale per una sola PoW.
+used_challenges: Dict[bytes, float] = {}
 
 
-def current_pow_difficulty() -> int:
+def current_pow_difficulty(ip: str) -> int:
     """
-    Calcola la difficoltà di Proof of Work corrente in base al carico globale.
+    Calcola la difficoltà di Proof of Work corrente per un IP.
 
-    La strategia è adattiva: in condizioni normali la difficoltà è minima
-    (POW_MIN_DIFFICULTY); quando il numero di richieste nella finestra di
-    osservazione supera la soglia, la difficoltà cresce di 1 bit per ogni
-    blocco di richieste oltre soglia (crescita esponenziale del costo per
-    l'attaccante), fino a POW_MAX_DIFFICULTY.
+    In condizioni normali la difficoltà è minima (POW_MIN_DIFFICULTY); quando
+    le PoW valide inviate da quell'IP nella finestra di osservazione superano
+    la soglia, la difficoltà cresce di 1 bit per ogni blocco di richieste oltre
+    soglia (crescita esponenziale del costo per l'attaccante), fino a
+    POW_MAX_DIFFICULTY.
 
     Returns:
         int: Numero di bit a zero richiesti dalla PoW.
     """
     now = time.monotonic()
     with pow_lock:
+        timestamps = request_timestamps.get(ip)
+        if not timestamps:
+            return POW_MIN_DIFFICULTY
         # Rimuovi i timestamp più vecchi della finestra
-        while request_timestamps and now - request_timestamps[0] > POW_WINDOW_SECONDS:
-            request_timestamps.popleft()
-
-        recent = len(request_timestamps)
+        while timestamps and now - timestamps[0] > POW_WINDOW_SECONDS:
+            timestamps.popleft()
+        recent = len(timestamps)
     if recent <= POW_RATE_THRESHOLD:
         return POW_MIN_DIFFICULTY
 
     extra = (recent - POW_RATE_THRESHOLD) // POW_RATE_THRESHOLD
     return min(POW_MIN_DIFFICULTY + extra, POW_MAX_DIFFICULTY)
+
+
+def record_valid_pow(ip: str) -> None:
+    """Registra una PoW valida dell'IP per l'adattamento della difficoltà."""
+    now = time.monotonic()
+    with pow_lock:
+        request_timestamps.setdefault(ip, deque()).append(now)
+        if len(request_timestamps) > POW_MAX_TRACKED_IPS:
+            for old_ip in [k for k, ts in request_timestamps.items()
+                           if not ts or now - ts[-1] > POW_WINDOW_SECONDS]:
+                del request_timestamps[old_ip]
+
+
+def _ip_tag(ip: str) -> bytes:
+    return hashlib.sha256(ip.encode("utf-8")).digest()[:8]
+
+
+def issue_pow_challenge(ip: str) -> Dict:
+    """
+    Emette una challenge per la Proof of Work.
+
+    Formato (byte): casuale(16) || scadenza(8, epoch s) || difficoltà(1)
+                    || hash dell'IP(8) || HMAC-SHA256 dei campi precedenti(16)
+
+    La PoW va calcolata su SHA-256(challenge || enc_vote || nonce). Legarla a una
+    challenge del server con scadenza impedisce all'attaccante di PRECALCOLARE
+    offline grandi quantità di PoW ad alta difficoltà da inviare tutte insieme;
+    il legame con l'IP impedisce di distribuire una challenge a una botnet.
+    """
+    difficulty = current_pow_difficulty(ip)
+    expires = int(time.time()) + POW_CHALLENGE_TTL_SECONDS
+    body = os.urandom(16) + expires.to_bytes(8, "big") + bytes([difficulty]) + _ip_tag(ip)
+    tag = hmac.new(POW_SECRET, body, hashlib.sha256).digest()[:16]
+    return {"challenge": (body + tag).hex(), "difficulty": difficulty,
+            "expires_in": POW_CHALLENGE_TTL_SECONDS}
 
 
 def load_ae_state() -> None:
@@ -223,44 +275,66 @@ def append_to_bulletin_board(block_type: Literal["init", "vote", "merkle_root", 
     return new_block
 
 
-def verify_pow(enc_vote_hex: str, pow_nonce_hex: str, difficulty: int = POW_MIN_DIFFICULTY) -> bool:
+def _leading_zero_bits_ok(digest: bytes, difficulty: int) -> bool:
+    """True se i primi `difficulty` bit di digest sono a zero."""
+    return int.from_bytes(digest, "big") >> (len(digest) * 8 - difficulty) == 0 if difficulty else True
+
+
+def verify_pow(challenge_hex: str, enc_vote_hex: str, pow_nonce_hex: str, ip: str) -> bool:
     """
-    Verifica la Proof of Work (PoW) inviata dal client.
+    Verifica la Proof of Work inviata dal client.
 
-    La PoW serve a prevenire spam e voti multipli automatizzati.
-    Il client deve trovare un nonce tale che SHA-256(enc_vote || nonce)
-    inizi con un certo numero di bit a zero (difficulty).
+    Controlli, in ordine dal più economico:
+    1. la challenge è autentica (HMAC dell'AE), non scaduta ed emessa per
+       questo IP;
+    2. SHA-256(challenge || enc_vote || nonce) ha almeno D bit iniziali a zero,
+       con D = max(difficoltà scritta nella challenge, difficoltà attuale
+       dell'IP): una challenge ottenuta a bassa difficoltà prima di un flood
+       non permette di continuare a inviare PoW facili;
+    3. la challenge non è già stata usata (viene marcata come usata solo se
+       la PoW è valida).
 
-    Args:
-        enc_vote_hex (str): Voto cifrato in esadecimale
-        pow_nonce_hex (str): Nonce della PoW in esadecimale
-        difficulty (int, optional): Numero di bit a zero richiesti. Default 4.
-
-    Returns:
-        bool: True se la PoW è valida, False altrimenti
+    La PoW serve a prevenire spam e flood automatizzati: ogni scheda costa
+    all'inviante un lavoro computazionale proporzionale a 2^D.
     """
-    enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-    pow_nonce_bytes = bytes.fromhex(pow_nonce_hex)
-    # Concateniamo voto e nonce
-    combined = enc_vote_bytes + pow_nonce_bytes
-    hash_result = hashlib.sha256(combined).digest()
+    try:
+        challenge = bytes.fromhex(challenge_hex)
+        enc_vote_bytes = bytes.fromhex(enc_vote_hex)
+        pow_nonce_bytes = bytes.fromhex(pow_nonce_hex)
+    except (TypeError, ValueError):
+        return False
+    if len(challenge) != 16 + 8 + 1 + 8 + 16:
+        return False
+    body, tag = challenge[:-16], challenge[-16:]
+    if not hmac.compare_digest(tag, hmac.new(POW_SECRET, body, hashlib.sha256).digest()[:16]):
+        return False
+    expires = int.from_bytes(body[16:24], "big")
+    if time.time() > expires or body[25:33] != _ip_tag(ip):
+        return False
 
-    # Verifica i primi 'difficulty' bit
-    required_zeros = difficulty // 8  # Numero di byte interi a zero
-    required_bits = difficulty % 8  # Bit rimanenti da verificare
+    difficulty = max(body[24], current_pow_difficulty(ip))
+    digest = hashlib.sha256(challenge + enc_vote_bytes + pow_nonce_bytes).digest()
+    if not _leading_zero_bits_ok(digest, difficulty):
+        return False
 
-    # Verifica i byte interi
-    for i in range(required_zeros):
-        if hash_result[i] != 0:
+    with pow_lock:
+        now = time.time()
+        for old in [c for c, exp in used_challenges.items() if exp < now]:
+            del used_challenges[old]
+        if challenge in used_challenges:
             return False
-
-    # Verifica i bit rimanenti (se presenti)
-    if required_bits > 0:
-        mask = (0xFF << (8 - required_bits)) & 0xFF
-        if (hash_result[required_zeros] & mask) != 0:
-            return False
-
+        used_challenges[challenge] = expires
     return True
+
+
+@app.route('/pow_challenge', methods=['GET'])
+def pow_challenge():
+    """
+    Emette una challenge per la Proof of Work del prossimo voto.
+
+    Risposta (200 OK): {"challenge": "...", "difficulty": 4, "expires_in": 120}
+    """
+    return jsonify(issue_pow_challenge(request.remote_addr)), 200
 
 
 @app.route('/vote', methods=['POST'])
@@ -274,6 +348,7 @@ def vote():
         "enc_seed": "def456...",  // Seed cifrato RSA-OAEP (esadecimale)
         "token": "{...}",         // Token di autenticazione firmato dal SA
         "token_signature": "789...", // Firma del token (esadecimale)
+        "pow_challenge": "...",   // Challenge ottenuta da GET /pow_challenge
         "pow_nonce": "0123..."    // Nonce della Proof of Work (esadecimale)
     }
 
@@ -302,6 +377,8 @@ def vote():
         token = req_data.get('token')
         token_signature = req_data.get('token_signature')
         pow_nonce = req_data.get('pow_nonce')
+        pow_challenge_hex = req_data.get('pow_challenge')
+        client_ip = request.remote_addr
 
         # 1. Verifica la Proof of Work alla difficoltà adattiva corrente.
         # Il timestamp viene registrato SOLO se la PoW è valida: le richieste
@@ -310,13 +387,12 @@ def vote():
         # La difficoltà aumenta esclusivamente quando un attaccante risolve
         # davvero la PoW a raffica (botnet), che è l'unico caso in cui il
         # meccanismo adattivo ha senso.
-        if not verify_pow(enc_vote, pow_nonce, current_pow_difficulty()):
+        if not verify_pow(pow_challenge_hex, enc_vote, pow_nonce, client_ip):
             print(f"[AE] {datetime.now().isoformat()} - PoW invalida")
             return jsonify({"error": "Proof of Work invalida"}), 400
 
         # PoW valida: registra la richiesta per l'adattamento della difficoltà
-        with pow_lock:
-            request_timestamps.append(time.monotonic())
+        record_valid_pow(client_ip)
 
         # 2. Verifica la firma del token con la chiave pubblica del SA
         token_bytes = token.encode('utf-8')
@@ -585,7 +661,7 @@ def status():
     return jsonify({
         "votes_received": len(used_tokens),
         "urn_open": urn_open,
-        "pow_difficulty": current_pow_difficulty()
+        "pow_difficulty": current_pow_difficulty(request.remote_addr)
     }), 200
 
 

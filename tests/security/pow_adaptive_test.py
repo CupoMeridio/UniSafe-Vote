@@ -70,6 +70,7 @@ import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 from tls_config import AE_URL, ae_verify, ensure_tls_certs, admin_headers
 from common import create_test_election, close_payload, clean_election_state
+from common import get_pow_challenge, solve_pow as solve_pow_challenge, pow_fields
 
 POW_MIN_DIFFICULTY  = 4
 POW_RATE_THRESHOLD  = 5
@@ -190,29 +191,6 @@ def get_pow_difficulty() -> int:
     return int(get_pow_status()["pow_difficulty"])
 
 
-def solve_pow(enc_vote_hex: str, difficulty: int) -> str:
-    """
-    Risolve la Proof of Work: cerca un nonce a 64-bit tale che
-    SHA-256(enc_vote || nonce) abbia i primi 'difficulty' bit a zero.
-
-    Restituisce il nonce come stringa esadecimale (16 caratteri).
-    """
-    enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-    required_bytes = difficulty // 8
-    required_bits  = difficulty % 8
-    mask = (0xFF << (8 - required_bits)) & 0xFF if required_bits else 0
-
-    for nonce_int in range(2 ** 64):
-        nonce_bytes = struct.pack(">Q", nonce_int)
-        digest = hashlib.sha256(enc_vote_bytes + nonce_bytes).digest()
-
-        ok = all(digest[i] == 0 for i in range(required_bytes))
-        if ok and (required_bits == 0 or (digest[required_bytes] & mask) == 0):
-            return nonce_bytes.hex()
-
-    raise RuntimeError("Nonce non trovato (difficoltà troppo alta?)")
-
-
 def send_invalid_request(_: int) -> dict:
     """
     Invia una richiesta con PoW NON risolta (nonce casuale / spazzatura).
@@ -242,12 +220,12 @@ def send_valid_pow_request(req_id: int) -> dict:
     La richiesta verrà comunque rifiutata (token invalido) ma il contatore
     adattivo DEVE essere incrementato perché la PoW era valida.
     """
-    # Ottieni la difficoltà corrente prima di risolvere
-    difficulty = get_pow_difficulty()
+    # Challenge dell'AE: contiene la difficoltà adattiva corrente per questo IP
+    challenge, difficulty = get_pow_challenge(AE_URL, ae_verify())
 
     enc_vote_hex = os.urandom(32).hex()   # payload fittizio ma coerente
     t_solve_start = time.monotonic()
-    pow_nonce    = solve_pow(enc_vote_hex, difficulty)
+    pow_nonce    = solve_pow_challenge(challenge, enc_vote_hex, difficulty)
     t_solve_end  = time.monotonic()
 
     payload = {
@@ -255,6 +233,7 @@ def send_valid_pow_request(req_id: int) -> dict:
         "enc_seed":        os.urandom(256).hex(),
         "token":           '{"nonce":"deadbeef","expires_at":"2100-01-01T00:00:00+00:00"}',
         "token_signature": os.urandom(256).hex(),   # firma invalida → rifiutato al passo 2
+        "pow_challenge":   challenge,
         "pow_nonce":       pow_nonce,
     }
     try:

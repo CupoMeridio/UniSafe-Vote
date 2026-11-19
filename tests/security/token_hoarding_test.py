@@ -60,6 +60,7 @@ import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
 from common import create_test_election, close_payload, clean_election_state
+from common import get_pow_challenge, solve_pow as solve_pow_challenge, pow_fields
 
 BULLETIN_BOARD_PATH = os.path.join(DATA_DIR, "bulletin_board.json")
 VOTERS_PATH         = os.path.join(DATA_DIR, "voters.json")
@@ -199,46 +200,6 @@ def validate_pins(bulletin_board):
     print("    Pin trusted AE verificati con successo!")
 
 
-def solve_pow(enc_vote_hex: str, difficulty: int = 4) -> str:
-    """
-    Calcola il nonce della Proof of Work per un voto cifrato.
-    Si cerca un nonce tale che SHA-256(enc_vote || nonce) abbia
-    i primi 'difficulty' bit a zero.
-    """
-    enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-    nonce = 0
-    while True:
-        nonce_bytes = nonce.to_bytes(8, byteorder="big")
-        combined = enc_vote_bytes + nonce_bytes
-        hash_result = hashlib.sha256(combined).digest()
-        # Si verifica prima i byte interi a zero, poi i bit rimanenti.
-        required_zeros = difficulty // 8
-        required_bits = difficulty % 8
-        valid = True
-        for i in range(required_zeros):
-            if hash_result[i] != 0:
-                valid = False
-                break
-        if valid and required_bits > 0:
-            mask = (0xFF << (8 - required_bits)) & 0xFF
-            if (hash_result[required_zeros] & mask) != 0:
-                valid = False
-        if valid:
-            return nonce_bytes.hex()
-        nonce += 1
-
-
-def get_pow_difficulty() -> int:
-    """Interroga l'AE per ottenere la difficoltà PoW adattiva corrente."""
-    try:
-        response = requests.get(f"{AE_URL}/status", timeout=2, verify=ae_verify())
-        if response.status_code == 200:
-            return int(response.json().get("pow_difficulty", 4))
-    except Exception:
-        pass
-    return 4
-
-
 def create_vote_payload(token: str, token_signature: str, ae_pubkey) -> dict:
     """
     Costruisce il payload completo per un voto:
@@ -254,15 +215,13 @@ def create_vote_payload(token: str, token_signature: str, ae_pubkey) -> dict:
     enc_seed_bytes = encrypt(ae_pubkey, seed)
     enc_vote_hex = enc_vote_bytes.hex()
     enc_seed_hex = enc_seed_bytes.hex()
-    # Si risolve la PoW alla difficoltà adattiva corrente.
-    difficulty = get_pow_difficulty()
-    pow_nonce = solve_pow(enc_vote_hex, difficulty)
+    # Si risolve la PoW sulla challenge emessa dall'AE.
     return {
         "enc_vote": enc_vote_hex,
         "enc_seed": enc_seed_hex,
         "token": token,
         "token_signature": token_signature,
-        "pow_nonce": pow_nonce
+        **pow_fields(enc_vote_hex),
     }
 
 

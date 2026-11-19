@@ -131,3 +131,39 @@ def trustee_shares(count: int = 2) -> List[Dict]:
 def close_payload(count: int = 2) -> Dict:
     """Corpo JSON per /close dell'AE: le quote degli scrutatori."""
     return {"trustee_shares": trustee_shares(count)}
+
+
+def get_pow_challenge(ae_url: str = "https://localhost:5002", verify=None):
+    """
+    Chiede all'AE una challenge per la Proof of Work.
+
+    Returns:
+        tuple: (challenge esadecimale, difficoltà in bit)
+    """
+    import requests
+    if verify is None:
+        cert = os.path.join(DATA_DIR, "tls", "ae_cert.pem")
+        verify = cert if os.path.exists(cert) else True
+    body = requests.get(f"{ae_url}/pow_challenge", timeout=10, verify=verify).json()
+    return body["challenge"], int(body["difficulty"])
+
+
+def solve_pow(challenge_hex: str, enc_vote_hex: str, difficulty: int) -> str:
+    """
+    Trova un nonce di 8 byte tale che SHA-256(challenge || enc_vote || nonce)
+    abbia i primi `difficulty` bit a zero (stesso calcolo verificato dall'AE).
+    """
+    prefix = bytes.fromhex(challenge_hex) + bytes.fromhex(enc_vote_hex)
+    shift = 256 - difficulty
+    nonce = 0
+    while True:
+        nonce_bytes = nonce.to_bytes(8, "big")
+        if int.from_bytes(hashlib.sha256(prefix + nonce_bytes).digest(), "big") >> shift == 0:
+            return nonce_bytes.hex()
+        nonce += 1
+
+
+def pow_fields(enc_vote_hex: str) -> Dict:
+    """Challenge + nonce pronti da inserire nel payload di /vote."""
+    challenge, difficulty = get_pow_challenge()
+    return {"pow_challenge": challenge, "pow_nonce": solve_pow(challenge, enc_vote_hex, difficulty)}

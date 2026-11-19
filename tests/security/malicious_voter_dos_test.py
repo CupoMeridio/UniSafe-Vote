@@ -43,6 +43,7 @@ import sys as _sys
 _sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 from tls_config import SA_URL, AE_URL, sa_verify, ae_verify, ensure_tls_certs, admin_headers
 from common import create_test_election, close_payload, clean_election_state
+from common import get_pow_challenge, solve_pow as solve_pow_challenge, pow_fields
 
 BULLETIN_BOARD_PATH = os.path.join(DATA_DIR, "bulletin_board.json")
 VOTERS_PATH         = os.path.join(DATA_DIR, "voters.json")
@@ -124,28 +125,6 @@ def teardown():
             os.remove(p)
     clean_election_state()  # rimuove anche le quote in data/keys/trustees/
 
-def solve_pow(enc_vote_hex: str, difficulty: int = 4) -> str:
-    enc_vote_bytes = bytes.fromhex(enc_vote_hex)
-    nonce = 0
-    while True:
-        nonce_bytes = nonce.to_bytes(8, byteorder="big")
-        combined = enc_vote_bytes + nonce_bytes
-        hash_result = hashlib.sha256(combined).digest()
-        required_zeros = difficulty // 8
-        required_bits = difficulty % 8
-        valid = True
-        for i in range(required_zeros):
-            if hash_result[i] != 0:
-                valid = False
-                break
-        if valid and required_bits > 0:
-            mask = (0xFF << (8 - required_bits)) & 0xFF
-            if (hash_result[required_zeros] & mask) != 0:
-                valid = False
-        if valid:
-            return nonce_bytes.hex()
-        nonce += 1
-
 def main():
     print("=" * 80)
     print("  TEST MITIGAZIONE DOS DA ELETTORE MALEVOLO (SEED CORROTTO)")
@@ -181,14 +160,12 @@ def main():
         enc_seed_hex = enc_seed_bytes.hex()
 
         print("[3] L'attaccante risolve la PoW...")
-        pow_nonce = solve_pow(enc_vote_hex)
-
         payload = {
             "enc_vote": enc_vote_hex,
             "enc_seed": enc_seed_hex,
             "token": token,
             "token_signature": signature,
-            "pow_nonce": pow_nonce
+            **pow_fields(enc_vote_hex),
         }
 
         print("[4] L'attaccante invia il voto all'AE...")

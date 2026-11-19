@@ -180,68 +180,57 @@ class Client:
         """Restituisce il parametro verify per requests verso l'AE."""
         return AE_CERT if os.path.exists(AE_CERT) else True
 
-    def get_pow_difficulty(self) -> int:
+    def get_pow_challenge(self):
         """
-        Interroga l'AE per ottenere la difficoltà di Proof of Work corrente.
+        Chiede all'AE una challenge per la Proof of Work.
 
-        La difficoltà è adattiva e globale: l'AE la aumenta automaticamente
-        sotto carico anomalo (mitigazione DoS). Se l'AE non è raggiungibile o
-        non espone il dato, si usa la difficoltà minima di default.
+        La challenge è emessa e autenticata dall'AE, scade dopo pochi minuti e
+        contiene la difficoltà adattiva corrente per questo client: la PoW non
+        può essere precalcolata in anticipo né riutilizzata.
 
         Returns:
-            int: Numero di bit a zero richiesti dalla PoW.
+            tuple: (challenge esadecimale, difficoltà in bit), oppure (None, 0)
+            se l'AE non è raggiungibile.
         """
         try:
-            response = requests.get(f"{AE_URL}/status", timeout=5, verify=self._ae_verify())
+            response = requests.get(f"{AE_URL}/pow_challenge", timeout=5, verify=self._ae_verify())
             if response.status_code == 200:
-                return int(response.json().get("pow_difficulty", 4))
+                body = response.json()
+                return body["challenge"], int(body["difficulty"])
         except requests.exceptions.RequestException:
             pass
-        return 4
+        return None, 0
 
-    def solve_pow(self, enc_vote_hex: str, difficulty: int = 4) -> str:
+    def solve_pow(self, challenge_hex: str, enc_vote_hex: str, difficulty: int) -> str:
         """
         Risolve la Proof of Work (PoW) per poter inviare un voto.
 
         La PoW serve a dimostrare che l'elettore ha investito risorse computazionali,
         prevenendo attacchi di spam automatico.
 
-        L'obiettivo è trovare un nonce tale che SHA-256(enc_vote || nonce)
+        L'obiettivo è trovare un nonce tale che SHA-256(challenge || enc_vote || nonce)
         inizi con 'difficulty' bit a zero.
 
         Args:
+            challenge_hex (str): Challenge emessa dall'AE (esadecimale)
             enc_vote_hex (str): Voto cifrato in esadecimale
-            difficulty (int, optional): Numero di bit a zero richiesti. Default 4.
+            difficulty (int): Numero di bit a zero richiesti
 
         Returns:
             str: Nonce valido in formato esadecimale
         """
-        enc_vote_bytes = bytes.fromhex(enc_vote_hex)
+        prefix = bytes.fromhex(challenge_hex) + bytes.fromhex(enc_vote_hex)
+        shift = 256 - difficulty
         nonce = 0
         print("  Risolvendo Proof of Work...", end="", flush=True)
 
         while True:
             # Converti il nonce in 8 byte big-endian
             nonce_bytes = nonce.to_bytes(8, byteorder='big')
-            combined = enc_vote_bytes + nonce_bytes
-            hash_result = hashlib.sha256(combined).digest()
+            hash_result = hashlib.sha256(prefix + nonce_bytes).digest()
 
-            # Verifica se l'hash soddisfa la difficoltà richiesta
-            valid = True
-            required_zeros = difficulty // 8
-            required_bits = difficulty % 8
-
-            for i in range(required_zeros):
-                if hash_result[i] != 0:
-                    valid = False
-                    break
-
-            if valid and required_bits > 0:
-                mask = (0xFF << (8 - required_bits)) & 0xFF
-                if (hash_result[required_zeros] & mask) != 0:
-                    valid = False
-
-            if valid:
+            # I primi 'difficulty' bit dell'hash devono essere a zero
+            if int.from_bytes(hash_result, 'big') >> shift == 0:
                 print(" OK")
                 return nonce_bytes.hex()
 
@@ -438,11 +427,14 @@ class Client:
         # MAX_POW_RETRIES volte prima di arrendersi.
         MAX_POW_RETRIES = 3
         for attempt in range(1, MAX_POW_RETRIES + 1):
-            difficulty = self.get_pow_difficulty()
+            challenge_hex, difficulty = self.get_pow_challenge()
+            if challenge_hex is None:
+                print("\nImpossibile ottenere la challenge PoW dall'AE. Assicurati che sia in esecuzione.")
+                return
             if attempt > 1:
                 print(f"  [Tentativo {attempt}/{MAX_POW_RETRIES}] "
                       f"Difficoltà aggiornata: {difficulty} bit")
-            pow_nonce_hex = self.solve_pow(enc_vote_hex, difficulty)
+            pow_nonce_hex = self.solve_pow(challenge_hex, enc_vote_hex, difficulty)
 
             try:
                 response = requests.post(
@@ -452,6 +444,7 @@ class Client:
                         "enc_seed": enc_seed_hex,
                         "token": self.token,
                         "token_signature": self.token_signature,
+                        "pow_challenge": challenge_hex,
                         "pow_nonce": pow_nonce_hex
                     },
                     verify=self._ae_verify()
