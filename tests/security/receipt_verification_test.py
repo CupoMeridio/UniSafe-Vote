@@ -236,10 +236,9 @@ def main():
         print(f"  {'[PASS]' if phase4_pass else '[FAIL]'} Fase 4")
 
         # Rimozione di un blocco: l'AE cancella dal registro la riconciliazione
-        # del SA (firmata dal SA, quindi non falsificabile dall'AE). Senza catena
-        # di hash l'Observer si limitava a segnalare il blocco come mancante e
-        # dichiarava comunque l'elezione valida; con prev_hash la sequenza rotta
-        # deve essere rilevata.
+        # del SA (firmata dal SA, quindi non falsificabile dall'AE), sperando che
+        # l'assenza passi inosservata. Ogni blocco contiene l'hash del precedente
+        # (prev_hash), quindi la sequenza rotta deve essere rilevata.
         with open(base.BULLETIN_BOARD_PATH, "r", encoding="utf-8") as f:
             intact_bb = json.load(f)
         removed_bb = [b for b in intact_bb if b["type"] != "reconciliation_sa"]

@@ -1,17 +1,18 @@
 """
 Test della Proof of Work legata a una challenge del server e adattiva per IP.
 
-Prima la PoW era calcolata su SHA-256(enc_vote || nonce), senza alcun dato del
-server, e la difficoltà adattiva era GLOBALE. Ne seguivano due debolezze:
-- precalcolo: un attaccante poteva risolvere offline, con tutto il tempo a
-  disposizione, molte PoW per schede scelte da lui e inviarle tutte insieme;
-- amplificazione: chi risolveva a raffica PoW facili alzava la difficoltà per
-  TUTTI gli elettori onesti.
+La PoW si calcola su SHA-256(challenge || enc_vote || nonce), dove la challenge
+è emessa dall'AE, autenticata con HMAC, legata all'IP, valida 2 minuti e
+utilizzabile una sola volta; la difficoltà adattiva è calcolata per IP.
 
-Ora l'AE emette challenge autenticate (HMAC), con scadenza, legate all'IP e
-valide per una sola PoW, e la difficoltà cresce solo per l'IP che genera il
-traffico anomalo. Il test usa direttamente le funzioni dell'AE con IP simulati
-(in locale tutte le richieste arriverebbero da 127.0.0.1):
+Gli attacchi messi in scena sono due:
+- precalcolo: l'attaccante risolve offline, con tutto il tempo a disposizione,
+  molte PoW per schede scelte da lui, per inviarle poi tutte insieme;
+- amplificazione: l'attaccante risolve a raffica PoW facili sperando di alzare
+  la difficoltà per tutti gli elettori onesti.
+
+Il test usa direttamente le funzioni dell'AE con IP simulati (in locale tutte
+le richieste arriverebbero da 127.0.0.1):
 
   [1] PoW precalcolata senza challenge          → rifiutata
   [2] PoW su challenge valida                    → accettata; riuso → rifiutato
@@ -43,7 +44,7 @@ IP_A, IP_B = "203.0.113.10", "198.51.100.20"
 
 
 def old_style_pow(enc_vote_hex: str, difficulty: int) -> str:
-    """PoW come nella versione precedente: SHA-256(enc_vote || nonce), senza challenge."""
+    """PoW precalcolata dall'attaccante senza challenge del server: SHA-256(enc_vote || nonce)."""
     data = bytes.fromhex(enc_vote_hex)
     nonce = 0
     while True:
@@ -64,7 +65,7 @@ def main():
     results = {}
 
     # [1] ---------------------------------------------------------------------
-    print("\n[1] PoW precalcolata senza challenge (schema precedente)")
+    print("\n[1] PoW precalcolata offline dall'attaccante, senza challenge del server")
     vote = fresh_vote()
     nonce = old_style_pow(vote, ae.POW_MIN_DIFFICULTY)
     ok = ae.verify_pow(None, vote, nonce, IP_A)

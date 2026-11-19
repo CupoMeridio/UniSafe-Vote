@@ -54,7 +54,7 @@ urn_open: bool = True  # Stato delle urne (True = aperte, False = chiuse)
 # richieste concorrenti con lo stesso token potrebbero superare entrambe il
 # controllo di unicità (race condition check-then-act → doppio voto).
 state_lock = threading.Lock()
-pow_lock = threading.Lock()  # Protegge la deque dei timestamp della PoW adattiva
+pow_lock = threading.Lock()  # Protegge timestamp per IP e challenge usate della PoW
 ae_encrypt_private: Optional[RSAPrivateKey] = None  # Chiave privata per decifrare i voti (caricata solo a urne chiuse)
 ae_sign_private: Optional[RSAPrivateKey] = None  # Chiave privata per firmare blocchi e ricevute
 ae_sign_public: Optional[RSAPublicKey] = None  # Chiave pubblica per verificare le firme
@@ -352,11 +352,14 @@ def vote():
         "pow_nonce": "0123..."    // Nonce della Proof of Work (esadecimale)
     }
 
-    Risposta (200 OK):
+    Risposta (200 OK): ricevuta firmata
     {
         "leaf_index": 0,
         "enc_vote": "abc123...",
-        "merkle_proof": [...],
+        "merkle_proof": [...],         // relativa alla root al momento del voto
+        "tree_size": 1,                // numero di voti al momento del voto
+        "merkle_root_at_vote": "...",  // root al momento del voto
+        "timestamp": "...",
         "ae_signature": "456..."
     }
 

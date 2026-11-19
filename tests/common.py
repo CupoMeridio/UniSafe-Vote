@@ -2,11 +2,11 @@
 Funzioni condivise dai test: creazione dell'elezione di test, quote degli
 scrutatori, pulizia dello stato.
 
-Prima ogni test conteneva una propria copia della logica di inizializzazione
-(chiavi, Bulletin Board, pin, elettori). Le copie divergevano: in 8 test su 10
-la chiave privata di decifratura dell'AE veniva salvata anche IN CHIARO,
-aggirando l'escrow. Un'unica implementazione, allineata a init_election.py,
-garantisce che i test verifichino il sistema così com'è.
+Ogni test crea la propria elezione con questa unica implementazione,
+allineata a init_election.py: chiavi, Bulletin Board con i parametri
+dell'escrow, pin, elettori e stato dell'AE sono identici a quelli di
+un'elezione reale, e la chiave privata di decifratura dell'AE esiste su disco
+solo cifrata. I test verificano così il sistema esattamente com'è.
 """
 
 import hashlib
@@ -60,7 +60,7 @@ def clean_election_state() -> None:
 
 
 def create_test_election(election_id: str, voters: List[Dict], candidates: Optional[List[str]] = None,
-                         duration_hours: int = 24) -> Dict:
+                         duration_hours: float = 24, opens_in_minutes: float = 0) -> Dict:
     """
     Crea da zero un'elezione di test, con lo stesso schema di init_election.py:
     - coppie RSA-2048 per la firma del SA e per firma/cifratura dell'AE;
@@ -88,8 +88,9 @@ def create_test_election(election_id: str, voters: List[Dict], candidates: Optio
     init_data = {
         "election_id": election_id,
         "candidates": list(candidates or DEFAULT_CANDIDATES),
-        "opening_time": datetime.now(UTC).isoformat(),
-        "closing_time": (datetime.now(UTC) + timedelta(hours=duration_hours)).isoformat(),
+        "opening_time": (datetime.now(UTC) + timedelta(minutes=opens_in_minutes)).isoformat(),
+        "closing_time": (datetime.now(UTC) + timedelta(minutes=opens_in_minutes)
+                         + timedelta(hours=duration_hours)).isoformat(),
         "sa_sign_public": serialize_public_key(sa_sign_pub),
         "ae_encrypt_public": serialize_public_key(ae_enc_pub),
         "ae_sign_public": serialize_public_key(ae_sign_pub),
@@ -167,3 +168,64 @@ def pow_fields(enc_vote_hex: str) -> Dict:
     """Challenge + nonce pronti da inserire nel payload di /vote."""
     challenge, difficulty = get_pow_challenge()
     return {"pow_challenge": challenge, "pow_nonce": solve_pow(challenge, enc_vote_hex, difficulty)}
+
+
+SA_URL = "https://localhost:5001"
+AE_URL = "https://localhost:5002"
+
+
+def _cert(name: str):
+    path = os.path.join(DATA_DIR, "tls", f"{name}_cert.pem")
+    return path if os.path.exists(path) else True
+
+
+def wait_server(url: str, timeout: float = 20) -> bool:
+    """Attende che il server risponda su /status."""
+    import time
+    import requests
+    verify = _cert("sa" if url.endswith("5001") else "ae")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if requests.get(f"{url}/status", timeout=0.5, verify=verify).status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def start_servers(sa: bool = True, ae: bool = True) -> Dict:
+    """Avvia SA e/o AE come sottoprocessi e attende che rispondano."""
+    import subprocess
+    procs = {}
+    for name, url, wanted in (("sa", SA_URL, sa), ("ae", AE_URL, ae)):
+        if not wanted:
+            continue
+        procs[name] = subprocess.Popen([sys.executable, os.path.join(SRC_DIR, f"{name}.py")], cwd=PROJECT_ROOT,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not wait_server(url):
+            stop_servers(procs)
+            raise RuntimeError(f"{name.upper()} non risponde")
+    return procs
+
+
+def stop_servers(procs: Dict) -> None:
+    """Spegne i server avviati con start_servers (shutdown autenticato, poi terminate/kill)."""
+    import subprocess
+    import requests
+    token_path = os.path.join(KEYS_DIR, "admin_token")
+    headers = {}
+    if os.path.exists(token_path):
+        with open(token_path, "r", encoding="utf-8") as f:
+            headers = {"X-Admin-Token": f.read().strip()}
+    for name, proc in procs.items():
+        url = SA_URL if name == "sa" else AE_URL
+        try:
+            requests.post(f"{url}/shutdown", headers=headers, timeout=2, verify=_cert(name))
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()

@@ -74,6 +74,7 @@ LOCKOUT_MAX_SECONDS = 15 * 60
 # { username: {"failures": int, "locked_until": datetime | None} }
 failed_logins: Dict[str, Dict] = {}
 failed_logins_lock = threading.Lock()
+FAILED_LOGINS_MAX_TRACKED = 10000  # Oltre questa soglia si eliminano le voci non bloccate
 
 # Hash fittizio usato quando lo username non esiste: si esegue comunque PBKDF2,
 # così il tempo di risposta non rivela quali username sono registrati.
@@ -210,6 +211,13 @@ def account_locked_for(username: str) -> int:
 def register_failed_login(username: str) -> None:
     """Conta un tentativo fallito e, oltre la soglia, blocca l'account con backoff esponenziale."""
     with failed_logins_lock:
+        if username not in failed_logins and len(failed_logins) >= FAILED_LOGINS_MAX_TRACKED:
+            # Limita la memoria usata da tentativi su username arbitrari:
+            # si eliminano le voci senza un blocco in corso.
+            now = datetime.now(UTC)
+            for name in [n for n, e in failed_logins.items()
+                         if not e["locked_until"] or e["locked_until"] < now]:
+                del failed_logins[name]
         entry = failed_logins.setdefault(username, {"failures": 0, "locked_until": None})
         entry["failures"] += 1
         excess = entry["failures"] - LOCKOUT_THRESHOLD
@@ -308,6 +316,10 @@ def register():
         email = req_data.get("email")
         username = req_data.get("username")
         password = req_data.get("password")
+        # Email normalizzata: senza questa normalizzazione "Mario@unisa.it" e
+        # "mario@unisa.it" risulterebbero due elettori distinti.
+        if isinstance(email, str):
+            email = email.strip().lower()
 
         # 1. Validazione del dominio email
         if not email or not is_valid_unisa_email(email):
@@ -335,7 +347,7 @@ def register():
 
             # 4. Verifica che l'email non sia già registrata
             for v in voters_list:
-                if "email" in v and v["email"] == email:
+                if "email" in v and v["email"].strip().lower() == email:
                     print(f"[SA] {datetime.now().isoformat()} - Registrazione fallita: email {email} già registrata")
                     return jsonify({"error": "Email già registrata"}), 409
 
@@ -503,6 +515,7 @@ def reconcile():
     Endpoint per la riconciliazione: il SA pubblica sul Bulletin Board il numero totale
     di token emessi, firmando digitalmente questo conteggio.
     """
+    global reconciled
     try:
         with state_lock:
             total_tokens = len(issued_tokens)
@@ -510,7 +523,6 @@ def reconcile():
                 "total_tokens": total_tokens
             }
             append_to_bulletin_board("reconciliation_sa", block_data)
-            global reconciled
             reconciled = True
         print(f"[SA] Riconciliazione completata: {total_tokens} token emessi")
         return jsonify({"status": "success", "total_tokens": total_tokens}), 200

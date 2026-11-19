@@ -9,9 +9,9 @@ Schema verificato:
   ricostruirla e la chiave AES non viene mai salvata;
 - gli impegni (SHA-256) sulle quote sono pubblicati nel blocco init firmato.
 
-Nel vecchio schema la chiave AES era derivata dalla firma del blocco init,
-che è PUBBLICA sul Bulletin Board: chiunque avesse accesso al file cifrato
-poteva decifrare la chiave privata in qualsiasi momento, anche a urne aperte.
+L'avversario considerato ha accesso al file cifrato e a tutto il Bulletin Board
+(pubblico) e vuole decifrare le schede prima dello scrutinio, eventualmente
+con la complicità di uno scrutatore.
 
 Il test dimostra in modo concreto e visivo che:
   [3] nessuna informazione pubblica e nessuna singola quota sblocca la chiave;
@@ -97,8 +97,8 @@ def main():
         # [3] ---------------------------------------------------------------
         print("\n[3] TENTATIVI NON AUTORIZZATI: INFORMAZIONI PUBBLICHE E QUOTA SINGOLA")
         print("-" * 90)
-        print("  Nessun dato pubblico del Bulletin Board entra nella derivazione della chiave:")
-        print("  l'attacco del vecchio schema (chiave derivata dalla firma pubblica) non è più applicabile.")
+        print("  L'attaccante dispone del file cifrato e dell'intero Bulletin Board, ma nessun dato")
+        print("  pubblico entra nella chiave AES (casuale): l'unica via è ottenere le quote degli scrutatori.")
         single_results = {}
         for share in shares:
             key, err = try_recover([share], ELECTION_ID, temp_dir)

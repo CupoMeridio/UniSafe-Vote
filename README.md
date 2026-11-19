@@ -167,26 +167,29 @@ Il progetto include una suite di test in `tests/`, eseguibile dal pannello princ
 
 **Attenzione:** i test usano la cartella `data/` e la ripuliscono al termine. Il pannello chiede una conferma esplicita se è presente un'elezione inizializzata o un server avviato.
 
-Test offline (nessun server richiesto):
+Test offline (nessun server reale richiesto):
 
 1. Attacco dizionario / analisi di frequenza su RSA-OAEP.
 2. Attacco MitM con sostituzione delle chiavi AE: il blocco init viene ri-firmato dall'attaccante, quindi a fermarlo è il certificate pinning.
 3. Manomissione del Bulletin Board, ricevute al momento del voto e attacco di seconda preimmagine sul Merkle Tree.
 4. Escrow a soglia della chiave privata AE (Shamir 2-su-3).
-15. Proof of Work con challenge del server e difficoltà per IP.
+5. Proof of Work con challenge del server e difficoltà per IP.
+6. Pinning TLS del client contro un server AE impostore.
 
 Test con server avviati automaticamente:
 
-5. DoS con PoW invalida.
-6. PoW adattiva e recovery della difficoltà.
-7. Resilienza DoS durante la votazione.
-8. Double voting / token replay.
-9. Token hoarding, token scaduto e rinnovo con lo stesso nonce.
-10. Elettore malevolo (seed corrotto) e AE che dichiara nulla una scheda valida.
+7. DoS con PoW invalida.
+8. PoW adattiva e recovery della difficoltà.
+9. Resilienza DoS durante la votazione.
+10. Double voting / token replay.
 11. Double voting concorrente (race condition).
-12. Verifica individuale di tutte le ricevute, riavvio dell'AE, rimozione di blocchi e manomissione del registro.
-13. Difese del SA: rate limit, IP falsificati, blocco account, timing, endpoint amministrativi.
-14. Flusso completo dell'elezione (end-to-end).
+12. Token hoarding, token scaduto e rinnovo con lo stesso nonce.
+13. Elettore malevolo (seed corrotto) e AE che dichiara nulla una scheda valida.
+14. Verifica individuale di tutte le ricevute, riavvio dell'AE, rimozione di blocchi e manomissione del registro.
+15. Difese del SA: rate limit, IP falsificati, blocco account, timing, endpoint amministrativi.
+16. Registrazione degli elettori (modalità solo liste).
+17. Finestra temporale dell'elezione.
+18. Flusso completo dell'elezione (end-to-end).
 
 ## Test di Performance
 

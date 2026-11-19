@@ -8,9 +8,6 @@ Percorre l'intero ciclo di vita con i server reali SA e AE:
   4. riconciliazione, consegna delle quote degli scrutatori e scrutinio;
   5. verifica individuale della ricevuta con il client reale;
   6. verifica universale con l'Observer.
-
-Prima il test leggeva i dati da src/data/ (cartella inesistente: i dati sono
-in data/) e non inizializzava l'elezione, quindi falliva sempre.
 """
 
 import contextlib

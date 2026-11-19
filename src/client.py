@@ -376,7 +376,8 @@ class Client:
             elif not self.is_urn_open():
                 print("\nUrne chiuse! Non puoi più votare.")
             elif self.is_token_expired():
-                print("\nIl tuo token è scaduto! Non puoi più votare.")
+                print("\nIl tuo token è scaduto: autenticati di nuovo per rinnovarlo "
+                      "(il SA rinnova la stessa credenziale, si può votare una sola volta).")
             return
 
         # Ricarica i parametri pubblici dal Bulletin Board prima del voto, così
@@ -414,9 +415,9 @@ class Client:
         #    riproducibile da chiunque conosca (voto, seed, pk_AE), abilitando
         #    la verifica universale a scrutinio concluso.
         enc_vote_bytes = encrypt(self.ae_encrypt_public, vote_byte, seed=seed)
-        # Il seed viene cifrato separatamente con pk_AE (seed OAEP casuale
-        # interno) così che solo l'AE possa recuperarlo a urne chiuse e
-        # pubblicarlo per la verifica universale.
+        # Il seed viene inviato anche cifrato separatamente (enc_seed). Lo
+        # scrutinio non ne dipende: l'AE ricava il seed dalla decifratura della
+        # scheda stessa (EM), quindi un enc_seed incoerente non invalida il voto.
         enc_seed_bytes = encrypt(self.ae_encrypt_public, seed)
         enc_vote_hex = enc_vote_bytes.hex()
         enc_seed_hex = enc_seed_bytes.hex()
@@ -502,10 +503,13 @@ class Client:
         Effettua sette controlli completi (WP2/3 Fase 5 - Verifica individuale):
         1. Verifica che il blocco init sia firmato e che i pin AE siano validi
         2. Verifica che la firma della ricevuta sia valida
-        3. Verifica che il voto sia incluso nel Merkle Tree tramite la Proof
+        3. Verifica la Merkle Proof della ricevuta contro la root del momento
+           del voto, la consistenza del registro (i primi tree_size voti danno
+           ancora quella root) e l'inclusione nella Merkle Root finale
         4. Verifica che il blocco 'scrutinio' sia firmato dall'AE
         5. Individua il voto nel blocco 'scrutinio'
-        6. CRITTOGRAFICO: Riesegue RSA-OAEP (con seed pubblicato) per confrontare con enc_vote originale
+        6. CRITTOGRAFICO: verifica la decifratura pubblicata (EM^e mod n == c) e
+           riesegue RSA-OAEP con il seed pubblicato per confrontarlo con enc_vote
         7. Mostra il risultato finale
 
         Returns:
