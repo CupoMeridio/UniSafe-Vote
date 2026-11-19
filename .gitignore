@@ -44,9 +44,10 @@ env/
 *.nav
 *.snm
 *.vrb
-# Ignora tutto il contenuto di docs tranne il PDF del report principale
-docs/*
-!docs/main.pdf
+# Ignora la cartella di build e i PDF temporanei in docs, consentendo i sorgenti (.tex, capitoli, immagini)
+docs/build/
+docs/*.pdf
+!docs/Relazione.pdf
 build/
 
 # OS

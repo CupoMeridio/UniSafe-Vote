@@ -1,0 +1,1570 @@
+% ============================================================
+%  Project Work – Algoritmi e Protocolli per la Sicurezza
+%  A.A. 2025-2026 | Università degli Studi di Salerno
+%  Documento unificato: WP1 – WP4
+% ============================================================
+\documentclass[12pt,a4paper]{article}
+
+% ---------- pacchetti ----------
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[italian]{babel}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage[top=2.5cm,bottom=2.5cm,left=2.8cm,right=2.8cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyphenat}
+\usepackage{tabularx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{fancyhdr}
+\setlength{\headheight}{14pt}
+\usepackage{caption}
+\usepackage{float}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+% ---------- colori UNISA ----------
+\definecolor{unisablue}{RGB}{0,51,102}
+\definecolor{unisagold}{RGB}{180,140,0}
+
+% ---------- titoli ----------
+\titleformat{\section}[block]
+  {\Large\bfseries\color{unisablue}}{\thesection.}{0.6em}{}[\titlerule]
+\titleformat{\subsection}[block]
+  {\large\bfseries\color{unisablue}}{\thesubsection}{0.5em}{}
+\titleformat{\subsubsection}[block]
+  {\normalsize\bfseries}{\thesubsubsection}{0.4em}{}
+
+% ---------- intestazione / piè di pagina ----------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\fancyhead[L]{\small\color{unisablue}Algoritmi e Protocolli per la Sicurezza}
+\fancyhead[R]{\small\color{unisablue}A.A. 2025-2026}
+\fancyfoot[C]{\thepage}
+
+% ---------- hyperref ----------
+\hypersetup{
+  colorlinks=true,
+  linkcolor=unisablue,
+  urlcolor=unisablue,
+  pdftitle={Project Work – Sistema di Votazione Elettronico Sicuro},
+  pdfauthor={Università degli Studi di Salerno}
+}
+
+% ============================================================
+\begin{document}
+\setlength{\emergencystretch}{3em}
+
+% -------- copertina --------
+\begin{titlepage}
+  \centering
+  \vspace*{1cm}
+  % logo – se non disponibile il compilatore lo salta gracefully
+  \includegraphics[width=0.7\textwidth]{imgs/logo_unisa.png}\par
+  \vspace{0.8cm}
+  \textcolor{unisagold}{\rule{0.6\textwidth}{1.2pt}}\par
+  \vspace{0.8cm}
+  {\large Corso di\par}
+  {\LARGE\bfseries\color{unisablue} Algoritmi e Protocolli per la Sicurezza\par}
+  \vspace{0.4cm}
+  {\large A.A. 2025--2026\par}
+  \vspace{1.2cm}
+  \textcolor{unisagold}{\rule{0.6\textwidth}{1.2pt}}\par
+  \vspace{0.8cm}
+  {\huge\bfseries UniSafe\par}
+  \vspace{0.4cm}
+  {\LARGE Sistema di Votazione Elettronico Sicuro\par}
+  \vspace{1.6cm}
+  {\large
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+\raggedright
+\textbf{Docente}\\[4pt]
+Francesco Cauteruccio
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.5\textwidth}
+\raggedleft
+\textbf{Studenti}\\[4pt]
+Vittorio Postiglione - IE22700189\\
+Mattia Sanzari - IE22700199
+\end{minipage}
+}\par
+  \vfill
+\end{titlepage}
+
+% -------- indice --------
+\tableofcontents
+\newpage
+
+% ============================================================
+%  Introduzione
+% ============================================================
+\section{Introduzione}
+
+Il presente documento raccoglie i quattro elaborati sviluppati nell'ambito del progetto
+UniSafe, un sistema di votazione elettronico sicuro pensato per l'ambito universitario.
+Il lavoro è stato realizzato come progetto d'esame per il corso di \textit{Algoritmi e
+Protocolli per la Sicurezza} presso l'Università degli Studi di Salerno.
+
+% ============================================================
+%  WP1
+% ============================================================
+\section{WP1 – Modello: Analisi di attori, funzionalità, minacce e contromisure di sicurezza}
+
+Il presente work package costituisce la prima analisi delle caratteristiche di un sistema di
+voto elettronico sicuro per la conduzione di un'elezione in ambito universitario. Nel documento
+vengono prima discusse le principali tipologie di elezione, analizzandone caratteristiche,
+vantaggi, svantaggi e compromessi fra sicurezza, integrità e anonimato, al fine di motivare
+la scelta del modello adottato. Si procede quindi con la definizione degli attori onesti del
+sistema, specificando ruoli, responsabilità e obiettivi. Vengono poi discussi i possibili
+avversari interessati a compromettere il sistema, specificando risorse e capacità. Il documento
+si conclude con l'identificazione delle proprietà di sicurezza che il sistema si prefigge di
+preservare in presenza di attacchi: autenticità, unicità, segretezza, integrità, verificabilità
+individuale e verificabilità universale, con esplicitazione dei compromessi adottati e delle
+assunzioni su cui il modello si basa.
+
+Alcuni riferimenti relativi al funzionamento e ai requisiti di un sistema di voto elettronico
+sono stati reperiti da fonti pubblicamente disponibili:
+\begin{itemize}
+  \item \href{https://www.interno.gov.it/sites/default/files/2021-07/linee_guida_voto_elettronico_decreto_9.7.2021.pdf}{Linee guida voto elettronico}
+  \item \href{https://nvlpubs.nist.gov/nistpubs/Legacy/IR/nistir7770.pdf}{NIST IR 7770}
+  \item \href{https://arxiv.org/pdf/cs/0108017}{ArXiv cs/0108017}
+\end{itemize}
+
+Tali fonti hanno orientato la definizione del modello, degli attori coinvolti e della loro
+separazione.
+
+% ----
+\subsection{Analisi comparativa delle tipologie di elezione}
+
+\subsubsection{Referendum Binario}
+
+Il referendum binario è un modello di votazione utilizzato per approvare o respingere una
+specifica proposta, delibera o modifica regolamentare. L'elettore può selezionare una sola
+opzione tra un insieme molto limitato di scelte, tipicamente \textit{Sì} o \textit{No}.
+In alcuni casi può essere prevista anche l’opzione di scheda bianca.
+
+\textbf{Vantaggi.} Il principale vantaggio è la semplicità. L’interfaccia di voto è immediata,
+il rischio di errore da parte dell’utente è ridotto e il conteggio finale è particolarmente efficiente.
+Dal punto di vista crittografico, il dominio dei voti è molto piccolo, rendendo più semplice la
+validazione della scheda, lo scrutinio e la verifica pubblica del risultato.
+
+\textbf{Svantaggi.} Il modello è poco espressivo: non consente di scegliere tra più candidati o liste e
+non permette all’elettore di esprimere preferenze graduate o alternative intermedie. È quindi adatto solo
+a decisioni binarie, ma non all’elezione di organi rappresentativi complessi.
+
+\textbf{Implicazioni per il protocollo.} È il modello più semplice da implementare in un
+sistema di voto elettronico sicuro, poiché riduce la complessità della scheda cifrata e del
+conteggio. Rimangono comunque necessari meccanismi per garantire autenticità, univocità,
+segretezza, integrità e verificabilità.
+
+\subsubsection{Elezione a Lista Chiusa}
+
+Il voto a lista chiusa è un modello orientato alla scelta di un gruppo, lista, coalizione o
+organizzazione. L'elettore esprime un'unica preferenza per una lista nel suo complesso, senza
+poter selezionare o modificare l'ordine dei candidati al suo interno. L'ordine di elezione dei
+candidati è quindi stabilito in anticipo dal soggetto che presenta la lista.
+
+\textbf{Vantaggi.} Il modello mantiene una buona semplicità d’uso, poiché l’elettore
+deve scegliere una sola opzione tra un insieme finito di liste. Anche lo scrutinio risulta
+relativamente efficiente, perché il sistema deve conteggiare un solo voto per elettore.
+Inoltre, rispetto al voto nominale, si riduce il rischio che combinazioni particolari di
+preferenze rendano riconoscibile la scheda.
+
+\textbf{Svantaggi.} L’elettore non può incidere direttamente sulla scelta dei singoli candidati
+eletti, ma solo sulla lista nel suo complesso. Questo riduce la rappresentatività diretta e concentra
+maggiore potere decisionale sul gruppo che ha definito l’ordine dei candidati.
+
+\textbf{Implicazioni per il protocollo.} Dal punto di vista crittografico, il voto a lista chiusa rappresenta un
+compromesso: è più complesso del referendum binario, perché il numero di opzioni può essere maggiore, ma resta
+più semplice del voto nominale, poiché ogni scheda contiene una sola scelta valida.
+
+\subsubsection{Elezione con Preferenza Nominale}
+
+Il voto a preferenza nominale consente all’elettore di indicare esplicitamente uno o più candidati specifici.
+A seconda del regolamento elettorale, la preferenza può essere espressa insieme a una lista oppure indipendentemente da essa.
+Possono inoltre essere presenti vincoli sul numero massimo di preferenze, sull’appartenenza dei candidati a una lista o su criteri come l’alternanza di genere.
+
+\textbf{Vantaggi.} Offre all'elettore un maggiore controllo sulla composizione dell'organo da
+eleggere e favorisce un legame più diretto tra elettori ed eletti.
+
+\textbf{Svantaggi.} La procedura di voto è più complessa e richiede maggiore attenzione da parte
+dell'utente. L'elettore deve conoscere i candidati e rispettare le regole previste dal sistema.
+Anche lo scrutinio è più oneroso, perché non è sufficiente conteggiare i voti di lista, ma occorre
+aggregare le preferenze candidato per candidato. Inoltre, combinazioni particolari di preferenze
+possono aumentare il rischio di riconoscibilità della scheda, con possibili conseguenze sulla
+segretezza e sulla resistenza alla coercizione.
+
+\textbf{Implicazioni per il protocollo.} È il modello più complesso tra quelli considerati. Il
+sistema deve verificare che ogni preferenza sia valida, che non siano presenti duplicati, che il
+numero massimo di preferenze sia rispettato e che eventuali vincoli regolamentari siano soddisfatti.
+Questa maggiore espressività comporta un aumento della complessità crittografica, dello scrutinio
+e della verifica.
+
+\subsection{Scelta del Modello}
+
+Considerando che le elezioni universitarie prevedono, in genere, l'assegnazione di più ruoli
+istituzionali distinti, ad esempio Rappresentante al Senato Accademico, Rappresentante nel
+Consiglio di Amministrazione e Rappresentante del Consiglio Didattico, il modello di votazione
+più adeguato è quello a \textbf{lista chiusa con ruoli predefiniti}. In tale modello, ogni lista
+rappresenta un insieme di candidati che coprono tutti i ruoli previsti, e l'elettore esprime
+una singola preferenza selezionando l'intera lista come unità indivisibile. Questa scelta
+consente di mantenere il processo di voto semplice e strutturato, evitando la complessità tipica
+del voto a preferenza nominale.
+
+Rispetto al voto nominale, il modello a lista chiusa riduce la superficie di attacco del
+sistema: l'elettore non può combinare liberamente nominativi appartenenti a liste diverse né
+esprimere più preferenze individuali, limitando così il numero di configurazioni possibili
+della scheda, la complessità della validazione del voto e il rischio di schede riconoscibili o
+di comportamenti coercitivi. Allo stesso tempo, il modello risulta più flessibile rispetto al
+referendum binario, in quanto consente la candidatura di un numero arbitrario di liste
+alternative, permettendo una scelta più articolata senza compromettere la semplicità della
+procedura di voto e del protocollo crittografico sottostante.
+
+% ----
+\subsection{Attori del Sistema}
+
+Il sistema prevede quattro attori principali, ciascuno dei quali corrisponde a una componente
+software in esecuzione su un server dedicato. L'unica eccezione è l'elettore, che interagisce
+con il sistema tramite un client installato sul proprio dispositivo. Il Sistema di
+Autenticazione e l'Autorità Elettorale sono intenzionalmente separati: nessuno dei due è in
+grado, da solo, di correlare l'identità di un elettore con il voto espresso. Il sistema è
+pensato secondo il principio di \textit{Separation of Privilege}: le funzioni critiche sono
+distribuite tra componenti software indipendenti in esecuzione su domini isolati. Questo
+garantisce che la compromissione di un singolo attore non sia sufficiente a violare la
+segretezza del voto o l'integrità del risultato.
+
+\subsubsection{Sistema di Autenticazione (SA)}
+\textbf{Ruolo:} Gestione dell'identità.
+\textbf{Responsabilità:} gestisce l'elenco degli aventi diritto al voto, verifica le credenziali
+istituzionali dell'elettore e, in caso di esito positivo, abilita la partecipazione all'elezione,
+garantendo che ogni elettore possa accedervi una sola volta.
+\textbf{Vincoli:} non ha accesso all'urna elettronica né alle schede di voto. Una volta rilasciato
+il token, non riceve alcuna informazione su se o come l'elettore parteciperà al voto.
+
+\subsubsection{Autorità Elettorale (AE)}
+\textbf{Ruolo:} Gestore dell'urna e dello scrutinio.
+\textbf{Responsabilità:} riceve le schede cifrate, ne verifica la validità crittografica e le
+registra su un registro pubblico. Al termine della raccolta, esegue lo scrutinio e pubblica il
+risultato corredato delle relative prove.
+\textbf{Vincoli:} non riceve informazioni sull'identità degli elettori; l'unica garanzia che
+possiede è che ogni scheda è accompagnata da un token rilasciato dal SA.
+
+\subsubsection{Client dell'Elettore}
+\textbf{Ruolo:} Interfaccia utente e nodo crittografico.
+\textbf{Responsabilità:} è il software in esecuzione sul dispositivo dell'elettore. Si autentica
+presso il SA, prepara la scheda cifrata e la trasmette all'AE. Conserva localmente i dati
+necessari per la verifica individuale del proprio voto.
+\textbf{Vincoli:} fornisce all'elettore una ricevuta per la futura verifica del voto, senza
+richiedere competenze tecniche da parte dell'utente.
+
+\subsubsection{Osservatore Pubblico}
+\textbf{Ruolo:} Garante della verificabilità universale.
+\textbf{Responsabilità:} è qualsiasi client che acceda al registro pubblico dell'AE per verificare
+la correttezza del risultato, senza necessità di essere un elettore registrato.
+\textbf{Vincoli:} non possiede alcun privilegio di scrittura o modifica.
+
+% ----
+\subsection{Funzionalità del Sistema}
+
+Il sistema ha lo scopo di condurre un'elezione elettronica a lista chiusa articolata in quattro
+fasi sequenziali.
+
+\begin{enumerate}
+  \item \textbf{Inizializzazione:} il SA pubblica la lista degli aventi diritto al voto; l'AE
+    pubblica la lista dei candidati, i parametri crittografici del sistema e le chiavi pubbliche
+    necessarie; vengono definiti e resi pubblici i parametri temporali di apertura e chiusura
+    delle urne.
+  \item \textbf{Registrazione e autenticazione:} ciascun elettore si autentica presso il SA
+    tramite le proprie credenziali; il SA verifica l'identità dell'elettore, controlla che non
+    abbia già ricevuto credenziali di voto e rilascia un token crittografico firmato.
+  \item \textbf{Votazione:} l'elettore prepara la scheda di voto selezionando una delle liste,
+    la cifra e la arricchisce con le prove crittografiche necessarie. L'elettore invia la scheda
+    all'AE, che la verifica e la registra nel registro pubblico; l'elettore riceve una ricevuta
+    che gli permetterà di verificare l'inclusione del proprio voto.
+  \item \textbf{Scrutinio e pubblicazione:} al termine della raccolta, l'AE decifra i voti e
+    pubblica il risultato. Vengono pubblicate le prove crittografiche necessarie per la verifica
+    universale; ciascun elettore può verificare individualmente l'inclusione del proprio voto.
+\end{enumerate}
+
+% ----
+\subsection{Threat Model}
+
+In questa sezione si identificano i possibili avversari del sistema, le loro risorse e
+capacità, e gli obiettivi che potrebbero perseguire. Il threat model è organizzato per
+categoria di avversario.
+
+\subsubsection{Gestore Disonesto del Server (AE o SA corrotta)}
+
+Un attore interno al sistema che agisce in modo malevolo o è stato compromesso da un avversario
+esterno.
+
+\textbf{Risorse e capacità:} accesso diretto ai database del sistema, inclusi registro dei voti
+e log di autenticazione; conoscenza dei parametri di sistema, incluse eventuali chiavi private
+del gestore; capacità di modificare, eliminare o inserire record nel registro.
+
+\textbf{Obiettivi potenziali:} alterazione del conteggio, modificando o sopprimendo schede di
+voto già registrate per favorire un candidato; violazione della segretezza, correlando le
+schede cifrate alle identità reali degli elettori sfruttando i log dell'SA in combinazione con
+i dati dell'AE; inserimento di schede fraudolente; impedimento della pubblicazione del risultato
+o pubblicazione di un risultato falso.
+
+\subsubsection{Elettore Malevolo}
+
+Un elettore legittimamente registrato che tenta di sfruttare il sistema per ottenere vantaggi
+illeciti o per perturbarne il corretto funzionamento.
+
+\textbf{Risorse e capacità:} accesso a un'istanza legittima del client di voto; possesso delle
+proprie credenziali crittografiche; capacità di intercettare o analizzare il traffico di rete
+verso l'AE; possibile collaborazione con terzi, ad esempio acquirenti di voto.
+
+\textbf{Obiettivi potenziali:} tentativo di votare più di una volta, riutilizzando le
+credenziali o inviando più schede cifrate differenti; dimostrazione a un terzo di come si è
+votato, per ottenere un compenso o per essere esonerato da una minaccia; negazione di aver
+espresso un certo voto o di aver partecipato all'elezione; invio di schede non valide in numero
+elevato per saturare il sistema o introdurre rumore nel registro pubblico.
+
+\subsubsection{Avversario Esterno Passivo (Eavesdropper)}
+
+Un soggetto esterno al sistema che monitora passivamente le comunicazioni tra gli attori, senza
+poterle modificare.
+
+\textbf{Risorse e capacità:} capacità di intercettare il traffico di rete, ad esempio su reti
+non cifrate o tramite attacchi MitM a livello di trasporto; accesso al registro pubblico delle
+schede cifrate; capacità di analisi statistica e correlazione temporale.
+
+\textbf{Obiettivi potenziali:} correlare l'invio di una scheda cifrata con l'identità
+dell'elettore tramite analisi del traffico; dedurre il contenuto della scheda da informazioni
+ausiliarie, come dimensione del messaggio o metadati.
+
+\subsubsection{Avversario Esterno Attivo}
+
+Un soggetto esterno che non si limita a osservare ma interviene attivamente sulle comunicazioni
+o sull'infrastruttura del sistema.
+
+\textbf{Risorse e capacità:} capacità di modificare, ritardare o eliminare messaggi in transito
+tramite attacchi MitM; capacità di lanciare attacchi replay; eventuale compromissione parziale
+dell'infrastruttura di rete; capacità di sovraccaricare i server del sistema tramite attacchi di
+massa per renderli indisponibili.
+
+\textbf{Obiettivi potenziali:} impedire a specifici elettori di far giungere il proprio voto
+all'AE; re-inviare una scheda già registrata per causare duplicati o confusione nel sistema;
+modificare una scheda in transito, alterando il voto prima che raggiunga l'AE; attacco alla
+disponibilità del servizio tramite DDoS contro SA o AE durante la fase di votazione, oppure
+contro lo scrutinio o la pubblicazione, impedendo la verifica del risultato.
+
+% ----
+\subsection{Proprietà di Sicurezza}
+
+In questa sezione si definiscono le proprietà di sicurezza che il sistema si prefigge di
+garantire.
+
+\subsubsection{Autenticità}
+
+Solo gli elettori legittimamente registrati, la cui identità è stata verificata dall'SA,
+possono partecipare al voto. Formalmente, nessuna scheda di voto valida può essere introdotta
+nel sistema da un soggetto non presente nella lista degli aventi diritto.
+
+\textbf{Condizioni di garanzia:} la proprietà è garantita a patto che il meccanismo di rilascio
+delle credenziali da parte dell'SA sia sicuro e che le credenziali non siano trasferibili o
+falsificabili. Si assume che le primitive crittografiche utilizzate, come firme digitali e MAC,
+siano computazionalmente sicure.
+
+\subsubsection{Unicità del Voto (One Voter, One Vote)}
+
+Ciascun elettore può esprimere al più un voto valido. Il sistema deve prevenire sia il
+\textit{double voting} intenzionale da parte di un elettore sia la duplicazione di voti da
+parte di un gestore corrotto.
+
+\textbf{Condizioni di garanzia:} questa proprietà richiede che le credenziali di voto siano a
+uso singolo e non riutilizzabili, e che il registro delle schede accettate sia verificabile
+pubblicamente. Un gestore corrotto non deve poter introdurre una seconda scheda valida per lo
+stesso elettore senza che ciò sia rilevabile.
+
+\subsubsection{Segretezza del Voto (Vote Privacy)}
+
+Nessuna singola entità deve essere in grado di associare l'identità reale di un elettore alla
+sua preferenza espressa. Il sistema garantisce il pseudoanonimato: ogni scheda nel registro è
+riconducibile a un elettore autorizzato, ma non a uno specifico elettore identificabile.
+
+\textbf{Condizioni di garanzia:} questa proprietà è garantita a patto che il canale tra
+l'elettore e l'AE non consenta la correlazione delle schede alle identità.
+
+\subsubsection{Integrità dei Voti}
+
+I voti registrati nel sistema non devono poter essere alterati, soppressi o introdotti
+fraudolentemente dopo la loro espressione. Questa proprietà si declina in due sotto-proprietà:
+\textit{integrità individuale}, cioè il voto di un elettore non può essere modificato dopo la
+sua registrazione né dall'AE né da un avversario esterno, e \textit{integrità del registro},
+cioè il registro pubblico delle schede cifrate è immutabile e qualsiasi modifica è rilevabile
+da chiunque.
+
+\textbf{Condizioni di garanzia:} l'integrità è garantita tramite l'uso di strutture dati con
+proprietà di non-ripudiabilità e tramite la pubblicazione del registro su canali verificabili.
+Si assume che le primitive crittografiche di hash e firma siano sicure.
+
+\subsubsection{Verificabilità Individuale}
+
+Ciascun elettore deve poter verificare autonomamente che il proprio voto sia stato
+correttamente incluso nel conteggio finale. A tal fine, l'elettore riceve una ricevuta al
+momento della registrazione della propria scheda.
+
+\textbf{Condizioni di garanzia:} la verifica individuale è possibile a patto che l'elettore
+conservi la ricevuta ricevuta dall'AE e che il registro pubblico sia accessibile.
+
+\subsubsection{Verificabilità Universale}
+
+Chiunque, inclusi soggetti non registrati come elettori, deve poter verificare la correttezza
+del risultato finale dell'elezione. Ciò significa che il processo di scrutinio deve essere
+pubblicamente auditabile: dato il registro pubblico delle schede cifrate e le prove pubblicate
+dall'AE, chiunque deve poter confermare che il risultato è stato calcolato correttamente.
+
+\textbf{Condizioni di garanzia:} questa proprietà richiede che l'AE pubblichi, insieme al
+risultato, una prova crittografica della correttezza del conteggio, costruita in modo tale che
+nessun avversario possa produrre una prova valida per un risultato falso.
+
+\subsubsection{Proprietà non pienamente garantite e compromessi}
+
+Il sistema non è in grado di garantire incondizionatamente tutte le proprietà elencate. Si
+dichiarano esplicitamente i seguenti limiti e compromessi:
+
+\begin{itemize}
+  \item \textbf{Segretezza vs. verificabilità individuale:} la ricevuta consegnata all'elettore
+    permette di verificare l'inclusione del proprio voto, ma non ne rivela il contenuto.
+    Tuttavia, un elettore potrebbe conservare informazioni sufficienti a dimostrare la propria
+    scelta a un terzo, rendendo possibile la coercizione o la vendita del voto. Questa
+    limitazione è un compromesso dichiarato; soluzioni più robuste richiederebbero strumenti
+    crittografici avanzati non trattati nel corso e sono indicate come possibili estensioni
+    future.
+  \item \textbf{Segretezza condizionata alla non-collusione:} la segretezza del voto è
+    garantita solo se SA e AE non colludono. In caso di collusione, è teoricamente possibile
+    correlare i log di autenticazione con le schede cifrate. Questo rischio residuo è mitigato
+    dalla separazione tra i due componenti, ma non eliminato crittograficamente.
+  \item \textbf{Anonimato a livello di rete:} il protocollo non opera a livello di trasporto e
+    non garantisce quindi l'anonimato della connessione. Un avversario in grado di osservare il
+    traffico di rete potrebbe correlare l'invio di una scheda all'identità dell'elettore tramite
+    l'indirizzo IP o l'orario di connessione. Si assume l'utilizzo di un canale cifrato;
+    tecniche di anonimizzazione della rete sono al di fuori dello scope di questo progetto.
+  \item \textbf{Disponibilità del servizio:} il sistema non può garantire la disponibilità del
+    servizio in presenza di attacchi di negazione del servizio, ma adotta comunque delle misure
+    di mitigazione a livello applicativo, descritte più in dettaglio nel WP2.
+\end{itemize}
+
+% ----
+\subsection{Analisi dell'Efficienza e Scalabilità (Qualitativa)}
+
+In questa sezione vengono analizzati i requisiti di efficienza, latenza e scalabilità del
+sistema adottando una prospettiva qualitativa, coerente con il ruolo del WP1. In accordo con la
+crittografia moderna, la sicurezza del protocollo è valutata rispetto ad avversari
+computazionalmente limitati; di conseguenza, le garanzie di sicurezza devono essere bilanciate
+con la praticabilità del sistema. Meccanismi e protocolli eccessivamente complessi o fortemente
+interattivi, pur potendo risultare formalmente corretti, rischiano infatti di essere inadeguati
+in un contesto reale.
+
+Seguendo i principi di \textit{Economy of Mechanism} e \textit{Open Design}, il sistema
+privilegia soluzioni semplici, modulari e facilmente analizzabili. La riduzione della
+complessità non rappresenta solo un obiettivo di efficienza, ma una scelta progettuale che
+aumenta l'affidabilità complessiva del sistema, limitando il rischio di errori implementativi e
+facilitando l'analisi delle proprietà di sicurezza.
+
+\subsubsection{Efficienza Computazionale}
+
+L'efficienza computazionale viene considerata già in fase di modello, poiché l'adozione di
+meccanismi crittografici comporta inevitabilmente un costo in termini di calcolo, memoria e
+comunicazione. In linea con la letteratura di riferimento, ogni attore del sistema è progettato
+per eseguire esclusivamente le operazioni necessarie al proprio ruolo, evitando sovrapposizioni
+funzionali e colli di bottiglia.
+
+\textbf{Lato client (elettore):} il client dell'elettore deve eseguire un numero limitato di
+operazioni crittografiche, compatibili con dispositivi consumer come smartphone e laptop. La
+preparazione della scheda può includere la cifratura del voto e, se previsto dal protocollo, la
+produzione di una prova crittografica di validità. Tali operazioni devono rimanere
+sufficientemente leggere da non compromettere la fruibilità del sistema. La scelta di un modello
+a lista chiusa contribuisce a questo obiettivo, poiché ogni scheda rappresenta una singola
+alternativa valida all'interno di un insieme finito di liste.
+
+\textbf{Lato server (Autorità Elettorale):} l'Autorità Elettorale è responsabile della
+registrazione delle schede, della verifica della loro validità e dello scrutinio finale.
+Rispetto a un sistema a preferenza nominale, il modello a lista chiusa riduce la complessità
+delle operazioni di controllo e aggregazione, evitando la gestione di combinazioni multiple di
+preferenze. Il carico computazionale dell'AE cresce quindi in modo proporzionale al numero di
+voti ricevuti, risultando adeguato allo scenario di un'elezione universitaria.
+
+\subsubsection{Latenza e User Experience}
+
+La latenza percepita dall'utente è un fattore determinante per l'accettabilità pratica del
+sistema. Anche protocolli dotati di solide garanzie formali possono risultare inefficaci se
+l'interazione richiesta è lenta o complessa. Per questo motivo, il protocollo è progettato per
+limitare il numero di interazioni e ridurre i tempi di risposta, senza indebolire le proprietà
+di sicurezza.
+
+In particolare, la fase di autenticazione deve richiedere un numero minimo di scambi di
+messaggi tra elettore e SA; l'invio della scheda cifrata deve avvenire con pochi round di
+comunicazione tra client e AE; l'elettore deve ricevere una conferma rapida e verificabile
+dell'avvenuta registrazione del voto, a supporto della verificabilità individuale. Nel
+complesso, la progettazione privilegia protocolli a bassa interattività e con tempi di risposta
+prevedibili, bilanciando sicurezza formale e \textit{Psychological Acceptability}.
+
+\subsubsection{Scalabilità del Sistema}
+
+Il sistema deve essere in grado di gestire un numero elevato di elettori e carichi non
+uniformi, tipici delle elezioni universitarie, in cui si osservano picchi di accesso in
+prossimità dell'apertura o della chiusura delle urne.
+
+La separazione delle responsabilità tra SA e AE consente di scalare orizzontalmente i
+componenti in modo indipendente, intervenendo sui colli di bottiglia senza compromettere
+l'intero sistema. Inoltre, l'adozione del modello a lista chiusa mantiene contenute e costanti
+le dimensioni delle schede cifrate, facilitando la gestione del registro dei voti e le
+operazioni di pubblicazione e verifica.
+
+\subsubsection{Semplicità e Manutenibilità (Open Design)}
+
+In accordo con il principio di \textit{Open Design}, l'architettura del sistema è progettata
+per essere semplice, trasparente e facilmente ispezionabile. In un sistema di voto
+elettronico, la semplicità non rappresenta solo una scelta ingegneristica, ma un requisito di
+sicurezza: meccanismi complessi aumentano la superficie di errore implementativo e rendono più
+difficile individuare vulnerabilità o comportamenti scorretti.
+
+Di conseguenza, il sistema privilegia componenti ben separati, interfacce chiare e un flusso di
+esecuzione facilmente comprensibile. Questo approccio consente audit di sicurezza più efficaci
+e riproducibili, una manutenzione più agevole nel tempo e un ripristino più rapido in caso di
+guasti o incidenti, migliorando complessivamente la disponibilità del servizio.
+
+In sintesi, l'adozione di un design aperto e minimale rappresenta una scelta consapevole per
+garantire che le proprietà di sicurezza definite nel modello possano essere effettivamente
+mantenute anche durante l'evoluzione e l'uso operativo del sistema.
+
+\newpage
+
+% ============================================================
+%  WP2
+% ============================================================
+\section{WP2 – Soluzione: Protocollo di Voto Elettronico}
+
+Dato il modello concettuale definito nel WP1, questo work package presenta il protocollo
+crittografico progettato per il sistema di votazione elettronica sicura. L'obiettivo è
+tradurre i requisiti di sicurezza in un flusso operativo concreto.
+
+Il protocollo si articola in cinque fasi sequenziali gestite automaticamente dal sistema,
+riducendo al minimo l'intervento umano alla sola configurazione iniziale:
+
+\begin{enumerate}
+  \item \textbf{Inizializzazione:} configurazione dei parametri elettorali (liste, aventi diritto,
+    vincoli temporali) e generazione delle chiavi.
+  \item \textbf{Autenticazione:} verifica dell'identità dell'elettore presso il SA e rilascio del
+    token di voto.
+  \item \textbf{Votazione:} cifratura della scheda da parte del client e trasmissione all'AE.
+  \item \textbf{Scrutinio:} decifratura massiva dei voti, calcolo dei risultati e pubblicazione
+    delle prove di correttezza.
+  \item \textbf{Verifica individuale e universale:} procedure per il controllo della correttezza
+    del processo.
+\end{enumerate}
+
+Le primitive crittografiche adottate sono:
+\begin{itemize}
+  \item \textbf{Segretezza e integrità:} RSA-OAEP (cifratura probabilistica) e RSA-PSS
+    con SHA-256 (firme digitali).
+  \item \textbf{Sicurezza in transito:} canali cifrati TLS obbligatori per qualsiasi
+    comunicazione tra gli attori.
+  \item \textbf{Trasparenza e verificabilità:} registro pubblico append-only
+    (\textit{Bulletin Board}) basato su struttura Merkle Tree.
+\end{itemize}
+
+Nelle sezioni successive vengono dettagliati l'architettura dei messaggi, la struttura dei
+dati del registro e il flusso delle interazioni tra gli attori.
+
+% ----
+\subsection{Fase 1 – Inizializzazione}
+
+L'amministratore svolge un ruolo puramente configurativo. Vengono definiti e resi pubblici
+sul registro prima dell'apertura delle urne:
+\begin{itemize}
+  \item l'elenco delle liste candidate, ciascuna identificata da un indice univoco;
+  \item i parametri temporali dell'elezione (apertura e chiusura delle urne);
+  \item le chiavi pubbliche di SA e AE;
+  \item l'informativa con i criteri di accesso per gli aventi diritto al voto.
+\end{itemize}
+
+Tutti i parametri di inizializzazione vengono pubblicati sul registro prima dell'apertura
+delle urne, in modo da rendere verificabile da chiunque il contesto dell'elezione e impedire
+modifiche silenziose a elezione avviata. L'autenticità di tali parametri è garantita in fase
+di distribuzione iniziale tramite certificati X.509 su canali TLS.
+
+A configurazione completata, l'amministratore non interviene più nel processo: il sistema
+passa in modalità di esecuzione automatica, vincolata ai parametri pubblicati, riducendo la
+superficie di attacco e il grado di fiducia richiesto verso il gestore del sistema.
+
+\subsubsection{Generazione e distribuzione delle chiavi}
+
+Il \textbf{Sistema di Autenticazione (SA)} genera una coppia RSA dedicata esclusivamente
+alla firma dei token; la chiave privata rimane isolata nel dominio del SA, la pubblica è
+sul registro.
+
+L'\textbf{Autorità Elettorale (AE)} genera due coppie indipendenti:
+\begin{itemize}
+  \item \textbf{Coppia di cifratura (RSA-OAEP):} la chiave pubblica è distribuita ai client
+    per la cifratura delle schede; la privata è caricata in memoria dall'AE
+    \emph{esclusivamente a urne chiuse}, nella fase di scrutinio. Nel sistema implementato
+    questo vincolo è crittografico: la chiave privata è protetta da un escrow a soglia tra
+    gli scrutatori e l'AE può ricostruirla solo con le loro quote (Sezione~\ref{sec:mod33}).
+  \item \textbf{Coppia di firma (RSA-PSS):} la chiave privata firma ricevute, blocchi del
+    registro e il verbale di scrutinio; la pubblica, pubblicata prima dell'apertura, consente
+    la verifica universale.
+\end{itemize}
+
+Tutte le chiavi pubbliche sono rese disponibili sul registro prima dell'apertura delle urne.
+La loro autenticità è garantita tramite certificati X.509 distribuiti su canali TLS.
+
+% ----
+\subsection{Fase 2 – Autenticazione e Rilascio del Token}
+
+La fase consente di verificare che l'utente sia un elettore avente diritto e di rilasciargli
+una credenziale crittografica a uso singolo. Essa è gestita esclusivamente dal SA, che opera
+separatamente dall'AE: il SA verifica l'identità e il diritto di voto dell'elettore, ma non
+riceve né elabora la scheda. Il token è trattato dall'AE come identificatore opaco e non
+contiene informazioni identificative o riferimenti alla scelta dell'elettore; il suo unico
+scopo è attestare che il soggetto che lo presenta è stato autorizzato dal SA a partecipare
+all'elezione.
+
+\begin{enumerate}
+  \item L'elettore si autentica presso il SA tramite credenziali istituzionali su canale TLS.
+  \item Il SA verifica che all'elettore non sia già stato rilasciato un token.
+  \item Il SA genera un token contenente l'identificativo dell'elezione e un nonce casuale.
+  \item Il SA firma il token con RSA-PSS su SHA-256.
+  \item Il SA registra internamente l'avvenuto rilascio e restituisce il token firmato al
+    client. Da questo momento il SA non ha più alcun ruolo nel processo: il client conserva
+    il token e lo presenterà autonomamente all'AE nella fase di votazione.
+  \item Il SA applica un rate limiting per mitigare attacchi volumetrici; il token include una
+    finestra di validità temporale (30 minuti), così da limitare l'utilità di token ottenuti
+    in massa in anticipo. Le difese del SA contro il brute force sulle credenziali sono
+    descritte nella Sezione~\ref{sec:mod39}.
+\end{enumerate}
+
+\subsubsection{Politica di scadenza e unicità del token}
+
+\begin{itemize}
+  \item \textbf{Finestra temporale limitata:} la validità operativa del token è circoscritta a
+    un intervallo prefissato e ridotto (30 minuti).
+  \item \textbf{Unicità della credenziale:} emesso il token, il SA non rilascia mai una seconda
+    credenziale distinta allo stesso elettore: un'ulteriore autenticazione restituisce lo
+    stesso token, identificato dal medesimo nonce.
+  \item \textbf{Scadenza e rinnovo con lo stesso nonce:} un token non presentato all'AE entro
+    la finestra viene rifiutato dall'AE. Se l'elettore si autentica di nuovo, il SA rinnova
+    solo la finestra di validità mantenendo \emph{lo stesso nonce}. Poiché l'AE impone
+    l'unicità del voto proprio sul nonce, il rinnovo non crea una seconda credenziale: chi
+    ha già votato riceve un rifiuto (409), chi non ha votato in tempo non resta escluso
+    dall'elezione. La breve validità continua a limitare l'utilità di un token intercettato.
+\end{itemize}
+
+% ----
+\subsection{Fase 3 – Votazione}
+
+\subsubsection{Preparazione della scheda}
+
+Il client mappa la scelta dell'elettore come indice intero della lista selezionata. Prima di
+cifrare, genera un \texttt{seed} casuale tramite \texttt{os.urandom}. Il voto viene cifrato con
+la chiave pubblica dell'AE mediante RSA-OAEP con quel seed; il seed stesso viene cifrato
+separatamente con la stessa chiave pubblica. Il messaggio inviato all'AE contiene:
+
+\begin{itemize}
+  \item $\mathtt{Enc\_1} = \mathrm{RSA\text{-}OAEP}(\mathtt{voto} \,\|\, \mathtt{seed},\; k_{\mathrm{pub,AE}})$
+  \item $\mathtt{Enc\_2} = \mathrm{RSA\text{-}OAEP}(\mathtt{seed},\; k_{\mathrm{pub,AE}})$
+  \item il token firmato dal SA
+  \item il nonce della Proof of Work
+\end{itemize}
+
+A urne chiuse, l'AE decifra $\mathtt{Enc\_2}$ per recuperare il seed in chiaro e lo pubblica
+insieme al voto. Chiunque può allora rieseguire $\mathrm{RSA\text{-}OAEP}(\mathtt{voto} \,\|\,
+\mathtt{seed},\; k_{\mathrm{pub,AE}})$ e confrontare il risultato con la scheda registrata nel
+Merkle Tree, verificando che l'AE non abbia alterato né inventato alcuna decifratura.
+
+L'identificativo dell'elettore non viene incluso nel messaggio.
+
+\subsubsection{Proof of Work Adattiva}
+
+Prima dell'invio, il client risolve una PoW calcolando un nonce tale che
+\begin{equation*}
+  \mathrm{SHA\text{-}256}(\mathtt{Enc\_1} \,\|\, \mathtt{nonce})
+\end{equation*}
+presenti un numero prefissato di bit iniziali a zero. Questo meccanismo, basato su funzioni
+hash crittografiche, rende oneroso l'invio massivo di richieste automatizzate e mitiga gli
+attacchi volumetrici contro l'AE.
+
+La difficoltà è modulata dinamicamente:
+\begin{itemize}
+  \item \textbf{Operatività standard:} difficoltà minima, calcolo $\approx 0{,}1\,\mathrm{s}$.
+  \item \textbf{Sotto attacco (DoS):} la difficoltà viene incrementata automaticamente,
+    innalzando il costo per la botnet senza penalizzare eccessivamente l'elettore onesto
+    (ritardo percepito $\approx 2$--$3\,\mathrm{s}$).
+\end{itemize}
+
+Nel sistema implementato la PoW è legata a una \emph{challenge} emessa dall'AE e la
+difficoltà adattiva è calcolata per indirizzo IP invece che globalmente: l'attaccante non
+può precalcolare le PoW né alzare il costo per gli elettori onesti
+(Sezione~\ref{sec:mod38}).
+
+\subsubsection{Verifiche dell'AE e registrazione}
+
+All'atto della ricezione, l'AE verifica sequenzialmente:
+\begin{enumerate}
+  \item validità matematica della PoW;
+  \item validità della firma del token tramite $k_{\mathrm{pub,SA}}$;
+  \item unicità del token (non presente in \texttt{used\_tokens});
+  \item validità temporale del token (finestra $< 30\,\mathrm{min}$).
+\end{enumerate}
+
+Nell'implementazione l'AE verifica inoltre che il voto cada nella finestra temporale
+dell'elezione pubblicata nel blocco iniziale e che la scheda sia un ciphertext RSA ben
+formato; il controllo di unicità e la registrazione sono eseguiti in modo atomico, così che
+richieste simultanee con lo stesso token non possano superare entrambe il controllo
+(Sezione~\ref{sec:mod41}).
+
+In caso di esito positivo, la scheda viene accettata, il token marcato come usato,
+e un record $[\mathtt{Enc\_1},\, \mathtt{Enc\_2},\, \mathtt{indice},\, \mathtt{timestamp}]$
+viene inserito come nuova foglia nel Merkle Tree. L'hash SHA-256 del record costituisce
+la foglia dell'urna; grazie alla struttura Merkle, qualsiasi tentativo di alterare una
+scheda già registrata invalida i nodi superiori, rendendo la manomissione rilevabile
+pubblicamente.
+
+\subsubsection{Ricevuta crittografica}
+
+L'AE firma con RSA-PSS e restituisce al client una ricevuta contenente:
+\begin{itemize}
+  \item l'indice della foglia nel Merkle Tree;
+  \item la scheda cifrata ($\mathtt{Enc\_1}$);
+  \item la Merkle proof di inclusione.
+\end{itemize}
+
+Alla chiusura delle urne, l'AE pubblica e firma la radice finale del Merkle Tree. Poiché
+l'albero continua a crescere dopo ogni voto, la proof rilasciata è valida rispetto alla
+radice \emph{del momento del voto}: per questo la ricevuta implementata contiene anche tale
+radice e il numero di schede presenti in quell'istante (Sezione~\ref{sec:mod36}).
+
+Una volta registrata, la scheda è definitiva e non può essere sostituita o annullata.
+
+% ----
+\subsection{Fase 4 – Scrutinio e Pubblicazione}
+
+Alla chiusura delle urne, l'AE avvia automaticamente lo scrutinio operando sullo stato
+finale del registro, vincolato dalla radice del Merkle Tree pubblicata in fase di votazione.
+La chiave privata di decifratura ($k_{\mathrm{priv,AE}}$) viene istanziata in memoria
+\emph{unicamente} all'invocazione dell'endpoint \texttt{/close}.
+
+Per ogni record nel registro:
+\begin{enumerate}
+  \item decifratura del seed: $\mathtt{seed} = \mathrm{RSA\text{-}OAEP}^{-1}(\mathtt{Enc\_2},\; k_{\mathrm{priv,AE}})$;
+  \item decifratura del voto: $\mathtt{voto} = \mathrm{RSA\text{-}OAEP}^{-1}(\mathtt{Enc\_1},\; k_{\mathrm{priv,AE}})$;
+  \item validazione di congruenza: ricifratura locale di (\texttt{voto}, \texttt{seed}) e
+    confronto con $\mathtt{Enc\_1}$; incongruenza $\Rightarrow$ declassamento a
+    \textit{Scheda Nulla}.
+\end{enumerate}
+
+Al termine, l'AE pubblica sul registro:
+\begin{itemize}
+  \item il risultato finale aggregato per ciascuna lista;
+  \item l'insieme completo delle triple $(\mathtt{Enc\_1},\, \mathtt{voto},\, \mathtt{seed})$ per
+    ciascuna scheda scrutinata (la pubblicazione del seed avviene solo in questa fase).
+\end{itemize}
+
+I voti in chiaro vengono aggregati per lista candidata. Le schede non conformi al dominio dei
+voti validi sono conteggiate come schede nulle, senza compromettere l'integrità del registro.
+
+Nel sistema implementato lo scrutinio non dipende dal seed cifrato separatamente
+($\mathtt{Enc\_2}$): per ogni scheda l'AE pubblica il blocco decifrato
+$\mathtt{EM} = c^{d} \bmod n$, da cui chiunque ricava voto e seed e verifica che la
+decifratura sia corretta con la sola chiave pubblica, schede nulle comprese
+(Sezione~\ref{sec:mod35}).
+
+% ----
+\subsection{Fase 5 – Verifica Individuale e Universale}
+
+\subsubsection{Verifica individuale}
+Tramite la ricevuta e le chiavi pubbliche dell'AE, ciascun elettore verifica che:
+\begin{enumerate}
+  \item la firma RSA-PSS sulla ricevuta sia valida;
+  \item la Merkle proof sia coerente con la radice finale pubblicata;
+  \item la propria $\mathtt{Enc\_1}$ compaia nel registro pubblico abbinata al voto in chiaro
+    corretto, coerentemente con la ricevuta ricevuta dall'AE, e sia verificabile rieseguendo
+    la cifratura con il seed pubblicato.
+\end{enumerate}
+
+\subsubsection{Verifica universale}
+Chiunque verifica che:
+\begin{enumerate}
+  \item la firma dell'AE sulla radice del Merkle Tree finale sia valida;
+  \item lo scrutinio utilizzi esclusivamente schede incluse nel registro;
+  \item l'aggregazione pubblicata sia coerente con le triple disponibili.
+\end{enumerate}
+
+Le verifiche implementate nel client e nell'Observer estendono questi controlli con la
+consistenza del registro rispetto alla radice del momento del voto, la verifica pubblica
+delle decifrature, la catena di hash tra i blocchi e la firma di ogni blocco
+(Sezioni~\ref{sec:mod35}--\ref{sec:mod37}).
+
+% ----
+\subsection{Limiti Dichiarati del Sistema}
+
+\begin{itemize}
+  \item \textbf{Segretezza durante la raccolta:} la chiave di decifratura è protetta da un
+    escrow a soglia (Shamir 2-su-3 tra gli scrutatori), quindi l'AE da sola non può
+    decifrare le schede prima della chiusura; la garanzia vale finché almeno due
+    scrutatori non consegnano anticipatamente la propria quota. Nel PoC le quote sono
+    salvate sullo stesso disco dei server per simularne la consegna.
+  \item \textbf{Receipt-freeness:} la verificabilità individuale consente, a scrutinio
+    concluso, di dimostrare a terzi il contenuto del proprio voto.
+  \item \textbf{Anonimato condizionato:} la segretezza regge solo se SA e AE non
+    colludono.
+  \item \textbf{Omissione di schede:} il Merkle Tree impedisce alterazioni retroattive ma
+    non l'omissione al momento della ricezione; tale evento è rilevabile solo tramite
+    la ricevuta individuale.
+  \item \textbf{Integrità del client:} un client compromesso può produrre schede non
+    coerenti con la scelta effettuata.
+  \item \textbf{Riempimento delle urne fino ai token emessi:} poiché il token non è
+    pubblicato accanto alla scheda, l'Observer non può verificare che ogni scheda sia
+    stata autorizzata dal SA; un'AE (o un SA) disonesta può aggiungere schede fino al
+    numero di token emessi senza violare la riconciliazione.
+  \item \textbf{Idoneità degli elettori:} la registrazione verifica il dominio
+    istituzionale dell'indirizzo email ma non il possesso della casella.
+\end{itemize}
+
+\newpage
+
+% ============================================================
+%  WP3
+% ============================================================
+\section{WP3 – Analisi della Sicurezza}
+
+Il presente work package ha lo scopo di analizzare la sicurezza della soluzione crittografica definita in WP2 rispetto al modello concettuale introdotto in WP1. L'analisi si articola in tre parti complementari:
+\begin{itemize}
+  \item Nella prima parte viene condotta una verifica sistematica delle proprietà di sicurezza: per ciascuna delle sei proprietà identificate nel modello (autenticità, unicità, segretezza, integrità, verificabilità individuale e verificabilità universale) si esamina il meccanismo del protocollo che la implementa, le condizioni sotto cui la garanzia regge e i casi in cui essa risulta parziale o condizionata.
+  \item Nella seconda parte si analizza il threat model del WP1 dal punto di vista del protocollo: per ciascuna categoria di avversario si valuta se le contromisure adottate in WP2 siano sufficienti a neutralizzarne le capacità offensive, evidenziando eventuali gap residui.
+  \item Nella terza parte vengono identificate e motivate modifiche migliorative al protocollo: interventi che apportano benefici netti a una o più proprietà di sicurezza senza introdurre perdite in altre, compatibili con i vincoli di complessità e scalabilità dichiarati in WP1.
+\end{itemize}
+
+% ----
+\subsection{Verifica delle Proprietà di Sicurezza}
+
+In questa sezione ciascuna proprietà di sicurezza definita in WP1 viene analizzata rispetto al protocollo di WP2, esaminando i meccanismi che la supportano, le condizioni necessarie alla sua tenuta e i limiti residui.
+
+\subsubsection{Autenticità}
+\begin{description}
+  \item[Proprietà attesa (WP1):] solo gli elettori legittimamente registrati possono partecipare al voto; nessuna scheda valida può essere introdotta da un soggetto non autorizzato.
+  \item[Meccanismi nel protocollo (WP2):] \
+    \begin{itemize}
+      \item Il Sistema di Autenticazione (SA) verifica le credenziali istituzionali dell'elettore prima di rilasciare qualsiasi token.
+      \item Il token è firmato crittograficamente dal SA con schema RSA-PSS su hash SHA-256.
+      \item L'Autorità Elettorale (AE) verifica la firma del token per ciascuna scheda ricevuta, rifiutando ogni scheda priva di token valido.
+      \item Il token include un nonce casuale non predicibile, che ne impedisce la falsificazione e riduce la possibilità di correlazioni tra token distinti.
+    \end{itemize}
+  \item[Condizioni di validità:] la garanzia regge se le primitive crittografiche (RSA-PSS, SHA-256) sono computazionalmente sicure, se la chiave privata del SA non è compromessa e se il canale TLS tra elettore e SA non è soggetto ad attacchi attivi che consentano di sostituire le credenziali.
+  \item[Limiti residui:] un elettore legittimo le cui credenziali istituzionali siano state sottratte da un avversario potrebbe consentire a quest'ultimo di ottenere un token valido. Questa minaccia è esterna al perimetro del protocollo e dipende dalla robustezza del sistema di identità istituzionale.
+\end{description}
+
+\subsubsection{Unicità del Voto (One Voter, One Vote)}
+\begin{description}
+  \item[Proprietà attesa (WP1):] ciascun elettore può esprimere al più un voto valido; il sistema deve prevenire sia il double voting intenzionale sia la duplicazione di voti da parte di un gestore corrotto.
+  \item[Meccanismi nel protocollo (WP2):] \
+    \begin{itemize}
+      \item Il SA controlla che a ciascun elettore sia rilasciato un unico token per elezione; i tentativi successivi di autenticazione non producono nuovi token.
+      \item L'AE verifica l'unicità del token al momento della ricezione della scheda: un token già marcato come usato causa il rifiuto immediato della richiesta.
+      \item Il Merkle Tree del registro è append-only: ogni scheda accettata è associata a un indice progressivo univoco, e la struttura impedisce l'inserimento retroattivo di schede duplicate senza invalidare la radice pubblicata.
+    \end{itemize}
+  \item[Condizioni di validità:] la garanzia regge se la chiave privata del SA non è compromessa (condizione necessaria affinché i token non siano falsificabili da un avversario esterno) e se SA e AE non colludono (condizione necessaria affinché i token non vengano emessi o accettati in modo fraudolento al di fuori del flusso previsto dal protocollo). Un avversario esterno privo di token firmati dal SA non può inserire schede valide nel registro, indipendentemente dalle proprie capacità computazionali.
+  \item[Limiti residui:] il protocollo non prevede un meccanismo pubblico e verificabile che attesti che il numero di schede nel registro non superi il numero di token legittimamente emessi dal SA. In assenza di tale meccanismo, un'eventuale collusione SA-AE che producesse schede in eccesso rispetto agli elettori autenticati non sarebbe rilevabile da un osservatore esterno. Questo gap è affrontato come modifica migliorativa nella Sezione~\ref{sec:mod31}, dove si propone che il SA pubblichi e firmi il conteggio dei token emessi a urne chiuse, consentendo a chiunque di verificare che il numero di schede nel registro non lo superi. Si noti che una discrepanza in difetto ovvero un numero di schede inferiore ai token emessi è un comportamento del tutto legittimo, poiché un elettore può autenticarsi e ottenere un token senza poi esercitare il proprio diritto di voto.
+\end{description}
+
+\subsubsection{Segretezza del Voto (Vote Privacy)}
+\begin{description}
+  \item[Proprietà attesa (WP1):] nessuna singola entità può associare l'identità reale di un elettore alla sua preferenza espressa.
+  \item[Meccanismi nel protocollo (WP2):] \
+    \begin{itemize}
+      \item La scheda viene cifrata con RSA-OAEP usando la chiave pubblica dell'AE: solo l'AE, a urne chiuse, può decifrarla.
+      \item La cifratura probabilistica tramite seed casuale garantisce che schede con voto identico producano ciphertext completamente diversi, impedendo la correlazione per confronto.
+      \item Il messaggio inviato all'AE non contiene identificativi dell'elettore: l'AE riceve esclusivamente la scheda cifrata, il seed cifrato, il token opaco e il nonce PoW.
+      \item La separazione funzionale tra SA (che conosce l'identità) e AE (che conosce la scheda) è il principale meccanismo strutturale di protezione della segretezza.
+    \end{itemize}
+  \item[Condizioni di validità:] la segretezza è garantita a condizione che SA e AE non colludano e che il canale di comunicazione tra client e AE non consenta la correlazione delle schede alle identità tramite analisi del traffico di rete.
+  \item[Limiti residui:] in caso di collusione tra SA e AE, è teoricamente possibile correlare i log di autenticazione con i record del registro tramite analisi temporale.
+\end{description}
+
+\subsubsection{Integrità dei Voti}
+\begin{description}
+  \item[Proprietà attesa (WP1):] i voti registrati non possono essere alterati, soppressi o introdotti fraudolentemente dopo la loro espressione.
+  \item[Meccanismi nel protocollo (WP2):] \
+    \begin{itemize}
+      \item Il registro delle schede è strutturato come un Merkle Tree append-only: ogni scheda accettata costituisce una foglia, e la radice viene pubblicata e firmata dall'AE a urne chiuse.
+      \item Qualsiasi modifica retroattiva a una scheda già registrata invalida tutti i nodi superiori del Merkle Tree, rendendo la manomissione rilevabile pubblicamente dal confronto con la radice firmata.
+      \item La ricevuta rilasciata all'elettore contiene la Merkle proof della propria scheda: ciascun elettore può autonomamente verificare l'inclusione nella radice finale pubblicata.
+      \item Lo scrutinio opera sullo stato finale del registro vincolato dalla radice firmata: l'AE non può alterare l'insieme di schede da scrutinare senza invalidare la propria firma.
+    \end{itemize}
+  \item[Condizioni di validità:] l'integrità è garantita se le primitive crittografiche (SHA-256 per il Merkle Tree, RSA-PSS per la firma sulla radice) sono sicure e se la chiave privata di firma dell'AE non è compromessa.
+  \item[Limiti residui:] il Merkle Tree impedisce alterazioni retroattive ma non l'omissione di una scheda al momento della ricezione, prima che essa venga inserita nel registro. Tale omissione è rilevabile solo dall'elettore tramite la propria ricevuta, e solo se l'elettore effettua attivamente la verifica individuale.
+\end{description}
+
+\subsubsection{Verificabilità Individuale}
+\begin{description}
+  \item[Proprietà attesa (WP1):] ciascun elettore può verificare autonomamente che il proprio voto sia stato correttamente incluso nel conteggio finale.
+  \item[Meccanismi nel protocollo (WP2):] \
+    \begin{itemize}
+      \item L'AE rilascia all'elettore una ricevuta firmata con RSA-PSS contenente l'indice della foglia nel Merkle Tree, la scheda cifrata e la Merkle proof di inclusione.
+      \item L'elettore verifica la firma sulla ricevuta tramite la chiave pubblica di firma dell'AE, pubblicata sul registro in fase di inizializzazione.
+      \item L'elettore verifica la Merkle proof confrontandola con la radice finale pubblicata dall'AE a urne chiuse.
+      \item A scrutinio concluso, l'elettore individua nel registro pubblico la tripla (scheda cifrata, voto in chiaro, seed) corrispondente alla propria scheda e verifica la correttezza della decifratura rieseguendo la cifratura con il seed pubblicato.
+    \end{itemize}
+  \item[Condizioni di validità:] la verifica individuale è possibile se l'elettore conserva la ricevuta e se il registro pubblico è accessibile. La proprietà dipende inoltre dall'autenticità della chiave pubblica di firma dell'AE, distribuita tramite certificati X.509 su canale TLS.
+  \item[Limiti residui:] la ricevuta consente a un elettore di dimostrare a terzi il contenuto del proprio voto a scrutinio concluso (receipt-freeness non garantita), rendendo possibile la coercizione o la vendita del voto. Questo compromesso è dichiarato in WP2 e motivato dalla scelta di privilegiare la verificabilità individuale.
+\end{description}
+
+\subsubsection{Verificabilità Universale}
+\begin{description}
+  \item[Proprietà attesa (WP1):] chiunque, inclusi soggetti non registrati come elettori, può verificare la correttezza del risultato finale dell'elezione.
+  \item[Meccanismi nel protocollo (WP2):] \
+    \begin{itemize}
+      \item L'AE pubblica la radice del Merkle Tree finale firmata, il risultato aggregato per lista e l'insieme completo delle triple (scheda cifrata, voto in chiaro, seed) per ciascuna scheda scrutinata.
+      \item Chiunque può verificare la firma dell'AE sulla radice e sul verbale dello scrutinio tramite la chiave pubblica pubblicata in fase di inizializzazione.
+      \item Chiunque può rieseguire la cifratura di ogni voto in chiaro con il seed pubblicato e confrontare il risultato con la scheda cifrata nel registro, verificando che l'AE non abbia alterato né inventato alcuna decifratura.
+      \item Chiunque può verificare che l'aggregazione dei voti pubblicata sia coerente con l'insieme delle triple disponibili.
+    \end{itemize}
+  \item[Condizioni di validità:] la verificabilità universale regge se la firma dell'AE è autentica e se il registro pubblico è accessibile. La pubblicazione del seed avviene solo a scrutinio concluso, preservando la segretezza durante la raccolta.
+  \item[Limiti residui:] la verificabilità universale garantisce la coerenza interna del registro pubblico: chiunque può verificare che il risultato sia calcolato correttamente sulle schede presenti. Tuttavia, un osservatore esterno non dispone di strumenti per verificare che il registro sia completo, ovvero che l'AE non abbia omesso schede legittime prima del loro inserimento. Questa forma di omissione è rilevabile solo individualmente, da ciascun elettore tramite la propria ricevuta, e non universalmente. La verificabilità universale è quindi piena sulla correttezza del conteggio, ma parziale sulla completezza dell'insieme delle schede scrutinate.
+\end{description}
+
+\subsubsection{Riepilogo della Verifica}
+
+La tabella~\ref{tab:riepilogo_verifiche} riassume l'esito della verifica per ciascuna proprietà di sicurezza.
+
+\begin{table}[!ht]
+\centering
+\small
+\begin{tabularx}{\textwidth}{lYYY}
+\toprule
+\textbf{Proprietà} & \textbf{Meccanismo principale} & \textbf{Garanzia} & \textbf{Limite residuo} \\
+\midrule
+Autenticità & Token SA firmato RSA-PSS, verifica AE & Forte (cond. sicurezza SA) & Furto credenziali istituzionali (fuori scope) \\
+\midrule
+Unicità & Token a uso singolo, Merkle Tree append-only & Forte (cond. integrità SA e AE) & Assenza riconciliazione pubblica SA-AE \\
+\midrule
+Segretezza & RSA-OAEP probabilistico, separazione SA/AE & Condizionata (non-collusione) & Correlazione via analisi traffico di rete \\
+\midrule
+Integrità & Merkle Tree, firma radice RSA-PSS & Forte (tamper rilevabile) & Omissione schede prima dell'inserimento \\
+\midrule
+Verificabilità Individuale & Ricevuta firmata + Merkle proof & Forte (se ricevuta conservata) & Receipt-freeness non garantita \\
+\midrule
+Verificabilità Universale & Pubblicazione triple + riesecuzione cifratura & Forte (dati e chiavi pubbliche) & Completezza del registro non universalmente verificabile \\
+\bottomrule
+\end{tabularx}
+\caption{Riepilogo della verifica delle proprietà di sicurezza}
+\label{tab:riepilogo_verifiche}
+\end{table}
+
+% ----
+\subsection{Analisi degli Avversari}
+
+In questa sezione il threat model definito in WP1 viene analizzato in relazione al protocollo di WP2. Per ciascuna categoria di avversario si valuta se le contromisure adottate siano sufficienti a neutralizzarne le capacità offensive e si identificano eventuali gap residui.
+
+\subsubsection{Gestore Disonesto (AE o SA corrotta)}
+
+Questo avversario ha accesso diretto ai database del sistema e alle chiavi private del proprio componente. I possibili obiettivi includono: alterare il conteggio, violare la segretezza, introdurre schede fraudolente o impedire la pubblicazione del risultato.
+
+\textbf{SA corrotta}
+\begin{itemize}
+  \item \textit{Emissione di token extra:} il SA potrebbe rilasciare token aggiuntivi per elettori inesistenti o già votanti. La contromisura parziale è il Merkle Tree, che registra pubblicamente ogni scheda accettata; tuttavia, senza una riconciliazione pubblica tra token emessi e schede registrate, l'attacco potrebbe non essere immediatamente rilevabile. Questa lacuna è affrontata nella Sezione~\ref{sec:mod31}.
+  \item \textit{Correlazione identità-voto:} il SA conosce l'identità dell'elettore e il momento del rilascio del token. Se l'AE conserva il timestamp di ricezione della scheda, la correlazione temporale è possibile per un SA corrotto che collude con l'AE. Il rischio è mitigato dalla separazione architettonica ma non eliminato crittograficamente.
+\end{itemize}
+
+\textbf{AE corrotta}
+\begin{itemize}
+  \item \textit{Alterazione del conteggio:} qualsiasi modifica a schede già registrate cambia la radice del Merkle Tree. Poiché l'AE possiede la propria chiave di firma, potrebbe ricalcolare e ri-firmare la radice: l'alterazione resta però rilevabile dalle ricevute degli elettori, che contengono la radice firmata del momento del voto e permettono di verificare che il registro non sia stato riscritto (Sezione~\ref{sec:mod36}).
+  \item \textit{Omissione di schede:} l'AE potrebbe rifiutare di registrare una scheda legittima senza che ciò sia visibile nel registro pubblico. L'unica contromisura è la ricevuta dell'elettore, che rende l'omissione rilevabile individualmente ma non universalmente in modo automatico.
+  \item \textit{Decifratura anticipata:} il protocollo di WP2 vincola l'uso della chiave privata di decifratura tramite vincoli operativi, non crittografici. Il sistema implementato trasforma il vincolo in crittografico con un escrow a soglia tra gli scrutatori (Sezione~\ref{sec:mod33}): l'AE da sola non possiede la chiave.
+  \item \textit{Pubblicazione di un risultato falso:} l'AE può firmare qualunque verbale, ma per ogni scheda pubblica la decifratura $\mathtt{EM}$, verificabile da chiunque con la chiave pubblica: attribuire a una scheda un contenuto diverso o dichiararla nulla senza motivo viene rilevato dall'Observer (Sezione~\ref{sec:mod35}).
+  \item \textit{Rimozione o riordino di blocchi del registro:} ogni blocco contiene l'hash del precedente; la cancellazione di un blocco (ad esempio la riconciliazione firmata dal SA) interrompe la catena ed è rilevata dall'Observer (Sezione~\ref{sec:mod37}).
+\end{itemize}
+
+\subsubsection{Elettore Malevolo}
+
+L'elettore malevolo è un soggetto legittimamente registrato che tenta di ottenere vantaggi illeciti o di perturbare il sistema.
+
+\begin{itemize}
+  \item \textbf{Double voting:} il SA garantisce che ogni elettore riceva un unico token; l'AE rifiuta token già usati. Il tentativo di inviare più schede è neutralizzato strutturalmente.
+  \item \textbf{Invio di schede non valide (spam):} mitigato dalla Proof of Work adattiva. In condizioni normali il costo per l'elettore onesto è trascurabile; in presenza di attacchi volumetrici la difficoltà aumenta, rendendo l'invio massivo di schede false computazionalmente oneroso. Le schede non valide vengono conteggiate come nulle senza compromettere il registro.
+  \item \textbf{Sabotaggio della verifica tramite seed incoerente:} un elettore può cifrare un voto valido e allegare un seed cifrato diverso da quello effettivamente usato, sperando di bloccare la verifica universale. Nel sistema implementato il seed è ricavato dalla decifratura della scheda stessa (Sezione~\ref{sec:mod35}): il seed allegato è irrilevante, la scheda conta per il suo contenuto reale e la verifica si completa.
+  \item \textbf{Double voting con richieste simultanee:} inviando più schede con lo stesso token nello stesso istante, l'elettore potrebbe sfruttare l'intervallo tra il controllo di unicità e la marcatura del token. Le sezioni critiche di AE e SA sono eseguite in modo atomico (Sezione~\ref{sec:mod41}): viene accettata una sola scheda.
+  \item \textbf{Dimostrazione del voto a terzi (coercizione):} la ricevuta, a scrutinio concluso, consente all'elettore di dimostrare il contenuto del proprio voto. Il sistema non garantisce receipt-freeness, come dichiarato in WP2. Non sono disponibili contromisure semplici compatibili con i vincoli del progetto.
+  \item \textbf{Replay di una scheda propria:} il token è a uso singolo e marcato come usato dall'AE all'atto della prima registrazione. Un reinvio della stessa scheda viene rifiutato per token già consumato.
+\end{itemize}
+
+\subsubsection{Avversario Esterno Passivo (Eavesdropper)}
+
+Questo avversario monitora passivamente le comunicazioni tra gli attori, senza poterle modificare.
+
+\begin{itemize}
+  \item \textbf{Intercettazione del contenuto delle schede:} il canale TLS obbligatorio cifra tutto il traffico in transito. La scheda è inoltre già cifrata con RSA-OAEP: anche in caso di compromissione del canale TLS, il ciphertext non rivela la preferenza dell'elettore.
+  \item \textbf{Correlazione temporale identità-scheda:} un avversario che osserva il traffico può correlare il momento di invio della scheda con l'identità dell'elettore tramite indirizzo IP o orario di connessione. Il protocollo non fornisce contromisure a questo livello; tecniche di anonimizzazione della rete sono fuori scope, come dichiarato in WP2.
+  \item \textbf{Analisi del registro pubblico:} le schede cifrate non rivelano la preferenza (RSA-OAEP probabilistico). I seed vengono pubblicati solo a scrutinio concluso, rendendo la correlazione temporale inutile durante la raccolta.
+\end{itemize}
+
+\subsubsection{Avversario Esterno Attivo}
+
+Questo avversario può modificare, ritardare o eliminare messaggi in transito, lanciare attacchi replay e sovraccaricare i server.
+
+\begin{itemize}
+  \item \textbf{Man-in-the-Middle:} il canale TLS con certificati X.509 mitiga gli attacchi MitM classici. Un attacco di key substitution (sostituzione della chiave pubblica dell'AE) è mitigato dall'autenticità dei parametri distribuiti tramite TLS, ma non è escluso crittograficamente in caso di compromissione della PKI. La mitigazione complementare tramite certificate pinning è discussa nella Sezione~\ref{sec:mod34}.
+  \item \textbf{Replay di messaggi:} la validità temporale del token e il controllo di unicità da parte dell'AE neutralizzano i replay. Un token già usato viene rifiutato; un token scaduto viene rifiutato per validità temporale.
+  \item \textbf{Modifica di una scheda in transito:} il canale TLS protegge l'integrità dei messaggi. Una modifica della scheda produrrebbe una scheda con PoW non valida o con firma del token non corrispondente, causando il rifiuto da parte dell'AE.
+  \item \textbf{Attacchi DDoS e Brute-Force:} il protocollo mitiga gli attacchi di saturazione utilizzando difese specifiche per ciascun nodo.
+    \begin{itemize}
+      \item \textit{Lato AE (Ricezione Voti):} l'adozione di una Proof of Work (PoW) adattiva funge da filtro preventivo per lo spam prima della validazione crittografica. Il meccanismo distingue la tipologia di attacco: per gli attacchi DoS basilari, in cui la PoW non viene risolta, la richiesta viene immediatamente esclusa dall'AE senza alterare la difficoltà. Per gli attacchi più sofisticati, la difficoltà della PoW viene aumentata esponenzialmente per innalzare il costo computazionale per l'attaccante. Tale approccio richiede una calibrazione accurata dei parametri: una configurazione eccessivamente restrittiva potrebbe paradossalmente indurre una condizione di \textit{self-inflicted denial of service}, degradando le prestazioni o impedendo l'accesso agli utenti legittimi. Per evitare che l'attaccante stesso induca questa condizione a danno degli onesti, e per impedire il precalcolo delle PoW, la versione implementata lega la PoW a una challenge del server e calcola la difficoltà per IP (Sezione~\ref{sec:mod38}).
+      \item \textit{Lato SA (Autenticazione):} per proteggere l'endpoint di login da attacchi di forza bruta e flood di richieste, è implementato un meccanismo rigoroso di Rate Limiting su base IP. Il sistema mantiene una struttura dati in memoria (una \textit{deque} di timestamp per ciascun indirizzo IP) che implementa una finestra scorrevole (\textit{sliding window}): sono ammesse al massimo 10 richieste ogni 60 secondi per singolo IP. Superata tale soglia, il SA rigetta le connessioni in ingresso a basso costo computazionale, prevenendo la saturazione della CPU necessaria per la generazione e la firma RSA-PSS dei token legittimi. Il limite per IP non ferma da solo un brute force distribuito su molti indirizzi né l'enumerazione degli account: le contromisure aggiuntive (IP reale della connessione, blocco per account con attesa crescente, tempi di risposta indistinguibili) sono descritte nella Sezione~\ref{sec:mod39}.
+    \end{itemize}
+\end{itemize}
+
+% ----
+\subsection{Modifiche Migliorative}
+
+In questa sezione vengono identificate modifiche al protocollo di WP2 che apportano benefici netti a una o più proprietà di sicurezza senza introdurre perdite in altre. Ciascuna modifica è analizzata in termini di beneficio, impatto sulle proprietà e compatibilità con i vincoli di complessità e scalabilità dichiarati in WP1.
+
+\subsubsection{Commitment Pubblico del Numero di Token Emessi}
+\label{sec:mod31}
+
+\begin{description}
+  \item[Descrizione:] Al termine della fase di autenticazione, o contestualmente alla chiusura delle urne, il SA pubblica e firma crittograficamente il numero totale di token rilasciati per l'elezione corrente. A urne chiuse, l'AE pubblica analogamente il numero totale di schede registrate nel Merkle Tree. Qualsiasi osservatore può confrontare i due valori e rilevare eventuali discrepanze.
+  \item[Benefici:] \
+    \begin{itemize}
+      \item Rafforza la proprietà di unicità del voto: una discrepanza positiva (più schede che token) segnala l'inserimento di schede fraudolente da parte di un'AE corrotta.
+      \item Introduce un meccanismo di verifica universale sul numero di partecipanti, complementare alla verifica sul contenuto delle schede.
+      \item Non richiede modifiche al flusso di votazione né al formato delle schede.
+    \end{itemize}
+  \item[Analisi dell'impatto sulle proprietà:] \
+    \begin{itemize}
+      \item \textit{Unicità:} rafforzata. La riconciliazione pubblica SA-AE rende rilevabile il \textit{ballot stuffing} senza richiedere la collaborazione dei singoli elettori.
+      \item \textit{Verificabilità universale:} rafforzata. La verifica si estende anche al numero di voti, non solo al loro contenuto.
+      \item \textit{Segretezza:} non impattata. Il commitment riguarda il conteggio aggregato, non le identità né il contenuto delle schede.
+      \item Nessuna proprietà risulta indebolita da questa modifica.
+    \end{itemize}
+  \item[Implementazione:] Il SA firma il valore \texttt{count\_token} con la propria chiave privata RSA-PSS e pubblica la coppia (\texttt{count\_token}, \texttt{firma\_SA}) sul registro al momento della chiusura delle urne. L'AE pubblica analogamente (\texttt{count\_schede}, \texttt{firma\_AE}). Entrambi i valori sono verificabili con le chiavi pubbliche già distribuite in Fase 1, senza richiedere alcuna nuova primitiva crittografica.
+\end{description}
+
+\subsubsection{Timestamp Firmato nella Ricevuta}
+\label{sec:mod32}
+
+\begin{description}
+  \item[Descrizione:] La ricevuta rilasciata dall'AE viene arricchita con un timestamp firmato che attesta l'orario esatto di accettazione della scheda. Il timestamp è incluso nel payload firmato con la chiave privata di firma dell'AE tramite RSA-PSS.
+  \item[Benefici:] \
+    \begin{itemize}
+      \item Rafforza la verificabilità individuale: l'elettore dispone di una prova verificabile non solo dell'inclusione nel Merkle Tree, ma anche del momento in cui il voto è stato registrato.
+      \item Rende rilevabile l'omissione tardiva: se l'AE ritardasse deliberatamente l'inserimento di una scheda nel registro, il timestamp nella ricevuta non corrisponderebbe all'indice progressivo della foglia, rendendo l'anomalia individuabile dall'elettore.
+      \item Permette di rilevare registrazioni effettuate al di fuori della finestra temporale valida dell'elezione.
+    \end{itemize}
+  \item[Analisi dell'impatto sulle proprietà:] \
+    \begin{itemize}
+      \item \textit{Verificabilità individuale:} rafforzata. La ricevuta diventa una prova più completa e difficile da contestare.
+      \item \textit{Integrità:} lievemente rafforzata. L'anomalia di timing diventa rilevabile senza analisi comparativa del registro.
+      \item \textit{Overhead computazionale:} trascurabile. Il timestamp è incluso nel payload già firmato con RSA-PSS; non richiede operazioni crittografiche aggiuntive.
+      \item Nessuna proprietà risulta indebolita. Il timestamp non rivela informazioni sul contenuto del voto né sull'identità dell'elettore.
+    \end{itemize}
+  \item[Implementazione:] Il campo \texttt{timestamp} viene aggiunto al payload della ricevuta prima della firma RSA-PSS dell'AE. Il formato della ricevuta diventa: \texttt{\{ indice\_foglia, scheda\_cifrata, merkle\_proof, timestamp \}}, firmato con la chiave privata di firma dell'AE. Nessuna modifica è richiesta al formato del Merkle Tree o al flusso di votazione. Nel sistema implementato la ricevuta include anche numero di schede e radice al momento del voto (Sezione~\ref{sec:mod36}).
+\end{description}
+
+\subsubsection{Escrow a Soglia della Chiave Privata di Decifratura}
+\label{sec:mod33}
+
+\begin{description}
+  \item[Descrizione:] Il protocollo di WP2 vincola l'uso della chiave privata di decifratura dell'AE alla fase successiva alla chiusura delle urne tramite un vincolo puramente operativo. Il vincolo viene reso crittografico con un escrow a soglia basato su \textit{Shamir Secret Sharing}. All'inizializzazione si genera una chiave AES-256 casuale, con cui la chiave privata RSA viene cifrata (AES-GCM, con l'identificativo dell'elezione come dato associato). La chiave AES viene divisa in $n=3$ quote, una per ciascuno scrutatore, delle quali $k=2$ sono sufficienti a ricostruirla; dopo la divisione la chiave AES viene scartata e la chiave privata RSA non esiste più in chiaro. Gli impegni SHA-256 sulle quote sono pubblicati nel blocco iniziale firmato del registro. Alla chiusura gli scrutatori consegnano le quote all'AE, che le verifica contro gli impegni, ricostruisce la chiave per interpolazione di Lagrange e solo allora chiude le urne e avvia lo scrutinio.
+  \item[Scelta progettuale:] una variante più semplice, che derivava la chiave simmetrica da una firma dell'AE (sul blocco iniziale e poi sulla radice finale), è stata scartata: la firma del blocco iniziale è pubblica sul registro, quindi chiunque disponesse del file cifrato avrebbe potuto decifrare la chiave; inoltre la chiave che \emph{sblocca} il vincolo sarebbe stata nelle mani della stessa entità da vincolare. Con lo schema a soglia la chiave non dipende da alcun dato pubblico né da un segreto della sola AE.
+  \item[Benefici:] \
+    \begin{itemize}
+      \item Rafforza la garanzia di segretezza durante la raccolta: né l'AE da sola né chi legge il registro possono decifrare le schede prima della chiusura.
+      \item Con meno di $k$ quote non si ottiene alcuna informazione sulla chiave (sicurezza incondizionata dello schema di Shamir); quote manomesse, file alterato o riuso per un'altra elezione sono rilevati dall'autenticazione AES-GCM.
+      \item La soglia $2$-su-$3$ tollera l'indisponibilità di uno scrutatore.
+    \end{itemize}
+  \item[Analisi dell'impatto sulle proprietà:] \
+    \begin{itemize}
+      \item \textit{Segretezza:} rafforzata. La protezione durante la raccolta dipende dalla non-collusione di almeno $k$ scrutatori con l'AE, non dalla correttezza comportamentale della sola AE.
+      \item \textit{Disponibilità dello scrutinio:} lo scrutinio richiede la partecipazione di almeno $k$ scrutatori; la soglia inferiore a $n$ evita che un singolo scrutatore possa bloccarlo.
+      \item Lo schema usa solo la libreria standard (aritmetica modulare su $\mathrm{GF}(2^{521}-1)$) e AES-GCM della libreria \texttt{cryptography}; nessuna proprietà risulta indebolita.
+    \end{itemize}
+  \item[Limite del prototipo:] nel PoC le tre quote sono salvate sullo stesso disco dei server (\texttt{data/keys/trustees/}) e il pannello di controllo ne simula la consegna; in un sistema reale ciascuna quota sarebbe custodita dal proprio scrutatore.
+\end{description}
+
+\subsubsection{Certificate Pinning per la Chiave Pubblica dell'AE}
+\label{sec:mod34}
+
+\begin{description}
+  \item[Descrizione:] Il client viene distribuito con l'impronta digitale (fingerprint SHA-256) della chiave pubblica dell'AE pre-installata. Anche in caso di compromissione del canale TLS o della PKI, il client rifiuta chiavi non corrispondenti al fingerprint atteso. In aggiunta, il fingerprint viene distribuito su canali indipendenti (sito istituzionale dell'università, comunicazione email istituzionale) per consentire la verifica out-of-band.
+  \item[Benefici:] \
+    \begin{itemize}
+      \item Mitiga l'attacco di key substitution: un avversario che sostituisce la chiave pubblica dell'AE durante la distribuzione verrebbe rilevato dal client al momento della verifica del fingerprint.
+      \item Riduce la dipendenza dall'intera catena di trust PKI, che potrebbe essere compromessa da una CA malevola o negligente.
+    \end{itemize}
+  \item[Analisi dell'impatto sulle proprietà:] \
+    \begin{itemize}
+      \item \textit{Autenticità:} rafforzata. La cifratura del voto è garantita avvenire con la chiave pubblica legittima dell'AE.
+      \item \textit{Segretezza:} rafforzata indirettamente. Un attacco di key substitution avrebbe consentito a un avversario di decifrare le schede; il pinning lo neutralizza.
+      \item Il costo implementativo è minimo: il fingerprint è un valore statico incluso nella configurazione del client al momento della distribuzione.
+      \item Nessuna proprietà risulta indebolita.
+    \end{itemize}
+  \item[Implementazione:] il pinning opera su due livelli. Le impronte delle chiavi pubbliche dell'AE sono distribuite in \texttt{data/pins.json}, separato dal registro, e confrontate dal client prima di usare le chiavi; a livello di trasporto il client accetta per l'AE solo il certificato TLS distribuito con l'elezione, rifiutando un server che presenti un certificato diverso anche se con lo stesso nome.
+\end{description}
+
+\subsubsection{Decifratura Verificabile delle Schede}
+\label{sec:mod35}
+
+\begin{description}
+  \item[Descrizione:] Allo scrutinio l'AE pubblica, per ogni scheda $c$, il blocco decifrato prima della decodifica OAEP, $\mathtt{EM} = c^{d} \bmod n$. Chiunque verifica con la sola chiave pubblica che $\mathtt{EM}^{e} \bmod n = c$ e decodifica $\mathtt{EM}$ ricavando voto e seed. Poiché RSA è una permutazione sugli interi modulo $n$, per ogni $c$ esiste un solo $\mathtt{EM}$ che supera la verifica.
+  \item[Benefici:] \
+    \begin{itemize}
+      \item Il contenuto di \emph{ogni} scheda, schede nulle comprese, è ricostruibile in modo indipendente: l'AE non può dichiarare nulla una scheda valida né attribuirle un candidato diverso. La sola ricifratura con il seed pubblicato non permetteva di verificare le schede nulle.
+      \item Il seed è ricavato dalla scheda stessa: il seed cifrato a parte ($\mathtt{Enc\_2}$) non è più necessario allo scrutinio, e un elettore che lo invia incoerente non può né invalidare la propria scheda né bloccare la verifica universale.
+      \item Le schede malformate (lunghezza errata o valore non inferiore al modulo) sono rifiutate già al deposito.
+    \end{itemize}
+  \item[Analisi dell'impatto sulle proprietà:] \
+    \begin{itemize}
+      \item \textit{Verificabilità universale:} rafforzata, ora completa sul contenuto di tutte le schede.
+      \item \textit{Segretezza:} invariata. $\mathtt{EM}$ rivela voto e seed, già pubblicati a scrutinio concluso; la chiave privata non viene mai pubblicata.
+    \end{itemize}
+\end{description}
+
+\subsubsection{Ricevuta Vincolata al Momento del Voto}
+\label{sec:mod36}
+
+\begin{description}
+  \item[Descrizione:] La Merkle proof rilasciata al voto è valida rispetto alla radice dell'albero in quell'istante; con i voti successivi il percorso cambia e la proof non porta più alla radice finale. La ricevuta firmata contiene quindi anche il numero di schede presenti al momento del voto (\texttt{tree\_size}) e la radice corrispondente (\texttt{merkle\_root\_at\_vote}). A urne chiuse il client verifica la proof contro questa radice, ricostruisce l'albero dei primi \texttt{tree\_size} voti del registro controllando che produca ancora la stessa radice, e verifica l'inclusione della propria scheda nella radice finale.
+  \item[Benefici:] \
+    \begin{itemize}
+      \item Rende la verifica individuale effettivamente eseguibile da tutti gli elettori, non solo dall'ultimo votante.
+      \item Rileva la riscrittura del registro anche quando l'AE ricalcola e ri-firma la radice finale: la ricevuta di chi ha votato dopo la scheda manomessa contiene una radice firmata incompatibile con il registro alterato.
+      \item All'avvio l'AE ricostruisce l'albero dal registro, così che un riavvio a urne aperte non escluda i voti precedenti dalla radice finale.
+    \end{itemize}
+\end{description}
+
+\subsubsection{Integrità Strutturale del Registro}
+\label{sec:mod37}
+
+\begin{description}
+  \item[Descrizione:] Due interventi complementari. \emph{Catena di hash}: ogni blocco successivo al primo contiene, nei dati firmati, l'hash SHA-256 del blocco precedente (\texttt{prev\_hash}); l'Observer verifica la catena e la firma di ogni blocco, attribuendola all'autorità che lo ha emesso. \emph{Separazione di dominio nel Merkle Tree}: come in RFC~6962, le foglie sono calcolate come $\mathrm{SHA\text{-}256}(\mathtt{0x00} \,\|\, \mathit{dati})$ e i nodi interni come $\mathrm{SHA\text{-}256}(\mathtt{0x01} \,\|\, \mathit{sx} \,\|\, \mathit{dx})$.
+  \item[Benefici:] \
+    \begin{itemize}
+      \item Le firme dei singoli blocchi impediscono di alterarli, la catena impedisce di rimuoverli, inserirli o riordinarli: ad esempio la cancellazione della riconciliazione firmata dal SA viene rilevata invece di risultare un semplice dato mancante.
+      \item La separazione di dominio impedisce l'attacco di seconda preimmagine, in cui un nodo interno viene presentato come foglia per ottenere una proof valida di un dato mai registrato.
+    \end{itemize}
+\end{description}
+
+\subsubsection{Proof of Work su Challenge del Server con Difficoltà per IP}
+\label{sec:mod38}
+
+\begin{description}
+  \item[Descrizione:] Prima di votare il client richiede all'AE una \emph{challenge}: 16 byte casuali, scadenza (2 minuti), difficoltà corrente e hash dell'IP richiedente, autenticati con HMAC-SHA256 da una chiave segreta dell'AE. La PoW si calcola su $\mathrm{SHA\text{-}256}(\mathit{challenge} \,\|\, \mathtt{Enc\_1} \,\|\, \mathit{nonce})$ e ogni challenge vale per una sola PoW. La difficoltà adattiva è calcolata per IP, e in verifica si richiede il massimo tra la difficoltà della challenge e quella attuale dell'IP.
+  \item[Benefici:] \
+    \begin{itemize}
+      \item \textit{Nessun precalcolo:} senza challenge l'attaccante potrebbe risolvere offline molte PoW per schede scelte da lui e inviarle insieme; challenge con scadenza, monouso e non falsificabili lo impediscono, e il legame con l'IP impedisce di distribuirle a una botnet.
+      \item \textit{Nessuna amplificazione:} con una difficoltà globale, chi risolve a raffica PoW facili alzerebbe il costo per tutti gli elettori onesti; per IP, il costo cresce solo per chi genera il traffico anomalo.
+      \item Una challenge facile ottenuta prima di un flood non permette di continuare a inviare PoW facili dopo.
+    \end{itemize}
+  \item[Limite:] elettori onesti dietro lo stesso indirizzo pubblico (ad esempio una rete NAT di ateneo) condividono la difficoltà; una botnet con molti indirizzi distribuisce il costo. La PoW rende il flood oneroso, non impossibile.
+\end{description}
+
+\subsubsection{Difese del Sistema di Autenticazione contro il Brute Force}
+\label{sec:mod39}
+
+\begin{description}
+  \item[Descrizione:] Il rate limit per IP del SA è affiancato da quattro contromisure.
+    \begin{itemize}
+      \item \textit{IP reale:} il limite usa l'indirizzo della connessione; l'header \texttt{X-Forwarded-}\allowbreak\texttt{For}, scelto dal client e quindi falsificabile, è considerato solo in modalità test di carico.
+      \item \textit{Blocco per account:} dopo 5 password errate l'account viene bloccato per 30 secondi, con attesa che raddoppia a ogni ulteriore errore fino a 15 minuti; durante il blocco la password non viene verificata. Il brute force distribuito su molti IP contro lo stesso account viene così fermato.
+      \item \textit{Tempi indistinguibili:} se lo username non esiste il SA esegue comunque PBKDF2 su un hash fittizio, e il blocco vale anche per username inesistenti: né i tempi di risposta né il comportamento rivelano quali account sono registrati.
+      \item \textit{Costo per tentativo:} le password sono salvate con PBKDF2-HMAC-SHA256 a 600.000 iterazioni e salt casuale, con confronto a tempo costante.
+    \end{itemize}
+  \item[Compromesso:] il blocco per account può essere sfruttato per impedire temporaneamente il login di un elettore onesto, sbagliandone deliberatamente la password. L'impatto è contenuto dalla durata limitata del blocco (al massimo 15 minuti) e dall'azzeramento del contatore al primo login riuscito.
+\end{description}
+
+\subsubsection{Robustezza Operativa: Atomicità e Operazioni Amministrative}
+\label{sec:mod41}
+
+\begin{description}
+  \item[Descrizione:] I server elaborano le richieste in parallelo. Le sezioni critiche (controllo e marcatura del token, inserimento nel Merkle Tree e nel registro, emissione del token, registrazione degli elettori, chiusura delle urne) sono eseguite in modo atomico. Le operazioni amministrative (chiusura delle urne, riconciliazione, spegnimento) richiedono un token amministrativo generato all'avvio dei server e confrontato a tempo costante.
+  \item[Benefici:] \
+    \begin{itemize}
+      \item Senza atomicità più richieste simultanee con lo stesso token supererebbero tutte il controllo di unicità, producendo voti multipli; con le sezioni critiche viene accettata una sola scheda.
+      \item Nessun soggetto esterno può chiudere le urne in anticipo o interrompere la votazione.
+    \end{itemize}
+\end{description}
+
+\subsubsection{Riepilogo delle Modifiche Migliorative}
+
+La tabella~\ref{tab:riepilogo_modifiche} riassume l'impatto e la complessità delle modifiche migliorative proposte.
+
+\begin{table}[!ht]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{lYYY}
+\toprule
+\textbf{Modifica} & \textbf{Proprietà rafforzata} & \textbf{Prop. indebolita} & \textbf{Complessità aggiuntiva} \\
+\midrule
+Commitment pubblico token emessi (\S\ref{sec:mod31}) & Unicità, Verificabilità Universale & Nessuna & Minima (firma SA a urne chiuse) \\
+\midrule
+Timestamp firmato nella ricevuta (\S\ref{sec:mod32}) & Verificabilità Individuale, Integrità & Nessuna & Trasc. (campo payload) \\
+\midrule
+Escrow a soglia della chiave privata (\S\ref{sec:mod33}) & Segretezza nella raccolta & Nessuna & Moderata (Shamir 2-su-3, consegna delle quote) \\
+\midrule
+Certificate pinning chiave AE (\S\ref{sec:mod34}) & Autenticità, Segretezza & Nessuna & Minima (fingerprint e certificato nel client) \\
+\midrule
+Decifratura verificabile EM (\S\ref{sec:mod35}) & Verificabilità Universale & Nessuna & Minima (un campo per scheda) \\
+\midrule
+Ricevuta vincolata al momento del voto (\S\ref{sec:mod36}) & Verificabilità Individuale, Integrità & Nessuna & Minima (due campi nella ricevuta) \\
+\midrule
+Catena di hash e separazione di dominio (\S\ref{sec:mod37}) & Integrità & Nessuna & Minima \\
+\midrule
+PoW su challenge, difficoltà per IP (\S\ref{sec:mod38}) & Disponibilità & Nessuna & Moderata (richiesta di challenge) \\
+\midrule
+Difese del SA contro il brute force (\S\ref{sec:mod39}) & Autenticità, Disponibilità & Disponibilità del singolo account (blocco) & Minima \\
+\midrule
+Atomicità e operazioni amministrative (\S\ref{sec:mod41}) & Unicità, Disponibilità & Nessuna & Minima \\
+\bottomrule
+\end{tabularx}
+\caption{Riepilogo delle modifiche migliorative}
+\label{tab:riepilogo_modifiche}
+\end{table}
+
+% ----
+\subsection{Compromessi Dichiarati e Motivazioni}
+
+Non tutte le proprietà di sicurezza identificate in WP1 sono pienamente soddisfatte dal protocollo di WP2, né dalle modifiche proposte in questo documento. In questa sezione si esplicitano i compromessi mantenuti, motivandone la scelta in relazione al contesto applicativo e ai vincoli di complessità dichiarati in WP1.
+
+\subsubsection{Receipt-Freeness}
+Il sistema non garantisce \textit{receipt-freeness}: a scrutinio concluso, l'elettore può dimostrare a terzi il contenuto del proprio voto utilizzando la ricevuta e i dati pubblicati dall'AE. Questa limitazione è una conseguenza diretta della scelta di garantire la verificabilità individuale tramite ricevuta verificabile.
+
+Soluzioni che eliminino questo compromesso (es. voto revocabile, schemi basati su commitment e apertura controllata) richiedono protocolli interattivi complessi non compatibili con i requisiti di semplicità e scalabilità del sistema. La limitazione è accettata in quanto il contesto universitario è caratterizzato da un rischio di coercizione organizzata strutturalmente inferiore rispetto a elezioni politiche generali.
+
+\subsubsection{Anonimato a Livello di Rete}
+Il protocollo garantisce la pseudonimia delle schede nel registro ma non l'anonimato della connessione di rete. Un avversario in grado di osservare il traffico può correlare l'invio di una scheda all'identità dell'elettore tramite indirizzo IP o orario di connessione. L'adozione di tecniche di anonimizzazione della rete (es. mix-net a livello di trasporto) è fuori scope, ma potrebbe essere indicata come estensione futura qualora il sistema venisse adottato in contesti a più alto rischio.
+
+\subsubsection{Segretezza Condizionata alla Non-Collusione}
+La segretezza del voto è garantita solo se SA e AE non colludono. In caso di collusione, è teoricamente possibile correlare i log di autenticazione con le schede cifrate tramite analisi temporale. Soluzioni crittografiche che eliminino questa assunzione (es. blind signature, threshold decryption, mix-net) sono state considerate ma ritenute sproporzionate rispetto al contesto applicativo e ai vincoli del corso. La separazione architetturale tra SA e AE riduce il rischio nella pratica, anche se non lo elimina formalmente.
+
+\subsubsection{Riempimento delle Urne fino al Numero di Token Emessi}
+Il Bulletin Board pubblica per ogni scheda il ciphertext, ma non il token che ne ha autorizzato il deposito: il nonce del token resta nello stato privato dell'AE per non offrire al SA, che conosce l'associazione nonce--identità, un modo per collegare da solo una scheda a un elettore. Ne segue che l'Observer non può verificare che ogni scheda corrisponda a un token valido. La riconciliazione (numero di schede non superiore al numero di token emessi) limita ma non elimina il problema: un'AE disonesta può aggiungere schede proprie fino al numero di token rilasciati a elettori che non hanno votato, e un SA disonesto può firmare token aggiuntivi a nome degli astenuti.
+
+La soluzione crittografica è la stessa che elimina la dipendenza dalla non-collusione: con le \textit{blind signature} (RSA Blind Signatures, RFC 9474) il SA firma il token senza vederne il nonce, che diventa quindi pubblicabile accanto alla scheda insieme alla firma. L'Observer potrebbe allora verificare che ogni scheda sia accompagnata da un token firmato dal SA e mai riutilizzato, senza che il SA possa ricondurre il token all'elettore. L'estensione è compatibile con l'architettura attuale ed è indicata come sviluppo futuro.
+
+\subsubsection{Idoneità degli Elettori}
+In modalità di registrazione aperta il SA accetta solo indirizzi dei domini istituzionali (\texttt{@studenti.unisa.it}, \texttt{@unisa.it}), ma non verifica che il richiedente possieda la casella indicata. Un attaccante può quindi registrare elettori fittizi con indirizzi inesistenti del dominio; il rate limit per IP e il blocco per account riducono la velocità dell'abuso ma non lo impediscono. In un sistema reale la registrazione andrebbe legata a un'identità verificata (invio di un codice di conferma alla casella o integrazione con il sistema di autenticazione dell'ateneo); nel PoC la modalità preconfigurata, con elenco chiuso degli aventi diritto, non è soggetta a questo limite.
+
+\subsubsection{Disponibilità del Servizio}
+Il sistema non può garantire disponibilità assoluta in presenza di attacchi DDoS di grande scala. Le contromisure adottate (PoW adattiva su challenge del server e per IP, rate limit e blocco per account sul SA, separazione SA-AE, scalabilità orizzontale) mitigano il rischio ma non lo eliminano: una botnet con molti indirizzi distribuisce il costo della PoW, e il blocco per account può essere usato per impedire temporaneamente il login di un elettore specifico. La disponibilità è considerata una proprietà \textit{best-effort} nel contesto del progetto.
+
+% ----
+\subsection{Conclusioni}
+
+L'analisi condotta in questo work package ha verificato che il protocollo definito in WP2 soddisfa le proprietà di sicurezza identificate in WP1 nelle condizioni dichiarate, con i limiti e i compromessi esplicitati.
+
+Le proprietà di autenticità, integrità e verificabilità universale risultano robustamente garantite dai meccanismi crittografici adottati (RSA-PSS, RSA-OAEP, Merkle Tree). La segretezza del voto è garantita in modo condizionato, dipendendo dall'assenza di collusione tra SA e AE e dall'assenza di analisi del traffico a livello di rete. La verificabilità individuale è garantita, con il noto compromesso sulla receipt-freeness.
+
+Sono state identificate e implementate dieci modifiche migliorative. Le prime quattro sono il commitment pubblico del numero di token emessi, il timestamp firmato nella ricevuta, l'escrow a soglia della chiave privata di decifratura (che rende crittografico il vincolo sulla segretezza durante la raccolta) e il certificate pinning delle chiavi e del certificato dell'AE. Le altre sei rafforzano in particolare la verificabilità: la decifratura verificabile di ogni scheda, la ricevuta vincolata alla radice del momento del voto, la catena di hash e la separazione di dominio nel registro, la PoW su challenge del server con difficoltà per IP, le difese del SA contro il brute force e l'atomicità delle operazioni critiche con l'autenticazione di quelle amministrative. Solo le difese del SA introducono un costo, il possibile blocco temporaneo di un account, dichiarato tra i compromessi.
+
+I compromessi dichiarati (receipt-freeness, anonimato di rete, collusione SA-AE, riempimento delle urne fino ai token emessi, idoneità degli elettori, disponibilità) sono motivati dalla scelta progettuale di privilegiare semplicità, verificabilità e praticabilità in un contesto universitario, in accordo con i principi di \textit{Economy of Mechanism} e \textit{Psychological Acceptability} richiamati in WP1.
+
+% ----
+\subsection{Riepilogo STRIDE}
+
+La tabella~\ref{tab:stride_threats} sintetizza l'analisi delle minacce condotta nel WP3 secondo il framework STRIDE, mettendo in relazione ciascuna categoria di minaccia con le proprietà di sicurezza coinvolte, uno scenario di attacco rilevante e i meccanismi adottati nel protocollo per mitigarlo.
+
+\begin{table}[!ht]
+\centering
+\small
+\begin{tabularx}{\textwidth}{lYYY}
+\toprule
+\textbf{Categoria STRIDE} & \textbf{Proprietà coinvolta} & \textbf{Scenario di attacco} & \textbf{Meccanismi di mitigazione nel protocollo} \\
+\midrule
+Spoofing & Autenticità & Creazione di token falsi, impersonificazione di SA/AE, sostituzione delle chiavi AE & Autenticazione istituzionale, token firmati RSA-PSS, TLS, pinning di chiavi e certificato AE, blocco per account \\
+\midrule
+Tampering & Integrità & Alterazione, rimozione o riordino di schede e blocchi del registro & Merkle Tree con separazione di dominio, catena di hash, firma di ogni blocco, ricevuta con radice del momento del voto \\
+\midrule
+Repudiation & Verificabilità individuale & AE nega la ricezione di una scheda valida & Ricevuta firmata dall'AE, verifica pubblica \\
+\midrule
+Information Disclosure & Segretezza & Correlazione identità–voto, lettura anticipata delle schede, enumerazione degli account & RSA-OAEP probabilistico, separazione SA/AE, escrow a soglia della chiave, tempi di login indistinguibili \\
+\midrule
+Denial of Service & Disponibilità & Saturazione di SA o AE con richieste massive & Rate limiting per IP reale, PoW su challenge con difficoltà per IP, separazione dei componenti \\
+\midrule
+Elevation of Privilege & Autenticità / Unicità & Voti senza token valido o multipli con lo stesso token, operazioni amministrative non autorizzate & Verifica del token, registro dei token usati con sezioni critiche atomiche, token amministrativo \\
+\bottomrule
+\end{tabularx}
+\caption{Analisi delle minacce secondo il framework STRIDE}
+\label{tab:stride_threats}
+\end{table}
+
+Questo riepilogo evidenzia come le principali classi di minaccia individuate dal framework STRIDE siano state considerate esplicitamente nel progetto e affrontate tramite contromisure coerenti con le primitive crittografiche e le assunzioni dichiarate nei WP precedenti.
+
+\newpage
+
+% ============================================================
+%  WP4
+% ============================================================
+\section{WP4 – Implementazione e Prestazioni}
+
+% ----
+\subsection{Architettura Software e Stack Tecnologico}
+
+\begin{itemize}
+  \item \textbf{Linguaggio di Sviluppo:} L'intero ecosistema software è stato realizzato utilizzando Python 3, garantendo versatilità e leggibilità del codice sorgente.
+  \item \textbf{Primitive e Sicurezza:} In linea con le direttive di progetto, non sono stati implementati algoritmi proprietari. Le primitive provengono dalla libreria \texttt{cryptography} (RSA-OAEP, RSA-PSS, AES-256-GCM, certificati X.509) e dalla libreria standard (\texttt{hashlib} per SHA-256 e PBKDF2, \texttt{hmac}, \texttt{secrets}). Sono implementati direttamente, seguendo le specifiche, solo schemi di composizione standard che la libreria non espone: la codifica EME-OAEP di RFC~8017 con seed fornito dal client e la decifratura RSA ``grezza'' necessarie alla verificabilità, e lo schema di Shamir per l'escrow a soglia.
+  \item \textbf{Integrità dei Dati:} La libreria standard \texttt{hashlib} (SHA-256) è impiegata per il Merkle Tree con separazione di dominio tra foglie e nodi, per la catena di hash tra i blocchi del registro, per le impronte delle chiavi (pinning), per gli impegni sulle quote degli scrutatori e per la Proof of Work.
+  \item \textbf{Infrastruttura di Rete:} I nodi SA ed AE operano come microservizi indipendenti basati su Flask, esponendo interfacce API REST per la gestione orchestrata di autenticazione e ricezione dei voti; le richieste concorrenti sono gestite in thread paralleli, con sezioni critiche protette da lock.
+  \item \textbf{Interazione Client-Server:} La comunicazione tra i terminali di voto e le autorità è mediata dalla libreria \texttt{requests}, che scambia pacchetti JSON esclusivamente su HTTPS.
+  \item \textbf{Librerie Ausiliarie:} Sono stati utilizzati i moduli nativi \texttt{json} per la formattazione dei dati, \texttt{datetime} per il controllo rigoroso della finestra temporale e \texttt{os.urandom} per la generazione di entropia crittografica.
+  \item \textbf{Analisi del Traffico:} Per la suite di test e la generazione di carichi sintetici verso l'infrastruttura server, è stata integrata la libreria \texttt{locust}.
+\end{itemize}
+
+\subsubsection{Disaccoppiamento dei Moduli}
+
+\begin{itemize}
+  \item \textbf{Interfaccia Elettore (\texttt{client.py}):} Implementa la logica lato client, gestendo la cifratura locale, la risoluzione della PoW e la successiva verifica delle ricevute crittografiche rilasciate dall'autorità.
+  \item \textbf{Sistema di Autenticazione (\texttt{sa.py}):} Nodo dedicato esclusivamente alla validazione delle credenziali istituzionali e all'emissione di token univoci firmati digitalmente, garantendo l'anonimato rispetto al contenuto del voto.
+  \item \textbf{Autorità Elettorale (\texttt{ae.py}):} Gestisce l'urna elettronica: emette le challenge della Proof of Work, verifica i pacchetti ricevuti, aggiorna il registro concatenato e il Merkle Tree e, a urne chiuse, ricostruisce la chiave di decifratura con le quote degli scrutatori per eseguire lo scrutinio.
+  \item \textbf{Verificatore Indipendente (\texttt{observer.py}):} Modulo isolato per la validazione universale post-elettorale, incaricato di ispezionare il registro pubblico per attestare la correttezza dell'intero processo di computazione.
+  \item \textbf{Moduli di supporto:} \texttt{crypto/} raccoglie le primitive e gli schemi (\texttt{rsa\_oaep.py}, \texttt{rsa\_pss.py}, \texttt{merkle.py}, \texttt{shamir.py}, \texttt{keys.py}, \texttt{password.py}); \texttt{bb\_chain.py} gestisce la catena di hash del registro; \texttt{admin\_auth.py} il token per le operazioni amministrative.
+\end{itemize}
+
+Questa suddivisione funzionale assicura una rigorosa separazione dei compiti, impedendo a ogni singolo attore di compromettere la riservatezza o la correttezza della consultazione.
+
+% ----
+\subsection{Implementazione delle Primitive Crittografiche}
+
+L'architettura di sicurezza integra algoritmi consolidati per soddisfare i requisiti teorici, avvalendosi delle librerie \texttt{cryptography} e standard ed escludendo lo sviluppo di primitive proprietarie.
+
+\begin{itemize}
+  \item \textbf{Cifratura del Voto:} La riservatezza della preferenza è assicurata mediante lo schema asimmetrico RSA con padding OAEP. In fase di invio, il modulo client genera un seed casuale tramite \texttt{os.urandom}, garantendo entropia per la protezione della scelta dell'elettore sotto la chiave pubblica dell'AE. L'integrazione di SHA-256 e il carattere probabilistico della cifratura offrono sicurezza IND-CPA, rendendo i ciphertext di voti identici sempre distinti per prevenire attacchi a dizionario. La codifica EME-OAEP con il seed scelto dal client rende la cifratura riproducibile a scrutinio concluso; allo scrutinio l'AE pubblica per ogni scheda la decifratura $\mathtt{EM} = c^{d} \bmod n$, verificabile con la chiave pubblica.
+  \item \textbf{Protezione della Chiave di Decifratura:} la chiave privata RSA dell'AE è cifrata con AES-256-GCM sotto una chiave casuale, divisa in tre quote con lo schema di Shamir su $\mathrm{GF}(2^{521}-1)$ (soglia 2); gli impegni SHA-256 sulle quote sono pubblicati nel blocco iniziale.
+  \item \textbf{Credenziali e Proof of Work:} le password sono salvate con PBKDF2-HMAC-SHA256 (600.000 iterazioni, salt casuale) e verificate a tempo costante; le challenge della PoW sono autenticate con HMAC-SHA256.
+  \item \textbf{Firme Digitali e Token:} Per validare l'autenticità dei pacchetti e neutralizzare tentativi di alterazione, il SA emette token firmati digitalmente in formato RSA-PSS. Tale schema, basato su \textit{Probabilistic Signature Scheme}, offre robuste garanzie contro la manipolazione dei dati. La medesima tecnologia è impiegata dall'AE per sigillare le ricevute elettroniche e blindare l'integrità del registro pubblico.
+  \item \textbf{Canale di Comunicazione (TLS e Certificate Pinning):} In questa fase di prototipazione, finalizzata alla convalida delle logiche di sicurezza, si è optato per l'integrazione nativa del protocollo HTTPS attraverso l'impiego di certificati X.509 autogenerati (self-signed), prescindendo temporaneamente dall'adozione di una Certification Authority (CA) commerciale o istituzionale centralizzata. Sebbene l'infrastruttura sia testata in ambiente localhost, l'iniezione dei contesti SSL obbliga i client e i server a comunicare esclusivamente su canali cifrati point-to-point. Questa scelta progettuale non solo protegge l'intercettazione passiva del traffico, ma ha consentito di implementare e validare efficacemente difese applicative avanzate contro gli attacchi Man-in-the-Middle (MitM), delegando al client la verifica rigorosa dell'identità dei server tramite meccanismi di \textit{Certificate Pinning}.
+\end{itemize}
+
+% ----
+\subsection{Struttura del Registro Pubblico (Bulletin Board)}
+
+Il nucleo della trasparenza risiede nel meccanismo di memorizzazione, gestito tramite un file JSON locale (\texttt{data/bulletin\_board.json}) che funge da registro pubblico (Bulletin Board).
+
+\begin{itemize}
+  \item \textbf{Sviluppo della Struttura Dati (Merkle Tree):} Il progetto adotta un Albero di Merkle per garantire un'efficienza logaritmica nella verifica, implementato come \textit{forest of perfect trees} (inserimento in $O(\log n)$ ammortizzato). Ogni record di voto contiene il voto cifrato, il seed cifrato, il timestamp e l'hash del blocco precedente. La foglia corrispondente è $\mathrm{SHA\text{-}256}(\mathtt{0x00} \,\|\, \mathit{record})$, i nodi interni $\mathrm{SHA\text{-}256}(\mathtt{0x01} \,\|\, \mathit{sx} \,\|\, \mathit{dx})$. L'AE restituisce al client una ricevuta firmata con la Merkle Proof, il numero di schede e la radice al momento del voto; all'avvio ricostruisce l'albero dal registro.
+  \item \textbf{Blocchi del Registro:} il primo blocco (\texttt{init}) contiene i parametri dell'elezione, le chiavi pubbliche e i parametri pubblici dell'escrow (schema, soglia, impegni sulle quote). Seguono i blocchi \texttt{vote}, le riconciliazioni di SA e AE, la radice finale (\texttt{merkle\_root}) e lo \texttt{scrutinio}, che per ogni scheda riporta voto in chiaro, seed e decifratura $\mathtt{EM}$.
+  \item \textbf{Append-Only Enforcement:} Le API permettono esclusivamente di aggiungere nuovi blocchi al registro; non esiste alcun endpoint di modifica o cancellazione. Ogni blocco è firmato dall'autorità che lo emette (il SA per la propria riconciliazione, l'AE per gli altri) e contiene nei dati firmati l'hash SHA-256 del blocco precedente: un'alterazione invalida la firma, una rimozione o un riordino interrompono la catena. Poiché l'AE potrebbe ri-firmare un registro riscritto, la garanzia contro l'AE stessa è fornita dalle ricevute degli elettori.
+\end{itemize}
+
+% ----
+\subsection{Flusso d'Esecuzione e Gestione dello Stato}
+
+Il sistema è suddiviso in processi logicamente separati (SA, AE, Client) per rispettare il Principio di Separazione dei Privilegi, scandendo il flusso in fasi distinte:
+
+\begin{itemize}
+  \item \textbf{Inizializzazione:} Eseguendo gli script di boot (es. \texttt{init\_election.py}), il sistema genera automaticamente in locale le coppie di chiavi asimmetriche (pubblica/privata) per SA e AE tramite \texttt{generate\_rsa\_keypair()}. La chiave privata di decifratura viene subito protetta dall'escrow a soglia e non viene mai salvata in chiaro: le quote degli scrutatori sono scritte in \texttt{data/keys/trustees/}. Le chiavi pubbliche e i parametri dell'escrow vengono scritti nel blocco di genesi (``init'') del Bulletin Board, firmato dall'AE, e le impronte delle chiavi AE in \texttt{data/pins.json}.
+\end{itemize}
+
+I diagrammi di sequenza che seguono illustrano il flusso del protocollo di WP2; le estensioni descritte in WP3 (challenge della PoW, consegna delle quote allo scrutinio, decifratura verificabile) sono riportate nel testo di ciascuna fase.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{imgs/sequence\_diagram\_1.png}
+\caption{Diagramma di sequenza della fase di inizializzazione.}
+\label{fig:inizializzazione_sequence_diagram}
+\end{figure}
+
+\begin{itemize}
+  \item \textbf{Autenticazione:} Il Client si autentica fornendo le credenziali al SA (Server Autenticazione). Il SA applica il rate limit sull'IP della connessione e il blocco per account, verifica la password (PBKDF2) e genera un token univoco contenente un nonce e una data di scadenza (30 minuti), firmandolo mediante RSA-PSS prima dell'invio al Client. Un'autenticazione successiva restituisce lo stesso token, rinnovandone la scadenza con lo stesso nonce se è scaduto.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{imgs/sequence\_diagram\_2.png.jpg}
+\caption{Diagramma di sequenza della fase di autenticazione.}
+\label{fig:autenticazione_sequence_diagram}
+\end{figure}
+
+\begin{itemize}
+  \item \textbf{Votazione:} L'elettore ottiene dall'AE una challenge (\texttt{/pow\_challenge}), risolve la PoW e inoltra la scheda. Alla ricezione sull'endpoint \texttt{/vote}, l'AE valida challenge e PoW, verifica la firma del SA, la scadenza del token, la finestra temporale dell'elezione e il formato della scheda; in una sezione critica atomica controlla il set dei token consumati (\texttt{used\_tokens}) per prevenire il Double Voting, registra il blocco e la foglia e rilascia la ricevuta firmata.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{imgs/sequence\_diagram\_3.png.jpg}
+\caption{Diagramma di sequenza della fase di votazione.}
+\label{fig:votazione_sequence_diagram}
+\end{figure}
+
+\begin{itemize}
+  \item \textbf{Scrutinio:} Durante l'apertura delle urne, l'AE non detiene la chiave privata di decifratura e non può ricostruirla. L'endpoint \texttt{/close}, che richiede il token amministrativo, riceve le quote di almeno due scrutatori, le verifica contro gli impegni del blocco iniziale e ricostruisce la chiave; con meno quote valide la chiusura è rifiutata e le urne restano aperte. Solo allora l'AE chiude le urne, pubblica riconciliazione e radice finale dell'albero di Merkle ed esegue la decifratura di tutti i record, pubblicando per ciascuno voto, seed e $\mathtt{EM}$ e i totali per candidato in un blocco di tipo ``scrutinio''.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{imgs/sequence\_diagram\_4.png}
+\caption{Diagramma di sequenza della fase di scrutinio.}
+\label{fig:scrutinio_sequence_diagram}
+\end{figure}
+
+\begin{itemize}
+  \item \textbf{Auditing e Validazione Post-Elettorale:} Al termine delle operazioni di scrutinio, il protocollo abilita la fase di verifica universale e individuale. L'utente, avvalendosi del modulo client, verifica la ricevuta firmata, la Merkle Proof rispetto alla radice del momento del voto, la consistenza del registro e l'inclusione nella radice finale, quindi la decifratura pubblicata della propria scheda. Contestualmente, l'Observer consente a soggetti terzi di ispezionare l'intero Bulletin Board in otto passi: firme dei blocchi principali, ricostruzione del Merkle Tree, verifica pubblica di ogni decifratura e del conteggio aggregato, Merkle Proof di ogni voto, riconciliazione tra token e schede, catena di hash e firma di ogni blocco.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{imgs/sequence\_diagram\_5.jpg}
+\caption{Diagramma di sequenza della fase di auditing e validazione post-elettorale.}
+\label{fig:auditing_validazione_sequence_diagram}
+\end{figure}
+
+% ----
+\subsection{Strategia di Testing e Analisi dei Casi d'Uso}
+
+La solidità è stata validata attraverso una suite di 18 test automatici, eseguibili dal pannello di controllo (\texttt{main.py}), mirati sia ai casi di operatività normale sia alle minacce descritte nel WP3. Ogni test crea la propria elezione con lo stesso schema dell'inizializzazione reale (modulo condiviso \texttt{tests/common.py}), mette in scena l'attacco contro il sistema stampando le fasi in forma leggibile e salva un report JSON datato in \texttt{tests/output/}. I test sono di due tipi: \emph{offline}, che esercitano direttamente le funzioni crittografiche e del client, e \emph{con server}, che avviano SA e AE come processi separati e li attaccano attraverso le loro interfacce HTTPS.
+
+\begin{itemize}
+  \item \textbf{Scenario Nominale (Happy Path):} lo script \texttt{test\_flow.py} percorre l'intero ciclo di vita dell'elezione con i server reali: autenticazione e verifica dei pin, voto con Proof of Work, ricevuta, riconciliazione, consegna delle quote e scrutinio, verifica della ricevuta con il client reale e verifica universale con \texttt{observer.py}.
+\end{itemize}
+
+\subsubsection{Simulazione di Attacchi (Security Testing)}
+
+\textbf{Test offline.}
+\begin{itemize}
+  \item \textbf{Attacco a Dizionario e Analisi di Frequenza (\texttt{dictionary\_attack\_test.py}):} verifica l'indistinguibilità (IND-CPA) della cifratura RSA-OAEP: cifrature ripetute dello stesso voto producono ciphertext sempre diversi e il confronto con il dizionario dei voti possibili fallisce.
+  \item \textbf{Man-in-the-Middle sulle Chiavi (\texttt{mitm\_key\_}\allowbreak\texttt{substitution\_attack.py}):} l'attaccante sostituisce le chiavi pubbliche dell'AE nel registro e \emph{ri-firma} il blocco iniziale con la propria chiave, così che la verifica della firma risulti valida; il test verifica che a fermare l'attacco sia il pinning delle impronte in \texttt{pins.json}.
+  \item \textbf{Manomissione del Registro (\texttt{ledger\_tampering\_test.py}):} un amministratore corrotto modifica una scheda già registrata; la ricevuta rilasciata al momento del voto rileva la riscrittura tramite la consistenza del prefisso del registro, e un nodo interno presentato come foglia (seconda preimmagine) viene rifiutato grazie alla separazione di dominio.
+  \item \textbf{Escrow a Soglia della Chiave Privata (\texttt{key\_escrow\_test.py}):} con accesso al file cifrato e all'intero registro, nessun dato pubblico e nessuna singola quota sbloccano la chiave; qualunque coppia di scrutatori la ricostruisce; quote manomesse, file alterato e riuso per un'altra elezione sono bloccati dall'autenticazione AES-GCM.
+  \item \textbf{Proof of Work su Challenge (\texttt{pow\_challenge\_test.py}):} vengono rifiutate PoW precalcolate senza challenge, riuso di una challenge, challenge con difficoltà alterata, di un altro IP o scadute; un flood di PoW valide alza la difficoltà solo per l'IP attaccante.
+  \item \textbf{Pinning TLS contro un AE Impostore (\texttt{tls\_pinning\_test.py}):} un server falso sulla porta dell'AE presenta un certificato con lo stesso nome e gli stessi SAN di quello legittimo; il client rifiuta la connessione TLS e all'impostore non arriva alcuna richiesta.
+\end{itemize}
+
+\textbf{Test con server.}
+\begin{itemize}
+  \item \textbf{Flood Volumetrico (\texttt{dos\_attack\_test.py}):} 500 richieste concorrenti con PoW non valida vengono scartate dall'AE prima di qualsiasi operazione asimmetrica.
+  \item \textbf{PoW Adattiva (\texttt{pow\_adaptive\_test.py}):} le PoW non valide non alzano la difficoltà; un flood di PoW risolte la alza; allo scadere della finestra di osservazione la difficoltà torna al minimo.
+  \item \textbf{Resilienza sotto Attacco Misto (\texttt{dos\_resilience\_test.py}):} con un flood di spazzatura e uno di PoW valide attivi in parallelo, tutti gli elettori onesti votano (con nuovo tentativo automatico se la difficoltà cambia durante il calcolo); la difficoltà, campionata per tutta la durata dell'attacco, sale e poi torna al minimo.
+  \item \textbf{Double Voting e Replay (\texttt{double\_voting\_attack.py}):} il secondo invio dello stesso token è rifiutato (409).
+  \item \textbf{Double Voting Concorrente (\texttt{concurrent\_double\_voting\_test.py}):} 8 schede diverse con lo stesso token inviate nello stesso istante: ne viene accettata una sola; 6 autenticazioni simultanee dello stesso elettore restituiscono lo stesso token.
+  \item \textbf{Token Hoarding, Scadenza e Rinnovo (\texttt{token\_hoarding\_test.py}):} autenticazioni ripetute restituiscono lo stesso token; un token scaduto con firma valida è rifiutato; un elettore il cui token è scaduto senza aver votato riceve un token rinnovato con lo stesso nonce e può votare una sola volta.
+  \item \textbf{Elettore Malevolo e Schede Annullate (\texttt{malicious\_voter\_dos\_test.py}):} un seed cifrato incoerente non invalida né blocca la scheda, che conta per il suo contenuto reale; un'AE che dichiara nulla una scheda valida e ri-firma lo scrutinio viene smascherata dall'Observer tramite la decifratura pubblicata.
+  \item \textbf{Verifica Individuale delle Ricevute (\texttt{receipt\_verification\_test.py}):} sei elettori votano con un riavvio dell'AE a metà votazione; la chiusura con una sola quota è rifiutata; tutte le ricevute vengono verificate; la rimozione di un blocco è rilevata dalla catena di hash; un'AE che riscrive una scheda e ri-firma la radice è smascherata dalle ricevute di chi ha votato da quel momento in poi.
+  \item \textbf{Difese del SA (\texttt{test\_rate\_limiting.py}):} rate limit per IP, inefficacia degli IP falsificati tramite \texttt{X-Forwarded-For}, blocco per account, tempi di login indistinguibili per username esistenti e inesistenti, endpoint amministrativi protetti e registrazioni chiuse dopo la riconciliazione.
+  \item \textbf{Registrazione degli Elettori (\texttt{registration\_test.py}):} domini non istituzionali o che imitano quello dell'ateneo e campi mancanti sono rifiutati; i duplicati (anche con email in maiuscolo) sono rifiutati; la password è salvata solo come hash; l'elettore registrato vota.
+  \item \textbf{Finestra Temporale (\texttt{election\_window\_test.py}):} il voto è rifiutato prima dell'apertura e dopo la chiusura (insieme alle nuove registrazioni) ed è accettato dentro la finestra.
+\end{itemize}
+
+% ----
+\subsection{Analisi delle Prestazioni e Validazione Crittografica}
+
+L'architettura del sistema è stata sottoposta a una validazione empirica mediante la suite di test automatizzati, progettata per valutare sia la corretta implementazione delle primitive crittografiche, sia la resilienza dell'infrastruttura di rete in condizioni di sovraccarico. L'analisi seguente rendiconta i risultati di un'esecuzione completa della suite; i valori numerici (impronte, tempi, conteggi) variano tra un'esecuzione e l'altra, mentre gli esiti sono stabili.
+
+\subsubsection{Quadro Riassuntivo delle Verifiche di Sicurezza}
+
+La tabella~\ref{tab:esiti_test} sintetizza l'esito delle simulazioni di attacco, correlando i moduli di test ai vettori di minaccia definiti nel WP3.
+
+\begin{table}[!ht]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{Y Y Y c}
+\toprule
+\textbf{Modulo di Test} & \textbf{Vettore di Attacco} & \textbf{Meccanismo di Difesa} & \textbf{Status} \\
+\midrule
+\url{dictionary_attack_test.py} & Analisi di frequenza & IND-CPA (RSA-OAEP) & PASS \\
+\url{mitm_key_substitution_attack.py} & Sostituzione chiavi con blocco ri-firmato & Pinning delle impronte & PASS \\
+\url{ledger_tampering_test.py} & Riscrittura del registro, seconda preimmagine & Ricevuta al voto, separazione di dominio & PASS \\
+\url{key_escrow_test.py} & Decifratura anticipata & Escrow Shamir 2-su-3 & PASS \\
+\url{pow_challenge_test.py} & Precalcolo e amplificazione della PoW & Challenge del server, difficoltà per IP & PASS \\
+\url{tls_pinning_test.py} & AE impostore & Pinning del certificato TLS & PASS \\
+\url{dos_attack_test.py} & Spam volumetrico & Scarto preventivo PoW & PASS \\
+\url{pow_adaptive_test.py} & Flood con PoW risolte & Difficoltà adattiva & PASS \\
+\url{dos_resilience_test.py} & Sovraccarico misto & Liveness degli onesti & PASS \\
+\url{double_voting_attack.py} & Token replay & Blocco nonce consumati & PASS \\
+\url{concurrent_double_voting_test.py} & Richieste simultanee con lo stesso token & Sezioni critiche atomiche & PASS \\
+\url{token_hoarding_test.py} & Accumulo, token scaduto & Unicità, scadenza, rinnovo stesso nonce & PASS \\
+\url{malicious_voter_dos_test.py} & Seed incoerente, schede annullate dall'AE & Decifratura verificabile (EM) & PASS \\
+\url{receipt_verification_test.py} & Riscrittura ri-firmata, rimozione blocchi & Ricevute, catena di hash, escrow & PASS \\
+\url{test_rate_limiting.py} & Brute force, IP falsi, enumerazione & Rate limit, blocco account, tempi costanti & PASS \\
+\url{registration_test.py} & Registrazioni non ammesse, duplicati & Controlli del SA, hash delle password & PASS \\
+\url{election_window_test.py} & Voto fuori dalla finestra & Parametri temporali firmati & PASS \\
+\url{test_flow.py} & Flusso nominale & Intero protocollo & PASS \\
+\bottomrule
+\end{tabularx}
+\caption{Tabella riassuntiva degli esiti dei test (report JSON in \texttt{tests/output/})}
+\label{tab:esiti_test}
+\end{table}
+
+\subsubsection{Analisi Empirica e Validazione per Categoria}
+
+I report generati durante le esecuzioni forniscono parametri misurabili sull'efficacia delle contromisure. Di seguito si schematizzano le evidenze per ciascun dominio di sicurezza.
+
+\subsubsection*{A. Integrità Crittografica e Autenticazione}
+\begin{itemize}
+  \item \textbf{Sicurezza Semantica (Attacco Dizionario):} cifrature ripetute dei candidati del dominio (``Lista A'', ``Lista B'', ``Lista C'') hanno prodotto ciphertext sempre distinti; il confronto con il ciphertext bersaglio non ha mai avuto successo.
+  \item \textbf{Prevenzione MitM (Sostituzione Chiavi):} le chiavi contraffatte (impronte \texttt{f3a8c5ae...} e \texttt{80503364...}) sono state inserite nel registro con il blocco iniziale ri-firmato dall'attaccante. La firma risultava quindi valida e il client si è arrestato proprio sul confronto con le impronte attese (\texttt{ff8fbdcc...} e \texttt{cec7204f...}), con il messaggio ``Impronta della chiave pubblica di cifratura AE non corrispondente''.
+  \item \textbf{Pinning TLS:} il certificato dell'impostore aveva nome e SAN identici a quello legittimo (\texttt{CN=UniSafe-Vote AE}, SAN \texttt{localhost}, \texttt{127.0.0.1}) ma impronta diversa; il server falso rispondeva regolarmente a chi si fidava del suo certificato, mentre il client ha interrotto l'handshake (\texttt{certificate verify failed}) e all'impostore sono arrivate 0 richieste.
+  \item \textbf{Immutabilità del Registro (Merkle Tree):} modificando la foglia di indice 3 in un albero di 8 foglie la radice è passata da \texttt{4638a4ff...} a \texttt{407fe5ca...}. La ricevuta rilasciata al momento del voto (4 foglie, radice \texttt{88a0a679...}) resta valida contro la radice di quel momento, mentre il prefisso del registro manomesso non la riproduce più: la riscrittura è rilevata. Il dato inventato ottenuto concatenando i figli di un nodo interno non viene accettato come foglia.
+  \item \textbf{Escrow a Soglia:} con una sola quota la ricostruzione fallisce sempre (\texttt{InvalidTag}); le coppie 1+2, 1+3, 2+3 e la terna completa ricostruiscono la chiave originale (impronte del modulo coincidenti). Una quota alterata non corrisponde ad alcun impegno pubblicato e, se usata, fa fallire AES-GCM; lo stesso accade per il file cifrato con un bit alterato e per il riuso con un altro identificativo di elezione. A livello di sistema, l'AE ha rifiutato la chiusura con una sola quota lasciando le urne aperte.
+  \item \textbf{Decifratura Verificabile:} la scheda con seed cifrato incoerente è stata conteggiata per il suo contenuto reale (``Lista A''), con il seed pubblicato pari a quello effettivamente usato, e l'Observer ha completato la verifica. Un'AE che dichiarava nulla quella scheda e ri-firmava lo scrutinio è stata smascherata: l'Observer ha segnalato ``l'AE dichiara `Scheda nulla' ma la scheda contiene `Lista A'\,''.
+  \item \textbf{Verifica Individuale:} con sei elettori e un riavvio dell'AE dopo il quarto voto, l'albero è stato ricostruito (il voto successivo ha ricevuto l'indice 4) e tutte le 6 ricevute sono state verificate. La rimozione della riconciliazione del SA ha interrotto la catena di hash, rilevata dall'Observer. Dopo la riscrittura della scheda di indice 2 con ri-firma della radice, le ricevute dei votanti 1 e 2 sono rimaste valide (prefisso intatto), mentre quelle dei votanti dal terzo al sesto hanno rilevato la manomissione.
+\end{itemize}
+
+\subsubsection*{B. Gestione Token e Prevenzione degli Abusi}
+\begin{itemize}
+  \item \textbf{Double Voting:} il primo voto con il token è stato accettato (HTTP 200), il secondo rifiutato (HTTP 409). Con 8 schede diverse inviate nello stesso istante con lo stesso token, 1 è stata accettata e 7 rifiutate (409); 6 autenticazioni simultanee dello stesso elettore hanno restituito un unico nonce e il registro conteneva un solo voto.
+  \item \textbf{Token Hoarding, Scadenza e Rinnovo:} autenticazioni ripetute hanno restituito lo stesso token (stesso nonce); un token con firma valida ma scaduto è stato rifiutato (HTTP 401). Un elettore con token scaduto da 30 minuti senza aver votato ha ricevuto un token rinnovato con lo stesso nonce, ha votato (HTTP 200) e il secondo voto è stato rifiutato (HTTP 409).
+  \item \textbf{Difese del SA:} il rate limit ha restituito HTTP 429 all'undicesima richiesta, anche dichiarando un indirizzo diverso a ogni richiesta tramite \texttt{X-Forwarded-For}. Dopo 5 password errate l'account è stato bloccato (HTTP 429 anche con la password corretta). Il tempo mediano di risposta a un login errato è stato di 375,5~ms per username esistenti e 371,8~ms per inesistenti (rapporto 0,99). Senza token amministrativo \texttt{/reconcile} e \texttt{/shutdown} hanno risposto 403, e dopo la riconciliazione \texttt{/register} ha risposto 403.
+  \item \textbf{Registrazione e Finestra Temporale:} indirizzi \texttt{@gmail.com}, \texttt{@fakeunisa.it} e richieste senza username sono stati rifiutati (400), i duplicati di username ed email (anche in maiuscolo) rifiutati (409); la password risulta salvata come \texttt{pbkdf2\_sha256} a 600.000 iterazioni. Con le urne non ancora aperte e con le urne chiuse il voto è stato rifiutato (403) pur con token valido; con le urne aperte è stato accettato.
+\end{itemize}
+
+\subsubsection*{C. Valutazione delle Prestazioni Sotto Carico (Denial of Service)}
+\begin{itemize}
+  \item \textbf{Flooding Volumetrico:} 500 richieste su 50 thread concorrenti, prive di una challenge valida, sono state tutte scartate dal controllo PoW (HTTP 400, 100\%) prima di qualsiasi verifica asimmetrica, con un tempo totale di elaborazione del batch di 20,70~s.
+  \item \textbf{PoW Adattiva:} 60 richieste con PoW non valida hanno lasciato la difficoltà a 4 bit; un flood di 30 PoW risolte su 6 thread l'ha portata a 6 bit; dopo la finestra di osservazione la difficoltà è tornata a 4 bit. Il tempo di risoluzione della PoW minima è stato di circa 0,1~ms.
+  \item \textbf{Isolamento per IP:} 30 PoW valide dallo stesso indirizzo hanno portato la difficoltà dell'attaccante a 9 bit, mentre quella di un altro indirizzo è rimasta a 4 bit.
+  \item \textbf{Liveness sotto Attacco Misto:} con 20 thread di spazzatura (80/80 richieste rifiutate con 400) e 6 thread di PoW valide ostili attivi in parallelo, la difficoltà è salita da 4 a 5 bit e 5 elettori onesti su 5 hanno votato, con una latenza media end-to-end di 4,09~s.
+\end{itemize}
+
+La tabella~\ref{tab:metriche_stress} riassume le metriche temporali estratte dai test di carico.
+
+\begin{table}[!ht]
+\centering
+\small
+\begin{tabularx}{\textwidth}{Y Y Y c}
+\toprule
+\textbf{Scenario di Test (Modulo)} & \textbf{Condizioni di Carico} & \textbf{Metrica Rilevata} & \textbf{Valore Misurato} \\
+\midrule
+Risoluzione PoW Baseline (\url{pow_adaptive_test.py}) & Difficoltà minima (4 bit) & Tempo medio di risoluzione locale (Client) & $\approx 0,1$ ms \\
+\midrule
+Richiesta HTTPS singola (\url{pow_adaptive_test.py}) & Richiesta a \texttt{localhost} & Tempo medio di risposta & $\approx 2,05$ s \\
+\midrule
+Login errato (\url{test_rate_limiting.py}) & Richiesta a \texttt{127.0.0.1} & Tempo mediano (PBKDF2 600k) & $\approx 0,37$ s \\
+\midrule
+Recovery PoW (\url{pow_adaptive_test.py}) & Termine di un flood valido (30 req su 6 thread) & Attesa per il ritorno alla difficoltà nominale & 12,0 s \\
+\midrule
+Flooding Volumetrico (\url{dos_attack_test.py}) & 500 richieste senza challenge su 50 thread & Tempo totale del batch & 20,70 s \\
+\midrule
+Liveness / Attacco Misto (\url{dos_resilience_test.py}) & 20 thread invalidi + 6 thread ostili validi & Latenza end-to-end per voto onesto & $\approx 4,09$ s \\
+\bottomrule
+\end{tabularx}
+\caption{Metriche prestazionali e temporali sotto stress test}
+\label{tab:metriche_stress}
+\end{table}
+
+\subsection{Vincoli Sperimentali e Limiti del Testbed}
+
+Al fine di interpretare correttamente i parametri prestazionali emersi, segnatamente per quanto concerne la resilienza al Denial of Service e la garanzia di Liveness, risulta fondamentale contestualizzare i vincoli dell'attuale ambiente di simulazione.
+
+La suite ha previsto l'esecuzione simultanea dei nodi autoritativi (SA ed AE), dei client legittimi e dei carichi ostili su un'unica macchina fisica operante in localhost, con contesa delle risorse di CPU tra risoluzione della PoW, operazioni RSA e gestione dei numerosi thread concorrenti.
+
+L'analisi delle misure mostra tuttavia che la componente dominante della latenza non è il calcolo. Su Windows il nome \texttt{localhost} viene risolto prima nell'indirizzo IPv6 \texttt{::1}, su cui i server Flask non sono in ascolto: ogni nuova connessione attende circa 2~s prima di ripiegare su IPv4 \texttt{127.0.0.1}. Lo stesso login misurato verso \texttt{127.0.0.1} richiede circa 0,37~s, dovuti quasi interamente alle 600.000 iterazioni di PBKDF2. Il tempo medio di risposta di circa 2,05~s per richiesta, a fronte di una PoW risolta in circa 0,1~ms, e la latenza di circa 4,09~s per un voto onesto, che comprende due richieste (challenge e invio), sono quindi in larga parte dovuti a questo ritardo di risoluzione.
+
+Pertanto i tempi rilevati rappresentano una stima pessimistica, non indicativa del costo delle contromisure: in un ambiente con risoluzione dei nomi corretta, o indirizzando i server tramite IP, la latenza di un voto sarebbe dominata dal costo di PBKDF2 per l'autenticazione e dalle operazioni RSA, nell'ordine delle centinaia di millisecondi. Il mantenimento della piena operatività degli elettori onesti anche in queste condizioni sfavorevoli conferma la robustezza della logica applicativa.
+
+\end{document}
